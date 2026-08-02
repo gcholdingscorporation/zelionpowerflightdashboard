@@ -55,6 +55,23 @@ unbound. Use the scroll wheel to page through the list on the smaller screen.
 This screen exists first on purpose: it proves sensor discovery works against
 real hardware before any layout work depends on it.
 
+## Rotorflight RF Tool integration (optional)
+
+If Rotorflight's **RF Tool** widget is installed, ZelionDash uses it for two
+things telemetry alone cannot provide:
+
+- **Flight count and total airtime from the flight controller itself**, rather
+  than a counter kept on the radio's SD card. The FC's numbers match what
+  Configurator reports and don't diverge when you fly the same heli with a
+  second radio. Requires MSP API 12.9 or newer.
+- **Authoritative connection state.** Without RF Tool the dashboard can only
+  infer whether the link is up; RF Tool actually knows.
+
+This is entirely optional — with RF Tool absent the dashboard is fully
+functional and says nothing about it. Flight controller data is requested only
+when the link connects and after each landing, never per frame, so it costs
+almost no telemetry bandwidth.
+
 ## Configuring sensor names
 
 Sensor discovery is automatic and usually needs no configuration. If your model

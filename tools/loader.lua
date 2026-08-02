@@ -13,6 +13,7 @@ Loader.MODULES = {
   "roles",
   "config",
   "sensors",
+  "rf2",
   "state",
 }
 

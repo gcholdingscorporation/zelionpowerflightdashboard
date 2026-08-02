@@ -125,6 +125,43 @@ H.test("the small screen shows fewer rows and can scroll", function()
   H.truthy(firstPage ~= scrolled, "scrolling changed the visible rows")
 end)
 
+H.test("shows FC flight count when RF Tool is present", function()
+  Mock.reset()
+  Mock.removeRf2()
+  Mock.addSensor("Hspd", 18, 1850)
+  Mock.install()
+  Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
+
+  local w = loadDist()
+  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
+  for _ = 1, 60 do
+    Mock.advanceSeconds(0.1)
+    w.background(widget)
+  end
+  Mock.draws = {}
+  w.refresh(widget, 0, nil)
+
+  local text = Mock.drawnText()
+  H.truthy(string.find(text, "137 flights", 1, true), "FC counter shown")
+  H.truthy(string.find(text, "Goblin 700", 1, true), "FC craft name used")
+end)
+
+H.test("draws no RF Tool status when it is absent", function()
+  Mock.reset()
+  Mock.removeRf2()
+  Mock.addSensor("Hspd", 18, 1850)
+  Mock.install()
+
+  local w = loadDist()
+  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
+  Mock.advanceSeconds(0.2)
+  Mock.draws = {}
+  w.refresh(widget, 0, nil)
+
+  H.falsy(string.find(Mock.drawnText(), "RF2", 1, true),
+          "an optional integration must not advertise its own absence")
+end)
+
 H.test("survives a model with no telemetry at all", function()
   Mock.reset()
   Mock.install()

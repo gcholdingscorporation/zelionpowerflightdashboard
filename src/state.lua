@@ -16,9 +16,17 @@ return function(ZD)
 local Host    = ZD.Host
 local Roles   = ZD.Roles
 local Sensors = ZD.Sensors
+local RF2     = ZD.RF2
 
 local State = {}
 ZD.State = State
+
+-- Link state, in descending order of trustworthiness:
+--   true/false  Rotorflight RF Tool told us authoritatively
+--   nil         RF Tool unavailable - callers must fall back to inference
+-- Kept separate from "do we have telemetry" so the alert engine can tell a
+-- genuinely dead link from a sensor that simply is not configured.
+State.linkConnected = nil
 
 -- Telemetry is serviced at 10 Hz. Nothing on a heli dashboard changes usefully
 -- faster than that, and it keeps the widget off the radio's CPU budget.
@@ -241,6 +249,8 @@ function State.service(now, opts)
   end
 
   Sensors.service(now)
+  RF2.service(now)
+  State.linkConnected = RF2.connected
 
   local wasArmed = State.armed
   local armed, source = readArmed()

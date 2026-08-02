@@ -219,6 +219,62 @@ function Mock.install()
   }
 end
 
+--------------------------------------------------------------------------
+-- Rotorflight RF Tool mock
+--------------------------------------------------------------------------
+
+-- Installs a global `rf2` matching the real RF Tool contract. Omit the call
+-- entirely to simulate RF Tool not being installed, which is the default and
+-- the case the widget must survive.
+--
+-- opts: apiVersion (number|nil), modelName (string), stats (table), failUseApi
+function Mock.installRf2(opts)
+  opts = opts or {}
+  Mock.rf2Widgets = {}
+  Mock.rf2Reads = 0
+
+  local stats = opts.stats or {
+    stats_total_flights = { value = 137 },
+    stats_total_time_s  = { value = 41230 },
+    stats_total_dist_m  = { value = 0 },
+  }
+
+  _G.rf2 = {
+    rfToolApiVersion = 1.00,
+    apiVersion = opts.apiVersion,
+    modelName  = opts.modelName,
+    clock      = function() return Mock.state.time / 100 end,
+    registerWidget = function(widget)
+      Mock.rf2Widgets[#Mock.rf2Widgets + 1] = widget
+    end,
+    useApi = function(name)
+      if opts.failUseApi then error("no such api: " .. tostring(name)) end
+      if name ~= "mspFlightStats" then return nil end
+      return {
+        read = function(callback, param)
+          Mock.rf2Reads = Mock.rf2Reads + 1
+          -- The real API replies asynchronously over MSP. Calling back inline
+          -- is the strictest case for the caller's state handling.
+          if callback then callback(param, stats) end
+        end,
+      }
+    end,
+  }
+  return _G.rf2
+end
+
+function Mock.removeRf2()
+  _G.rf2 = nil
+  Mock.rf2Widgets = nil
+end
+
+-- Deliver a state change to every registered widget, exactly as RF Tool does.
+function Mock.rf2Fire(newState)
+  for _, widget in ipairs(Mock.rf2Widgets or {}) do
+    if widget.onStateChanged then widget.onStateChanged(widget, newState) end
+  end
+end
+
 -- All text drawn in the last frame, joined - convenient for assertions.
 function Mock.drawnText()
   local out = {}

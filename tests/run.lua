@@ -10,6 +10,7 @@ local SUITES = {
   "test_config_host",
   "test_sensors",
   "test_state",
+  "test_rf2",
   "test_build",
 }
 

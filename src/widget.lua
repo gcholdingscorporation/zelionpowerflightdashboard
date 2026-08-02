@@ -16,6 +16,7 @@ local Host    = ZD.Host
 local Roles   = ZD.Roles
 local Config  = ZD.Config
 local Sensors = ZD.Sensors
+local RF2     = ZD.RF2
 local State   = ZD.State
 
 local Widget = {}
@@ -95,8 +96,10 @@ local function drawScreen(widget)
   local rowH    = compact and 14 or 20
 
   -- Header
+  -- The full title would run into the RF Tool status at 480px wide.
   lcd.drawText(pad, compact and 2 or 5,
-               "ZelionDash - sensor map", BOLD + C.accent)
+               compact and "Sensors" or "ZelionDash - sensor map",
+               BOLD + C.accent)
   local bound = 0
   local rows = Sensors.report()
   for _, r in ipairs(rows) do
@@ -141,11 +144,31 @@ local function drawScreen(widget)
     lcd.drawText(pad, fy, note, SMLSIZE + C.bad)
   else
     note = State.armed and "ARMED" or "disarmed"
-    note = note .. "  " .. Host.modelName()
+    note = note .. "  " .. (RF2.craftName or Host.modelName())
     if #Sensors.unresolved > 0 then
       note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
     end
     lcd.drawText(pad, fy, note, SMLSIZE + C.dim)
+  end
+
+  -- RF Tool status sits on the header line, where there is room on both
+  -- screen sizes. Absent RF Tool draws nothing at all rather than an error:
+  -- it is an optional enhancement, not a missing dependency.
+  if RF2.available() then
+    local rfNote, rfColor
+    if RF2.statsStatus == "ok" and RF2.totalFlights then
+      rfNote = string.format("RF2 %d flights", RF2.totalFlights)
+      rfColor = C.ok
+    elseif RF2.statsStatus == "unsupported" then
+      rfNote, rfColor = "RF2 (needs MSP 12.9)", C.warn
+    elseif RF2.connected == false then
+      rfNote, rfColor = "RF2 disconnected", C.dim
+    elseif RF2.registered then
+      rfNote, rfColor = "RF2 linked", C.dim
+    else
+      rfNote, rfColor = "RF2 found", C.dim
+    end
+    lcd.drawText(colSensor, compact and 2 or 5, rfNote, SMLSIZE + rfColor)
   end
   if #rows > visible then
     lcd.drawText(w - pad, fy,
