@@ -14,11 +14,17 @@ currently renders is a sensor diagnostics screen.
 
 Target screen sizes:
 
-| Size | Radio |
-|---|---|
-| 480×320 | RadioMaster TX15 |
-| 480×272 | RadioMaster TX16S Mk3 |
-| 800×480 | larger colour radios |
+| Size | Radio | Density class |
+|---|---|---|
+| 800×480 | RadioMaster TX16S Mk3 | roomy |
+| 480×320 | RadioMaster TX15 | tight |
+| 480×272 | other colour radios | tight |
+
+The two primary targets are different shapes, not one layout scaled: width
+differs by a factor of 0.60 but height by 0.67, and the smaller screen has
+about 40% of the drawing area. Panels therefore *rearrange* between density
+classes rather than shrinking uniformly — text cannot scale continuously,
+since EdgeTX offers only a handful of fixed font sizes.
 
 Layout adapts to whatever `LCD_W`/`LCD_H` the radio reports, so an untested
 size still lands in the nearest sensible density class.

@@ -29,7 +29,9 @@ H.test("exports the EdgeTX widget interface", function()
   H.truthy(type(w.options) == "table")
 end)
 
-H.test("runs a full lifecycle at 800x480", function()
+-- Primary targets are 800x480 (TX16S Mk3) and 480x320 (TX15). 480x272 is
+-- covered too, since it costs nothing and other colour radios use it.
+H.test("runs a full lifecycle at 800x480 (TX16S Mk3)", function()
   Mock.reset()
   Mock.state.lcdW, Mock.state.lcdH = 800, 480
   Mock.addSensor("Hspd", 18, 1850)
