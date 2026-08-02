@@ -1,0 +1,54 @@
+# ZelionDash sensor overrides
+#
+# Copy to /WIDGETS/ZelionDash/sensors.cfg on the radio's SD card.
+# Everything here is OPTIONAL - sensor discovery is automatic. Use this file
+# only when your model publishes a sensor under a name the widget does not
+# recognise, or when auto-detection picked the wrong one.
+#
+# Format:   role = SensorName
+# Sections: [*] applies to every model
+#           [Model Name] applies to that model only, and wins over [*]
+#           Section names are matched case-insensitively.
+#
+# A line naming a role that does not exist is reported on the diagnostics
+# screen rather than ignored, so typos are visible.
+
+[*]
+# --- rotor ---
+# headspeed        = Hspd
+# tailSpeed        = Tspd
+
+# --- battery ---
+# packVoltage      = Vbat
+# cellVoltage      = Vcel
+# cellCount        = Cel#
+# batteryPercent   = Bat%
+# capacity         = Capa
+# batteryProfile   = BAT#
+
+# --- power ---
+# current          = Curr
+# power            = Pwr
+# becVoltage       = Vbec
+
+# --- temperatures ---
+# escTemperature   = Tesc
+# mcuTemperature   = Tmcu
+
+# --- flight controller ---
+# governor         = Gov
+# armFlags         = ARM
+# throttle         = Thr
+# flightMode       = FM
+
+# --- radio link ---
+# linkQuality      = RQly
+# rssi1            = 1RSS
+# rssi2            = 2RSS
+# txVoltage        = tx-voltage
+
+
+# Example of a per-model override:
+#
+# [Goblin 700]
+# escTemperature = Tmp1

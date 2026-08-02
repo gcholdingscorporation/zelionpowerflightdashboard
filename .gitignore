@@ -1,0 +1,4 @@
+*.luac
+*.tmp
+*.bak
+.DS_Store
