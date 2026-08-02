@@ -64,6 +64,45 @@ H.test("runs a full lifecycle at 480x272", function()
            "the small screen still renders the sensor map")
 end)
 
+H.test("runs a full lifecycle at 480x320 (TX15)", function()
+  Mock.reset()
+  Mock.state.lcdW, Mock.state.lcdH = 480, 320
+  Mock.state.radio = "tx15"
+  Mock.addSensor("Hspd", 18, 1850)
+  Mock.install()
+
+  local w = loadDist()
+  local widget = w.create({ x = 0, y = 0, w = 480, h = 320 }, {})
+  Mock.advanceSeconds(0.2)
+  w.refresh(widget, 0, nil)
+
+  H.truthy(string.find(Mock.drawnText(), "Hspd", 1, true),
+           "the TX15 geometry still renders the sensor map")
+end)
+
+H.test("480x320 fits more rows than 480x272", function()
+  local function rowsShown(h)
+    Mock.reset()
+    Mock.state.lcdW, Mock.state.lcdH = 480, h
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.install()
+    local w = loadDist()
+    local widget = w.create({ x = 0, y = 0, w = 480, h = h }, {})
+    Mock.advanceSeconds(0.2)
+    Mock.draws = {}
+    w.refresh(widget, 0, nil)
+    local n = 0
+    for _, d in ipairs(Mock.draws) do
+      if d.op == "text" then n = n + 1 end
+    end
+    return n
+  end
+  -- The TX15's extra 48px of height must translate into usable rows rather
+  -- than dead space at the bottom of the list.
+  H.truthy(rowsShown(320) > rowsShown(272),
+           "expected the taller screen to show more")
+end)
+
 H.test("the small screen shows fewer rows and can scroll", function()
   Mock.reset()
   Mock.state.lcdW, Mock.state.lcdH = 480, 272

@@ -10,7 +10,18 @@ currently renders is a sensor diagnostics screen.
 ## Requirements
 
 - EdgeTX 2.11 or newer
-- A full-screen widget slot (800×480 or 480×272)
+- A full-screen widget slot
+
+Target screen sizes:
+
+| Size | Radio |
+|---|---|
+| 480×320 | RadioMaster TX15 |
+| 480×272 | RadioMaster TX16S Mk3 |
+| 800×480 | larger colour radios |
+
+Layout adapts to whatever `LCD_W`/`LCD_H` the radio reports, so an untested
+size still lands in the nearest sensible density class.
 
 ## Installing
 
