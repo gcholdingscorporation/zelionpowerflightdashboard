@@ -1,9 +1,9 @@
 -- Exercises the amalgamated dist/ file, not the src/ modules.
 --
--- A build that compiles but does not run is the failure mode that matters
--- here: on the radio it surfaces as an opaque "widget script error" with no
--- indication of which module broke. So load the real artifact and drive a
--- full widget lifecycle through it.
+-- A build that compiles but does not run is the failure mode that matters:
+-- on the radio it surfaces as an opaque "widget script error" with no hint of
+-- which module broke. So load the real artifact and drive full lifecycles
+-- through it, on both screens and on both of its screens.
 
 return function(H, Mock, Loader)
 
@@ -15,162 +15,153 @@ local function loadDist()
   return chunk()
 end
 
-H.group("build: amalgamated artifact")
+local function boot(w, h, opts, setup)
+  Mock.reset()
+  Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = w, h
+  if setup then setup() end
+  Mock.install()
+  Mock.installLvgl()
+  local widgetDef = loadDist()
+  local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts or {})
+  widgetDef.update(widget, opts or {})
+  Mock.advanceSeconds(0.2)
+  return widgetDef, widget
+end
+
+local function flying()
+  Mock.addSensor("Hspd", 18, 1850)
+  Mock.addSensor("Vcel", 1, 3.94)
+  Mock.addSensor("Vbat", 1, 47.3)
+  Mock.addSensor("Bat%", 13, 68)
+  Mock.addSensor("Curr", 2, 42)
+  Mock.addSensor("Tesc", 11, 71)
+  Mock.addSensor("Gov",  nil, 4)
+end
+
+H.group("build: artifact")
 
 H.test("exports the EdgeTX widget interface", function()
-  Mock.reset()
-  Mock.install()
+  Mock.reset(); Mock.install(); Mock.installLvgl()
   local w = loadDist()
   H.eq(w.name, "ZelionDash")
-  H.truthy(type(w.create) == "function")
-  H.truthy(type(w.update) == "function")
-  H.truthy(type(w.refresh) == "function")
-  H.truthy(type(w.background) == "function")
-  H.truthy(type(w.options) == "table")
-end)
-
--- Primary targets are 800x480 (TX16S Mk3) and 480x320 (TX15). 480x272 is
--- covered too, since it costs nothing and other colour radios use it.
-H.test("runs a full lifecycle at 800x480 (TX16S Mk3)", function()
-  Mock.reset()
-  Mock.state.lcdW, Mock.state.lcdH = 800, 480
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.addSensor("Curr", 2, 42)
-  Mock.install()
-
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
-  w.background(widget)
-  Mock.advanceSeconds(0.2)
-  w.refresh(widget, 0, nil)
-
-  local text = Mock.drawnText()
-  H.truthy(string.find(text, "ZelionDash", 1, true), "header drawn")
-  H.truthy(string.find(text, "Hspd", 1, true), "bound sensor listed")
-  H.truthy(string.find(text, "1850", 1, true), "live value shown")
-end)
-
-H.test("runs a full lifecycle at 480x272", function()
-  Mock.reset()
-  Mock.state.lcdW, Mock.state.lcdH = 480, 272
-  Mock.state.radio = "tx16s"
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.install()
-
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 480, h = 272 }, {})
-  Mock.advanceSeconds(0.2)
-  w.refresh(widget, 0, nil)
-
-  H.truthy(string.find(Mock.drawnText(), "Hspd", 1, true),
-           "the small screen still renders the sensor map")
-end)
-
-H.test("runs a full lifecycle at 480x320 (TX15)", function()
-  Mock.reset()
-  Mock.state.lcdW, Mock.state.lcdH = 480, 320
-  Mock.state.radio = "tx15"
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.install()
-
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 480, h = 320 }, {})
-  Mock.advanceSeconds(0.2)
-  w.refresh(widget, 0, nil)
-
-  H.truthy(string.find(Mock.drawnText(), "Hspd", 1, true),
-           "the TX15 geometry still renders the sensor map")
-end)
-
-H.test("480x320 fits more rows than 480x272", function()
-  local function rowsShown(h)
-    Mock.reset()
-    Mock.state.lcdW, Mock.state.lcdH = 480, h
-    Mock.addSensor("Hspd", 18, 1850)
-    Mock.install()
-    local w = loadDist()
-    local widget = w.create({ x = 0, y = 0, w = 480, h = h }, {})
-    Mock.advanceSeconds(0.2)
-    Mock.draws = {}
-    w.refresh(widget, 0, nil)
-    local n = 0
-    for _, d in ipairs(Mock.draws) do
-      if d.op == "text" then n = n + 1 end
-    end
-    return n
+  for _, fn in ipairs({"create","update","refresh","background"}) do
+    H.truthy(type(w[fn]) == "function", fn .. " must be a function")
   end
-  -- The TX15's extra 48px of height must translate into usable rows rather
-  -- than dead space at the bottom of the list.
-  H.truthy(rowsShown(320) > rowsShown(272),
-           "expected the taller screen to show more")
+  H.truthy(type(w.options) == "table")
+  H.truthy(w.useLvgl, "the dashboard is retained-mode")
 end)
 
-H.test("the small screen shows fewer rows and can scroll", function()
-  Mock.reset()
-  Mock.state.lcdW, Mock.state.lcdH = 480, 272
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.install()
+H.group("build: dashboard lifecycle")
 
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 480, h = 272 }, {})
-  Mock.advanceSeconds(0.2)
-
-  w.refresh(widget, 0, nil)
-  local firstPage = Mock.drawnText()
-
-  -- Scrolling must actually change what is on screen, otherwise roles past
-  -- the fold are unreachable on the smaller radio.
-  Mock.draws = {}
-  for _ = 1, 8 do w.refresh(widget, 100, nil) end
-  local scrolled = Mock.drawnText()
-
-  H.truthy(firstPage ~= scrolled, "scrolling changed the visible rows")
+H.test("full lifecycle at 800x480 (TX16S Mk3)", function()
+  local def, widget = boot(800, 480, nil, flying)
+  def.background(widget)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "1850", 1, true), "headspeed on screen")
+  H.truthy(string.find(t, "HEADSPEED", 1, true))
+  H.truthy(string.find(t, "ACTIVE", 1, true), "governor state")
 end)
 
-H.test("shows FC flight count when RF Tool is present", function()
-  Mock.reset()
-  Mock.removeRf2()
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.install()
+H.test("full lifecycle at 480x320 (TX15)", function()
+  local def, widget = boot(480, 320, nil, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850", 1, true))
+end)
+
+H.test("full lifecycle at 480x272", function()
+  local def, widget = boot(480, 272, nil, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850", 1, true))
+end)
+
+H.test("repeated frames do not rebuild the screen", function()
+  local def, widget = boot(800, 480, nil, flying)
+  def.refresh(widget, 0, nil)
+  local clears = Mock.lv.cleared
+  for _ = 1, 20 do
+    Mock.advanceSeconds(0.15)
+    def.refresh(widget, 0, nil)
+  end
+  H.eq(Mock.lv.cleared, clears, "steady state must not tear down and rebuild")
+end)
+
+H.group("build: standby")
+
+H.test("no telemetry shows the brand, not a grid of dashes", function()
+  local def, widget = boot(800, 480)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "WAITING FOR TELEMETRY", 1, true))
+end)
+
+H.test("telemetry appearing switches to the dashboard", function()
+  local def, widget = boot(800, 480)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "WAITING", 1, true))
+
+  -- Heli powered on after the radio. Unbound roles are re-probed on a one
+  -- second timer, so the switch is not instantaneous by design.
+  flying()
+  for _ = 1, 15 do
+    Mock.advanceSeconds(0.15)
+    def.refresh(widget, 0, nil)
+  end
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "1850", 1, true), "dashboard took over")
+  H.falsy(string.find(t, "WAITING", 1, true), "standby is gone")
+end)
+
+H.group("build: FC integration")
+
+H.test("shows the flight controller's flight count", function()
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.install(); Mock.installLvgl()
   Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
 
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
-  for _ = 1, 60 do
+  local def = loadDist()
+  local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
+  def.update(widget, {})
+  for _ = 1, 70 do
     Mock.advanceSeconds(0.1)
-    w.background(widget)
+    def.background(widget)
   end
-  Mock.draws = {}
-  w.refresh(widget, 0, nil)
+  def.refresh(widget, 0, nil)
 
-  local text = Mock.drawnText()
-  H.truthy(string.find(text, "137 flights", 1, true), "FC counter shown")
-  H.truthy(string.find(text, "Goblin 700", 1, true), "FC craft name used")
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "137 FLIGHTS", 1, true), "FC counter shown")
+  H.truthy(string.find(t, "Goblin 700", 1, true), "FC craft name used")
 end)
 
-H.test("draws no RF Tool status when it is absent", function()
-  Mock.reset()
-  Mock.removeRf2()
-  Mock.addSensor("Hspd", 18, 1850)
-  Mock.install()
+H.group("build: sensor map")
 
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
-  Mock.advanceSeconds(0.2)
+H.test("the option switches to the diagnostics screen", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   Mock.draws = {}
-  w.refresh(widget, 0, nil)
+  def.refresh(widget, 0, nil)
+  local t = Mock.drawnText()
+  H.truthy(string.find(t, "sensor map", 1, true), "diagnostics header")
+  H.truthy(string.find(t, "Hspd", 1, true), "bound sensor listed")
+end)
 
-  H.falsy(string.find(Mock.drawnText(), "RF2", 1, true),
-          "an optional integration must not advertise its own absence")
+H.test("the diagnostics list scrolls on the small screen", function()
+  local def, widget = boot(480, 320, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  Mock.draws = {}
+  def.refresh(widget, 0, nil)
+  local first = Mock.drawnText()
+
+  Mock.draws = {}
+  for _ = 1, 8 do def.refresh(widget, 100, nil) end
+  H.truthy(first ~= Mock.drawnText(), "roles past the fold must be reachable")
 end)
 
 H.test("survives a model with no telemetry at all", function()
-  Mock.reset()
-  Mock.install()
-  local w = loadDist()
-  local widget = w.create({ x = 0, y = 0, w = 800, h = 480 }, {})
-  Mock.advanceSeconds(0.2)
-  w.refresh(widget, 0, nil)
+  local def, widget = boot(800, 480, { SensorMap = 1 })
+  Mock.draws = {}
+  def.refresh(widget, 0, nil)
   H.truthy(string.find(Mock.drawnText(), "0/", 1, true),
            "reports nothing bound rather than erroring")
 end)

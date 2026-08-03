@@ -11,6 +11,8 @@ local SUITES = {
   "test_sensors",
   "test_state",
   "test_rf2",
+  "test_layout",
+  "test_dashboard",
   "test_build",
 }
 

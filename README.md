@@ -3,9 +3,8 @@
 An RC helicopter telemetry dashboard widget for EdgeTX, targeting Rotorflight
 electric setups on the RadioMaster TX16S Mk3 and TX15.
 
-**Status: early development.** Layers 1–3 (host adapter, sensor resolver, state
-model) are implemented and tested. The dashboard UI is not built yet — what
-currently renders is a sensor diagnostics screen.
+**Status: in development.** The dashboard renders. Alerts and flight logging
+are not built yet.
 
 ## Requirements
 
@@ -40,9 +39,21 @@ Copy the built widget onto the radio's SD card:
 The file to copy is `dist/WIDGETS/ZelionDash/main.lua`. Then add ZelionDash to
 a full-screen widget slot on the radio.
 
-## What it does today
+## What it shows
 
-The diagnostics screen lists every telemetry **role** the dashboard knows
+A single screen, no modes. Battery state and headspeed carry the two hero
+tiles; cell voltage sits above the fuel gauge on the left; governor, current,
+ESC temperature and BEC sit right of centre. The critical values are pinned
+left, on the assumption you fly off a neck strap and glance down-left.
+
+Before the pack is plugged in there is nothing truthful to draw, so the screen
+shows the Zelion mark and `WAITING FOR TELEMETRY` instead of a grid of dashes.
+A mid-flight telemetry dropout does **not** trigger this — blanking the screen
+at exactly the wrong moment would be worse than showing stale values.
+
+## Sensor diagnostics
+
+Turn on **Show Sensor Map** in the widget settings. It lists every telemetry **role** the dashboard knows
 about, which sensor on your model got bound to it, and how that binding
 happened:
 
@@ -58,8 +69,7 @@ happened:
 Roles the dashboard considers important are shown in bold, and turn amber when
 unbound. Use the scroll wheel to page through the list on the smaller screen.
 
-This screen exists first on purpose: it proves sensor discovery works against
-real hardware before any layout work depends on it.
+This is the first place to look when a panel reads `--`.
 
 ## Rotorflight RF Tool integration (optional)
 
@@ -140,10 +150,13 @@ Seven layers, each talking only to its neighbours:
 3. **State model** (`state.lua`) — current values, session extremes, validity,
    arm detection, flight timing.
 4. **Alert engine** — *not yet built.*
-5. **Layout engine** — *not yet built.*
-6. **Renderer** — *not yet built.* Will use LVGL; the current diagnostics
-   screen uses `lcd.draw*` as scaffolding.
-7. **Persistence** — *not yet built.*
+5. **Layout engine** (`layout.lua`, `theme.lua`) — screen geometry as pure
+   arithmetic. Two density classes rather than one scaled layout, because the
+   targets are different shapes and EdgeTX fonts do not scale continuously.
+6. **Renderer** (`dashboard.lua`) — retained-mode LVGL. Objects are created
+   once; each frame writes only the properties whose values changed.
+7. **Persistence** — *not yet built.* Flight count already comes from the
+   flight controller when RF Tool is available.
 
 Two rules run through all of it:
 

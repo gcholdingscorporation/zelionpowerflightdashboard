@@ -15,6 +15,9 @@ Loader.MODULES = {
   "sensors",
   "rf2",
   "state",
+  "theme",
+  "layout",
+  "dashboard",
 }
 
 function Loader.load(root)

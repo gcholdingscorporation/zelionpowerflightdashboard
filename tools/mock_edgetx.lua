@@ -77,6 +77,7 @@ function Mock.writeFile(path, contents)
 end
 
 function Mock.reset()
+  Mock.removeLvgl()
   Mock.state.time = 0
   Mock.state.sensors = {}
   Mock.state.files = {}
@@ -273,6 +274,71 @@ function Mock.rf2Fire(newState)
   for _, widget in ipairs(Mock.rf2Widgets or {}) do
     if widget.onStateChanged then widget.onStateChanged(widget, newState) end
   end
+end
+
+
+--------------------------------------------------------------------------
+-- LVGL mock
+--------------------------------------------------------------------------
+
+-- Records objects and their property writes rather than rendering. That is
+-- enough to assert what the dashboard built, what it wrote, and - importantly
+-- - that a repeated frame writes nothing at all.
+function Mock.installLvgl()
+  Mock.lv = { objects = {}, cleared = 0, sets = 0 }
+
+  local function make(kind, props)
+    local o = { kind = kind, props = {}, visible = true, setCount = 0 }
+    for k, v in pairs(props or {}) do o.props[k] = v end
+    function o:set(p)
+      self.setCount = self.setCount + 1
+      Mock.lv.sets = Mock.lv.sets + 1
+      for k, v in pairs(p) do self.props[k] = v end
+    end
+    function o:show() self.visible = true end
+    function o:hide() self.visible = false end
+    Mock.lv.objects[#Mock.lv.objects + 1] = o
+    return o
+  end
+
+  _G.lvgl = {
+    clear = function()
+      Mock.lv.objects = {}
+      Mock.lv.cleared = Mock.lv.cleared + 1
+    end,
+    label     = function(p) return make("label", p) end,
+    rectangle = function(p) return make("rect", p) end,
+    image     = function(p) return make("image", p) end,
+    hline     = function(p) return make("hline", p) end,
+    vline     = function(p) return make("vline", p) end,
+    isFullScreen = function() return true end,
+    isAppMode    = function() return false end,
+  }
+  _G.XXLSIZE = 8
+end
+
+function Mock.removeLvgl()
+  _G.lvgl = nil
+  Mock.lv = nil
+end
+
+-- Every label's text in creation order, joined.
+function Mock.lvglText()
+  local out = {}
+  for _, o in ipairs((Mock.lv or {}).objects or {}) do
+    if o.kind == "label" and o.props.text and o.props.text ~= "" then
+      out[#out + 1] = tostring(o.props.text)
+    end
+  end
+  return table.concat(out, "|")
+end
+
+function Mock.lvglImages()
+  local out = {}
+  for _, o in ipairs((Mock.lv or {}).objects or {}) do
+    if o.kind == "image" then out[#out + 1] = tostring(o.props.file or "") end
+  end
+  return out
 end
 
 -- All text drawn in the last frame, joined - convenient for assertions.

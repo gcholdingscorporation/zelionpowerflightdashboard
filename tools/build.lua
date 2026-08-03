@@ -59,6 +59,7 @@ return {
   refresh    = ZD.Widget.refresh,
   background = ZD.Widget.background,
   translate  = ZD.Widget.translate,
+  useLvgl    = true,
 }
 ]])
 

@@ -1428,20 +1428,831 @@ end
   factory(ZD)
 end
 
+-- ======== src/theme.lua ========
+do
+  local factory = (function()
+-- Layer 5a: Colours and font ladder.
+--
+-- Zelion lime doubles as the "healthy" state. Brand green and battery-OK green
+-- would otherwise be two competing greens on one display; merged, there is
+-- exactly one green on screen and it is the brand's. Amber and red stay
+-- strictly reserved for a value that needs attention now, so an alarm keeps
+-- its meaning.
+--
+-- Colours are built lazily: lcd.RGB does not exist until the widget is
+-- created, so this cannot run at module load.
+
+return function(ZD)
+
+local Theme = {}
+ZD.Theme = Theme
+
+local function flag(name, fallback)
+  return rawget(_G, name) or fallback
+end
+
+-- EdgeTX offers a fixed ladder of font sizes, not arbitrary point values.
+-- Everything the renderer draws picks from these, which is why the layout
+-- positions text by anchor rather than by measured height.
+Theme.font = {
+  small  = flag("SMLSIZE", 0),
+  normal = 0,
+  mid    = flag("MIDSIZE", 0),
+  large  = flag("DBLSIZE", 0),
+  huge   = flag("XXLSIZE", flag("DBLSIZE", 0)),
+  bold   = flag("BOLD", 0),
+}
+
+Theme.built = false
+
+function Theme.build()
+  if Theme.built then return end
+  if type(lcd) ~= "table" or type(lcd.RGB) ~= "function" then return end
+  local rgb = lcd.RGB
+
+  Theme.bg     = rgb(  6,   8,  11)
+  Theme.panel  = rgb( 16,  20,  26)
+  Theme.rule   = rgb( 35,  42,  51)
+  Theme.track  = rgb(  9,  12,  16)
+  Theme.ink    = rgb(242, 245, 248)
+  Theme.dim    = rgb(118, 129, 143)
+
+  -- Brand
+  Theme.lime     = rgb(139, 224,  74)
+  Theme.limeDark = rgb( 78, 143,  34)
+  Theme.steel    = rgb(127, 196, 238)
+
+  -- Status. Reserved: never used for decoration.
+  Theme.warn = rgb(245, 179,   1)
+  Theme.crit = rgb(239,  68,  68)
+
+  -- Recorded extremes. Deliberately desaturated so a session peak never
+  -- reads as a live warning.
+  Theme.peak = rgb(185, 154,  74)
+
+  -- Governor panel backgrounds, keyed by the severity of the state.
+  Theme.govRunBg  = rgb( 21,  42,  12)
+  Theme.govRunBr  = rgb( 61, 107,  31)
+  Theme.govWarnBg = rgb( 42,  33,  10)
+  Theme.govWarnBr = rgb( 90,  67,  19)
+  Theme.govCritBg = rgb( 42,  13,  13)
+  Theme.govCritBr = rgb( 88,  27,  27)
+  Theme.govIdleBg = Theme.panel
+  Theme.govIdleBr = Theme.rule
+
+  Theme.built = true
+end
+
+--------------------------------------------------------------------------
+-- Value -> colour
+--------------------------------------------------------------------------
+
+function Theme.batteryColor(pct)
+  if pct == nil then return Theme.dim end
+  if pct >= 50 then return Theme.lime end
+  if pct >= 20 then return Theme.warn end
+  return Theme.crit
+end
+
+-- 3.50V/cell is the conventional "land now" threshold on a LiPo.
+function Theme.cellColor(v)
+  if v == nil then return Theme.dim end
+  if v <= 3.50 then return Theme.crit end
+  if v <= 3.65 then return Theme.warn end
+  return Theme.ink
+end
+
+function Theme.tempColor(c)
+  if c == nil then return Theme.dim end
+  if c >= 110 then return Theme.crit end
+  if c >= 95  then return Theme.warn end
+  return Theme.ink
+end
+
+function Theme.becColor(v)
+  if v == nil then return Theme.dim end
+  if v < 4.8 then return Theme.crit end
+  if v < 5.1 then return Theme.warn end
+  return Theme.ink
+end
+
+function Theme.linkColor(pct)
+  if pct == nil or pct <= 0 then return Theme.crit end
+  if pct >= 60 then return Theme.lime end
+  if pct >= 40 then return Theme.warn end
+  return Theme.crit
+end
+
+-- Governor states that mean the rotor is driven, in trouble, or stopped.
+local GOV_RUNNING = { ACTIVE=true, SPOOLUP=true, RECOVERY=true, BAILOUT=true, BYPASS=true }
+local GOV_CRIT    = { ["THR-OFF"]=true, ["LOST-HS"]=true }
+
+function Theme.govColors(state)
+  if GOV_RUNNING[state] then
+    return Theme.lime, Theme.govRunBg, Theme.govRunBr
+  elseif GOV_CRIT[state] then
+    return Theme.crit, Theme.govCritBg, Theme.govCritBr
+  elseif state == "IDLE" or state == "AUTOROT" then
+    return Theme.warn, Theme.govWarnBg, Theme.govWarnBr
+  end
+  return Theme.dim, Theme.govIdleBg, Theme.govIdleBr
+end
+
+return Theme
+
+end
+
+  end)()
+  factory(ZD)
+end
+
+-- ======== src/layout.lua ========
+do
+  local factory = (function()
+-- Layer 4: Layout engine.
+--
+-- Produces a table of {x,y,w,h} regions for the screen the widget is running
+-- on. Pure arithmetic and no drawing, so the whole thing is testable off-radio.
+--
+-- Two density classes rather than one scaled layout. The targets are different
+-- shapes, not one shape at two sizes: 800x480 on the TX16S Mk3 against 480x320
+-- on the TX15 is 0.60 the width but 0.67 the height, and 40% of the area. More
+-- to the point, EdgeTX has a fixed ladder of font sizes, so text cannot shrink
+-- continuously - panels have to rearrange instead of scaling.
+--
+-- The geometry below reproduces tools/render_layout.py at both anchor sizes.
+-- Other resolutions in the same class keep the class's fonts and paddings and
+-- distribute the leftover height proportionally.
+
+return function(ZD)
+
+local Layout = {}
+ZD.Layout = Layout
+
+Layout.ROOMY_MIN_WIDTH = 700
+
+-- Per-class constants. Vertical figures marked "anchor" are the design values
+-- at that class's reference height and are scaled when the screen differs.
+local CLASS = {
+  roomy = {
+    name = "roomy", refH = 480,
+    pad = 10, gap = 10, barW = 96, rightW = 274,
+    topH = 40, stripH = 44, contentGap = 6, stripGap = 8,
+    chipH = 75, colGapV = 8,
+    heroGapV = 8, batShare = 0.508,
+    govH = 86, rowGapV = 8, tileH = 132, tileGapH = 5,
+    logoW = 252, logoH = 142,
+  },
+  tight = {
+    name = "tight", refH = 320,
+    pad = 6, gap = 6, barW = 64, rightW = 168,
+    topH = 28, stripH = 36, contentGap = 6, stripGap = 8,
+    chipH = 61, colGapV = 7,
+    heroGapV = 6, batShare = 0.5,
+    govH = 53, rowGapV = 7, tileH = 88, tileGapH = 3,
+    logoW = 153, logoH = 86,
+  },
+}
+
+local function rect(x, y, w, h)
+  return { x = x, y = y, w = w, h = h }
+end
+
+local function round(v) return math.floor(v + 0.5) end
+
+function Layout.classFor(w)
+  return (w >= Layout.ROOMY_MIN_WIDTH) and "roomy" or "tight"
+end
+
+-- Build the layout for a screen. Returns a table of regions plus the class
+-- name, so the renderer can pick fonts and decide what to abbreviate.
+function Layout.build(w, h)
+  local className = Layout.classFor(w)
+  local C = CLASS[className]
+  local L = { class = className, w = w, h = h, c = C }
+
+  -- Bands
+  L.top       = rect(0, 0, w, C.topH)
+  L.topRule   = C.topH
+  L.stripRule = h - C.stripH
+  L.strip     = rect(0, L.stripRule + 1, w, C.stripH - 1)
+
+  local contentTop = C.topH + C.contentGap
+  local contentH   = (L.stripRule - C.stripGap) - contentTop
+  L.content = rect(0, contentTop, w, contentH)
+
+  -- Columns. Hero width is whatever is left, so the layout adapts to a screen
+  -- wider than its anchor without stretching the fixed-width side columns.
+  local barX   = C.pad
+  local heroX  = barX + C.barW + C.gap
+  local rightX = w - C.pad - C.rightW
+  local heroW  = rightX - C.gap - heroX
+  L.heroTooNarrow = heroW < 160
+
+  -- --- left column: cell chip pinned top, gauge beneath -------------------
+  local chipH = C.chipH
+  L.cell = rect(barX, contentTop, C.barW, chipH)
+  local barY = contentTop + chipH + C.colGapV
+  L.bar = rect(barX, barY, C.barW, contentH - chipH - C.colGapV)
+
+  -- --- hero column: battery above, headspeed below ------------------------
+  local heroAvail = contentH - C.heroGapV
+  local batH = round(heroAvail * C.batShare)
+  L.battery   = rect(heroX, contentTop, heroW, batH)
+  L.headspeed = rect(heroX, contentTop + batH + C.heroGapV, heroW,
+                     heroAvail - batH)
+
+  -- --- right column: governor, tile row, logo -----------------------------
+  -- Governor and the tile row are fixed; the logo takes the remainder, so a
+  -- taller screen grows the brand block rather than stretching the data.
+  local govH  = C.govH
+  local tileH = C.tileH
+  L.gov = rect(rightX, contentTop, C.rightW, govH)
+
+  local tileY = contentTop + govH + C.rowGapV
+  local tileW = math.floor((C.rightW - C.tileGapH * 2) / 3)
+  L.tiles = {}
+  for i = 1, 3 do
+    L.tiles[i] = rect(rightX + (tileW + C.tileGapH) * (i - 1), tileY, tileW, tileH)
+  end
+  -- Give any rounding slack to the last tile so the row ends flush.
+  L.tiles[3].w = (rightX + C.rightW) - L.tiles[3].x
+
+  local logoY = tileY + tileH + C.rowGapV
+  local logoBox = rect(rightX, logoY, C.rightW, (contentTop + contentH) - logoY)
+  L.logoBox = logoBox
+
+  -- The mark is centred in whatever space is left, never stretched: an
+  -- unevenly scaled logo is worse than a slightly smaller one.
+  local lw, lh = C.logoW, C.logoH
+  if lh > logoBox.h then
+    lw = round(lw * logoBox.h / lh)
+    lh = logoBox.h
+  end
+  L.logo = rect(logoBox.x + round((logoBox.w - lw) / 2),
+                logoBox.y + round((logoBox.h - lh) / 2), lw, lh)
+
+  return L
+end
+
+-- Standby layout: the mark and tagline, centred. Used when there is no
+-- telemetry worth drawing.
+function Layout.buildStandby(w, h)
+  local className = Layout.classFor(w)
+  local C = CLASS[className]
+  local L = { class = className, w = w, h = h, c = C }
+
+  L.top       = rect(0, 0, w, C.topH)
+  L.topRule   = C.topH
+  L.stripRule = h - C.stripH
+  L.strip     = rect(0, L.stripRule + 1, w, C.stripH - 1)
+
+  local top = C.topH + C.contentGap
+  local avail = (L.stripRule - C.stripGap) - top
+
+  -- Reserve room beneath the mark for the tagline and the status line.
+  local reserve = (className == "roomy") and 96 or 62
+  local boxH = avail - reserve
+  local lw, lh = 500, 281
+  if className ~= "roomy" then lw, lh = 300, 169 end
+  if lh > boxH then
+    lw = round(lw * boxH / lh)
+    lh = boxH
+  end
+  if lw > w - C.pad * 2 then
+    lh = round(lh * (w - C.pad * 2) / lw)
+    lw = w - C.pad * 2
+  end
+
+  L.logo    = rect(round((w - lw) / 2), top, lw, lh)
+  L.divider = rect(round(w * 0.25), L.logo.y + lh + 14, round(w * 0.5), 1)
+  L.tagline = rect(0, L.divider.y + 10, w, 16)
+  L.status  = rect(0, L.tagline.y + (className == "roomy" and 30 or 22), w, 20)
+  return L
+end
+
+return Layout
+
+end
+
+  end)()
+  factory(ZD)
+end
+
+-- ======== src/dashboard.lua ========
+do
+  local factory = (function()
+-- Layer 6: The dashboard renderer.
+--
+-- Retained-mode LVGL: every object is created once in build(), and refresh()
+-- pushes only the properties whose values actually changed. A shadow table
+-- holds the last value written to each object so an unchanged frame costs no
+-- host calls at all.
+--
+-- Reads State and Layout; owns no telemetry logic of its own. If a number
+-- looks wrong on screen, this file is almost never where the bug is.
+
+return function(ZD)
+
+local Host   = ZD.Host
+local State  = ZD.State
+local Theme  = ZD.Theme
+local Layout = ZD.Layout
+local RF2    = ZD.RF2
+
+local Dashboard = {}
+ZD.Dashboard = Dashboard
+
+local ASSETS = "/WIDGETS/ZelionDash/"
+
+local function flag(n, f) return rawget(_G, n) or f end
+local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
+local ALIGN_RIGHT  = flag("RIGHT", 0)
+
+local GOV_STATES = {
+  [0]="OFF", [1]="IDLE", [2]="SPOOLUP", [3]="RECOVERY", [4]="ACTIVE",
+  [5]="THR-OFF", [6]="LOST-HS", [7]="AUTOROT", [8]="BAILOUT", [9]="BYPASS",
+}
+
+local V, SHADOW = {}, {}
+
+--------------------------------------------------------------------------
+-- Retained-object helpers
+--------------------------------------------------------------------------
+
+local function remember(obj, props)
+  local st = {}
+  for k, v in pairs(props) do st[k] = v end
+  st.visible = true
+  SHADOW[obj] = st
+  return obj
+end
+
+local function setp(obj, props)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if not st then st = {}; SHADOW[obj] = st end
+  local changed = false
+  for k, v in pairs(props) do
+    if st[k] ~= v then st[k] = v; changed = true end
+  end
+  if changed then obj:set(props) end
+end
+
+local function setVisible(obj, vis)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if not st then st = {}; SHADOW[obj] = st end
+  vis = vis and true or false
+  if st.visible == vis then return end
+  st.visible = vis
+  if vis then obj:show() else obj:hide() end
+end
+
+local function label(x, y, w, text, font, color, align)
+  local p = { x=x, y=y, w=w or 0, h=0, text=text or "",
+              font=font or 0, color=color or Theme.ink, align=align or 0 }
+  return remember(lvgl.label(p), p)
+end
+
+local function rectangle(x, y, w, h, color, filled, rounded, thickness)
+  local p = { x=x, y=y, w=w, h=h, color=color,
+              filled=filled and 1 or 0, rounded=rounded or 0,
+              thickness=thickness or 1 }
+  return remember(lvgl.rectangle(p), p)
+end
+
+-- A panel is a fill plus a separate border so the two can be recoloured
+-- independently - the governor block changes both as its state changes.
+local function panel(r, fill, border, rounded)
+  return {
+    fill   = rectangle(r.x, r.y, r.w, r.h, fill,   true,  rounded or 5, 1),
+    border = rectangle(r.x, r.y, r.w, r.h, border, false, rounded or 5, 1),
+  }
+end
+
+local function setPanel(p, fill, border)
+  setp(p.fill,   { color = fill })
+  setp(p.border, { color = border })
+end
+
+--------------------------------------------------------------------------
+-- Formatting
+--------------------------------------------------------------------------
+
+local function fmt(v, pattern, scale)
+  if v == nil then return "--" end
+  return string.format(pattern, v * (scale or 1))
+end
+
+local function fmtInt(role)
+  local v, ok = State.get(role)
+  if not ok then return "--" end
+  return string.format("%d", math.floor(v + 0.5))
+end
+
+local function fmtExtreme(prefix, value, pattern)
+  if value == nil then return prefix .. " --" end
+  return prefix .. " " .. string.format(pattern, value)
+end
+
+local function clockText(seconds)
+  seconds = math.max(0, math.floor(seconds or 0))
+  return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- Sag is the gap between the pack's best cell voltage this flight and what it
+-- is delivering now: the number that actually says how the pack is holding up.
+local function cellSag()
+  local now, ok = State.get("cellVoltage")
+  local best = State.max("cellVoltage")
+  if not ok or best == nil then return nil end
+  local sag = best - now
+  if sag < 0 then sag = 0 end
+  return sag
+end
+
+local function govText()
+  local g, ok = State.get("governor")
+  if not ok then return "--" end
+  return GOV_STATES[math.floor(g)] or "UNKNOWN"
+end
+
+--------------------------------------------------------------------------
+-- Standby
+--------------------------------------------------------------------------
+
+-- Nothing truthful to draw: no link, and none of the values a dashboard
+-- exists to show. Anything less strict would blank the screen mid-flight
+-- during a telemetry dropout, which is precisely when it must not.
+function Dashboard.shouldStandby()
+  if State.linkConnected == true then return false end
+  if State.valid("headspeed") or State.valid("packVoltage")
+     or State.valid("batteryPercent") or State.valid("cellVoltage")
+     or State.valid("current") then
+    return false
+  end
+  return true
+end
+
+--------------------------------------------------------------------------
+-- Build
+--------------------------------------------------------------------------
+
+local L
+local mode  -- "dash" | "standby"
+
+local function buildTopBar()
+  local F = Theme.font
+  V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
+                      F.small + F.bold, Theme.ink)
+  V.timer = label(0, L.class == "roomy" and 4 or 2, L.w, "",
+                  F.mid + F.bold, Theme.ink, ALIGN_CENTER)
+
+  -- Signal bars, then the TX battery glyph at the far right.
+  local barsX = L.w - L.c.pad - (L.class == "roomy" and 200 or 128)
+  local step  = L.class == "roomy" and 10 or 8
+  local unit  = L.class == "roomy" and 6 or 5
+  local baseY = L.class == "roomy" and 30 or 22
+  V.signal = {}
+  for i = 1, 4 do
+    local bh = 6 + (i - 1) * 4
+    V.signal[i] = rectangle(barsX + (i - 1) * step, baseY - bh, unit, bh,
+                            Theme.rule, true, 0, 0)
+  end
+
+  local bw, bh = (L.class == "roomy" and 16 or 13), (L.class == "roomy" and 22 or 16)
+  local bx = L.w - L.c.pad - 36
+  local by = L.class == "roomy" and 14 or 10
+  rectangle(bx + math.floor((bw - 8) / 2), by - 4, 8, 3, Theme.dim, true, 1, 0)
+  V.txBody = panel({x=bx, y=by, w=bw, h=bh}, Theme.track, Theme.dim, 3)
+  V.txFill = rectangle(bx + 2, by + bh - 3, bw - 4, 1, Theme.lime, true, 2, 0)
+  V.txGeom = { x=bx, y=by, w=bw, h=bh }
+  V.txText = label(L.w - L.c.pad - 30, L.class == "roomy" and 13 or 9, 30, "",
+                   Theme.font.small + Theme.font.bold, Theme.ink)
+
+  lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
+end
+
+local function buildLeftColumn()
+  local F = Theme.font
+  local c, b = L.cell, L.bar
+
+  V.cellPanel = panel(c, Theme.bg, Theme.limeDark, 6)
+  label(c.x, c.y + 6, c.w, "CELL", F.small + F.bold, Theme.lime, ALIGN_CENTER)
+  V.cellValue = label(c.x, c.y + (L.class == "roomy" and 20 or 16), c.w, "",
+                      F.large + F.bold, Theme.ink, ALIGN_CENTER)
+  V.cellMin = label(c.x, c.y + c.h - (L.class == "roomy" and 16 or 14), c.w, "",
+                    F.small, Theme.peak, ALIGN_CENTER)
+
+  -- Brand-green border: the gauge is the Zelion instrument on this screen.
+  rectangle(b.x, b.y, b.w, b.h, Theme.track, true,  7, 1)
+  rectangle(b.x, b.y, b.w, b.h, Theme.lime,  false, 7, 2)
+  V.barFill = rectangle(b.x + 3, b.y + b.h - 4, b.w - 6, 1, Theme.lime, true, 5, 0)
+  V.barGeom = { x=b.x + 3, y=b.y + 3, w=b.w - 6, h=b.h - 6 }
+end
+
+local function buildHero()
+  local F = Theme.font
+  local roomy = L.class == "roomy"
+  local padX, footY = 16, roomy and 150 or 95
+
+  local r = L.battery
+  panel(r, Theme.panel, Theme.rule)
+  label(r.x + padX, r.y + 12, r.w - padX * 2, "BATTERY", F.small + F.bold, Theme.dim)
+  V.batValue = label(r.x + padX, r.y + (roomy and 30 or 22), r.w - padX * 2, "",
+                     F.huge + F.bold, Theme.ink)
+  V.batUnit  = label(r.x + r.w - padX - 40, r.y + (roomy and 60 or 44), 40, "%",
+                     F.mid, Theme.dim, ALIGN_RIGHT)
+  V.batPack  = label(r.x + padX, r.y + r.h - (roomy and 62 or 46), r.w - padX * 2, "",
+                     F.mid + F.bold, Theme.ink, ALIGN_RIGHT)
+  lvgl.hline({ x=r.x + padX, y=r.y + r.h - (roomy and 30 or 24),
+               w=r.w - padX * 2, h=1, color=Theme.rule })
+  V.batFoot = {}
+  local slots = roomy and 4 or 3
+  local slotW = math.floor((r.w - padX * 2) / slots)
+  for i = 1, slots do
+    V.batFoot[i] = label(r.x + padX + slotW * (i - 1), r.y + r.h - (roomy and 22 or 18),
+                         slotW, "", F.small, Theme.dim)
+  end
+
+  r = L.headspeed
+  panel(r, Theme.panel, Theme.rule)
+  label(r.x + padX, r.y + 12, r.w - padX * 2, "HEADSPEED", F.small + F.bold, Theme.dim)
+  V.hsValue = label(r.x + padX, r.y + (roomy and 30 or 22), r.w - padX * 2, "",
+                    F.huge + F.bold, Theme.ink)
+  label(r.x + r.w - padX - 60, r.y + (roomy and 76 or 54), 60, "RPM",
+        F.small + F.bold, Theme.dim, ALIGN_RIGHT)
+  lvgl.hline({ x=r.x + padX, y=r.y + r.h - (roomy and 30 or 24),
+               w=r.w - padX * 2, h=1, color=Theme.rule })
+  V.hsFoot = {}
+  local hslots = roomy and 3 or 2
+  local hslotW = math.floor((r.w - padX * 2) / hslots)
+  for i = 1, hslots do
+    V.hsFoot[i] = label(r.x + padX + hslotW * (i - 1), r.y + r.h - (roomy and 22 or 18),
+                        hslotW, "", F.small, Theme.dim)
+  end
+end
+
+local function buildRightColumn()
+  local F = Theme.font
+  local roomy = L.class == "roomy"
+
+  local g = L.gov
+  V.govPanel = panel(g, Theme.govIdleBg, Theme.govIdleBr)
+  label(g.x, g.y + 8, g.w, "GOVERNOR", F.small + F.bold, Theme.dim, ALIGN_CENTER)
+  V.govState = label(g.x, g.y + (roomy and 28 or 20), g.w, "",
+                     F.large + F.bold, Theme.dim, ALIGN_CENTER)
+
+  -- Labels carry their units on both screens; at 54px wide there is no room
+  -- for a separate unit glyph, and consistency beats a spare pixel.
+  local defs = roomy
+    and { {"CURRENT A"}, {"ESC °C"}, {"BEC V"} }
+    or  { {"CURR A"},    {"ESC °C"}, {"BEC V"} }
+  V.tiles = {}
+  for i = 1, 3 do
+    local t = L.tiles[i]
+    panel(t, Theme.panel, Theme.rule)
+    label(t.x + 6, t.y + 7, t.w - 12, defs[i][1], F.small, Theme.dim)
+    V.tiles[i] = {
+      value = label(t.x + 6, t.y + (roomy and 26 or 22), t.w - 12, "",
+                    F.mid + F.bold, Theme.ink),
+      foot  = label(t.x + 6, t.y + t.h - 16, t.w - 12, "", F.small, Theme.peak),
+    }
+  end
+
+  -- No frame: a panel border fought the mark's own outline.
+  lvgl.image({ x=L.logo.x, y=L.logo.y, w=L.logo.w, h=L.logo.h, fill=false,
+               file=ASSETS .. (roomy and "logo_panel.png" or "logo_small.png") })
+end
+
+local function buildStrip()
+  local F = Theme.font
+  lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
+  local y = L.stripRule + (L.class == "roomy" and 14 or 10)
+  V.flights = label(L.c.pad, y, 300, "", F.small, Theme.dim)
+  if L.class == "roomy" then
+    label(0, y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER", F.small, Theme.dim, ALIGN_CENTER)
+  end
+  V.link = label(L.w - L.c.pad - 160, y, 160, "", F.small, Theme.steel, ALIGN_RIGHT)
+end
+
+local function buildStandby()
+  local F = Theme.font
+  V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
+                      F.small + F.bold, Theme.ink)
+  lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
+
+  lvgl.image({ x=L.logo.x, y=L.logo.y, w=L.logo.w, h=L.logo.h, fill=false,
+               file=ASSETS .. "logo_standby.png" })
+  lvgl.hline({ x=L.divider.x, y=L.divider.y, w=L.divider.w, h=1, color=Theme.rule })
+  label(0, L.tagline.y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER",
+        F.small, Theme.dim, ALIGN_CENTER)
+  V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
+                   F.mid + F.bold, Theme.warn, ALIGN_CENTER)
+
+  lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
+  V.flights = label(L.c.pad, L.stripRule + (L.class == "roomy" and 14 or 10),
+                    300, "", F.small, Theme.dim)
+end
+
+function Dashboard.build(standby)
+  if type(lvgl) ~= "table" then return end
+  Theme.build()
+  lvgl.clear()
+  V, SHADOW = {}, {}
+  mode = standby and "standby" or "dash"
+
+  if standby then
+    L = Layout.buildStandby(Host.lcdW, Host.lcdH)
+    rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
+    buildStandby()
+  else
+    L = Layout.build(Host.lcdW, Host.lcdH)
+    rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
+    buildTopBar()
+    buildLeftColumn()
+    buildHero()
+    buildRightColumn()
+    buildStrip()
+  end
+  Dashboard.update()
+end
+
+Dashboard.mode = function() return mode end
+
+--------------------------------------------------------------------------
+-- Update
+--------------------------------------------------------------------------
+
+local function flightsText()
+  if RF2.statsStatus == "ok" and RF2.totalFlights then
+    local t = string.format("%d FLIGHTS", RF2.totalFlights)
+    if RF2.totalFlightSeconds then
+      local s = RF2.totalFlightSeconds
+      t = t .. string.format(" · %d:%02d:%02d", math.floor(s / 3600),
+                             math.floor(s % 3600 / 60), s % 60)
+    end
+    return t
+  end
+  return ""
+end
+
+local function updateTopBar()
+  setp(V.modelName, { text = RF2.craftName or Host.modelName() })
+  setp(V.timer, { text = clockText(State.flightSeconds) })
+
+  local lq = State.valid("linkQuality") and State.num("linkQuality") or nil
+  local bars = 0
+  if lq then
+    bars = (lq >= 80 and 4) or (lq >= 60 and 3) or (lq >= 40 and 2)
+           or (lq >= 20 and 1) or 0
+  end
+  local col = Theme.linkColor(lq)
+  for i = 1, 4 do
+    setp(V.signal[i], { color = (i <= bars) and col or Theme.rule })
+  end
+
+  local tx = State.valid("txVoltage") and State.num("txVoltage") or nil
+  if tx then
+    -- 2S: 7.0V empty, 8.4V full.
+    local pct = math.max(0, math.min(1, (tx - 7.0) / 1.4))
+    local fh = math.floor((V.txGeom.h - 4) * pct)
+    setp(V.txFill, { y = V.txGeom.y + V.txGeom.h - 2 - fh,
+                     h = math.max(1, fh),
+                     color = pct > 0.5 and Theme.lime
+                             or (pct > 0.25 and Theme.warn or Theme.crit) })
+    setVisible(V.txFill, fh > 0)
+    setp(V.txText, { text = string.format("%.1f", tx) })
+  else
+    setVisible(V.txFill, false)
+    setp(V.txText, { text = "--" })
+  end
+end
+
+local function updateLeftColumn()
+  local cell, ok = State.get("cellVoltage")
+  setp(V.cellValue, { text = ok and string.format("%.2f", cell) or "--",
+                      color = ok and Theme.cellColor(cell) or Theme.dim })
+  setp(V.cellMin, { text = fmtExtreme("MIN", State.min("cellVoltage"), "%.2f") })
+
+  local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
+  if pct then
+    local g = V.barGeom
+    local fh = math.floor(g.h * math.max(0, math.min(100, pct)) / 100)
+    setp(V.barFill, { y = g.y + g.h - fh, h = math.max(1, fh),
+                      color = Theme.batteryColor(pct) })
+    setVisible(V.barFill, fh > 0)
+  else
+    setVisible(V.barFill, false)
+  end
+end
+
+local function updateHero()
+  local roomy = L.class == "roomy"
+
+  local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
+  setp(V.batValue, { text = pct and string.format("%d", math.floor(pct + 0.5)) or "--",
+                     color = pct and Theme.ink or Theme.dim })
+  local pack, packOk = State.get("packVoltage")
+  setp(V.batPack, { text = packOk and string.format("%.1f V", pack) or "--",
+                    color = packOk and Theme.ink or Theme.dim })
+
+  local foots = {
+    fmtExtreme("MIN", State.min("packVoltage"), "%.1fV"),
+    fmtExtreme("SAG", cellSag(), "%.2f"),
+    State.valid("capacity") and string.format("%d mAh", math.floor(State.num("capacity")))
+      or "-- mAh",
+    State.valid("cellCount") and string.format("%dS", math.floor(State.num("cellCount")))
+      or "--S",
+  }
+  for i = 1, #V.batFoot do
+    setp(V.batFoot[i], { text = foots[i] or "" })
+  end
+
+  local hs, hsOk = State.get("headspeed")
+  setp(V.hsValue, { text = hsOk and string.format("%d", math.floor(hs + 0.5)) or "--",
+                    color = hsOk and Theme.ink or Theme.dim })
+  local hfoots = {
+    fmtExtreme("MAX", State.max("headspeed"), "%d"),
+    State.valid("tailSpeed") and string.format("TAIL %d", math.floor(State.num("tailSpeed")))
+      or "TAIL --",
+    State.valid("throttle") and string.format("THR %d%%", math.floor(State.num("throttle")))
+      or "THR --",
+  }
+  for i = 1, #V.hsFoot do
+    setp(V.hsFoot[i], { text = hfoots[i] or "" })
+  end
+end
+
+local function updateRightColumn()
+  local g = govText()
+  local fg, bg, br = Theme.govColors(g)
+  setPanel(V.govPanel, bg, br)
+  setp(V.govState, { text = g, color = fg })
+
+  local cur, curOk = State.get("current")
+  setp(V.tiles[1].value, { text = curOk and string.format("%d", math.floor(cur + 0.5)) or "--",
+                           color = curOk and Theme.ink or Theme.dim })
+  setp(V.tiles[1].foot, { text = fmtExtreme("MAX", State.max("current"), "%d") })
+
+  local esc, escOk = State.get("escTemperature")
+  setp(V.tiles[2].value, { text = escOk and string.format("%d", math.floor(esc + 0.5)) or "--",
+                           color = escOk and Theme.tempColor(esc) or Theme.dim })
+  setp(V.tiles[2].foot, { text = fmtExtreme("MAX", State.max("escTemperature"), "%d") })
+
+  local bec, becOk = State.get("becVoltage")
+  setp(V.tiles[3].value, { text = becOk and string.format("%.1f", bec) or "--",
+                           color = becOk and Theme.becColor(bec) or Theme.dim })
+  setp(V.tiles[3].foot, { text = fmtExtreme("MIN", State.min("becVoltage"), "%.1f") })
+end
+
+local function updateStrip()
+  setp(V.flights, { text = flightsText() })
+  local text, color = "", Theme.steel
+  if RF2.available() then
+    if State.linkConnected == false then
+      text, color = "RF2 DISCONNECTED", Theme.dim
+    elseif RF2.registered then
+      text = "RF2 LINKED"
+    end
+  end
+  setp(V.link, { text = text, color = color })
+end
+
+function Dashboard.update()
+  if type(lvgl) ~= "table" or not V.flights then return end
+  if mode == "standby" then
+    setp(V.modelName, { text = RF2.craftName or Host.modelName() })
+    setp(V.flights, { text = flightsText() })
+    return
+  end
+  updateTopBar()
+  updateLeftColumn()
+  updateHero()
+  updateRightColumn()
+  updateStrip()
+end
+
+return Dashboard
+
+end
+
+  end)()
+  factory(ZD)
+end
+
 -- ======== src/widget.lua ========
 do
   local factory = (function()
 -- Widget entry point.
 --
--- Phase 2/3 deliverable: a sensor diagnostics screen. It renders one row per
--- role showing what that role bound to, how it bound, and what it currently
--- reads. This is the screen to look at when a panel on the finished dashboard
--- shows dashes, and it is deliberately the first thing that exists - it proves
--- the resolver against real hardware before any layout work is committed to.
+-- Owns the EdgeTX lifecycle and nothing else: which screen is showing, when to
+-- rebuild it, and servicing telemetry from both refresh() and background().
 --
--- Drawing here uses plain lcd.draw* rather than LVGL. That is intentional for
--- scaffolding: it is trivially portable across both target resolutions and
--- will be replaced wholesale by the real renderer once the layout lands.
+-- Two screens. The dashboard is the product; the sensor map is a diagnostics
+-- view, reachable from the settings, that shows which telemetry sensor got
+-- bound to each role. It is the first place to look when a panel reads "--".
 
 return function(ZD)
 
@@ -1451,53 +2262,32 @@ local Config  = ZD.Config
 local Sensors = ZD.Sensors
 local RF2     = ZD.RF2
 local State   = ZD.State
+local Theme   = ZD.Theme
+local Dashboard = ZD.Dashboard
 
 local Widget = {}
 ZD.Widget = Widget
 
-local function flag(name, fallback)
-  return rawget(_G, name) or fallback
-end
+local function flag(n, f) return rawget(_G, n) or f end
+local SOURCE = flag("SOURCE", 1)
+local BOOL   = flag("BOOL", 2)
+local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
-local SMLSIZE = flag("SMLSIZE", 0)
-local BOLD    = flag("BOLD", 0)
-local RIGHT   = flag("RIGHT", 0)
-local SOURCE  = flag("SOURCE", 1)
-local BOOL    = flag("BOOL", 2)
-
-local EVT_NEXT = flag("EVT_VIRTUAL_NEXT", -1)
-local EVT_PREV = flag("EVT_VIRTUAL_PREV", -2)
-
-local C = {}
-local function initColors()
-  local rgb = lcd.RGB
-  C.bg     = rgb(0, 0, 0)
-  C.text   = rgb(235, 238, 242)
-  C.dim    = rgb(124, 134, 148)
-  C.line   = rgb(42, 45, 51)
-  C.ok     = rgb(34, 197, 94)
-  C.warn   = rgb(240, 180, 41)
-  C.bad    = rgb(239, 68, 68)
-  C.accent = rgb(95, 211, 188)
-end
+Widget.showSensors = false
+local built = nil          -- "dash" | "standby" | "sensors" | nil
+local scroll = 0
 
 --------------------------------------------------------------------------
--- Row formatting
+-- Diagnostics screen (immediate mode - it is a tool, not the product)
 --------------------------------------------------------------------------
 
--- How a role bound is worth showing: "unit" means the widget guessed, and a
--- guess is exactly the thing a pilot should sanity-check before flying.
-local HOW_LABEL = {
-  override = "cfg",
-  name     = "auto",
-  unit     = "guess",
-}
+local HOW = { override = "cfg", name = "auto", unit = "guess" }
 
 local function statusColor(row)
-  if row.status == "ok" or row.status == "derived" then return C.ok end
-  if row.status == "insane" then return C.bad end
-  if row.important then return C.warn end
-  return C.dim
+  if row.status == "ok" or row.status == "derived" then return Theme.lime end
+  if row.status == "insane" then return Theme.crit end
+  if row.important then return Theme.warn end
+  return Theme.dim
 end
 
 local function formatValue(row)
@@ -1512,47 +2302,29 @@ local function formatValue(row)
   return string.format("%.2f", v)
 end
 
---------------------------------------------------------------------------
--- Drawing
---------------------------------------------------------------------------
-
-local scroll = 0
-
-local function drawScreen(widget)
+local function drawSensorMap()
   local w, h = Host.lcdW, Host.lcdH
   local compact = w < 700
-
-  lcd.drawFilledRectangle(0, 0, w, h, C.bg)
+  lcd.drawFilledRectangle(0, 0, w, h, Theme.bg)
 
   local pad     = compact and 6 or 12
   local headerH = compact and 20 or 28
   local rowH    = compact and 14 or 20
 
-  -- Header
-  -- The full title would run into the RF Tool status at 480px wide.
+  local rows, bound = Sensors.report(), 0
+  for _, r in ipairs(rows) do if r.sensor then bound = bound + 1 end end
+
   lcd.drawText(pad, compact and 2 or 5,
-               compact and "Sensors" or "ZelionDash - sensor map",
-               BOLD + C.accent)
-  local bound = 0
-  local rows = Sensors.report()
-  for _, r in ipairs(rows) do
-    if r.sensor then bound = bound + 1 end
-  end
+               compact and "Sensors" or "ZelionDash - sensor map", BOLD + Theme.steel)
   lcd.drawText(w - pad, compact and 2 or 5,
-               string.format("%d/%d bound", bound, #rows),
-               RIGHT + SMLSIZE + C.dim)
-  lcd.drawLine(0, headerH, w, headerH, SOLID, C.line)
+               string.format("%d/%d bound", bound, #rows), RIGHT + SMLSIZE + Theme.dim)
+  lcd.drawLine(0, headerH, w, headerH, SOLID, Theme.rule)
 
-  -- Column layout, proportional so both screen sizes stay readable.
-  local colRole   = pad
-  local colSensor = math.floor(w * 0.34)
-  local colHow    = math.floor(w * 0.56)
-  local colValue  = w - pad
-
-  local footerH  = compact and 16 or 22
-  local listTop  = headerH + (compact and 3 or 6)
-  local listH    = h - listTop - footerH
-  local visible  = math.max(1, math.floor(listH / rowH))
+  local colRole, colSensor = pad, math.floor(w * 0.34)
+  local colHow, colValue   = math.floor(w * 0.56), w - pad
+  local footerH = compact and 16 or 22
+  local listTop = headerH + (compact and 3 or 6)
+  local visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
 
   if scroll > #rows - visible then scroll = math.max(0, #rows - visible) end
   if scroll < 0 then scroll = 0 end
@@ -1560,99 +2332,98 @@ local function drawScreen(widget)
   for i = 1, visible do
     local row = rows[i + scroll]
     if row then
-      local y = listTop + (i - 1) * rowH
-      local color = statusColor(row)
-      lcd.drawText(colRole, y, row.label, SMLSIZE + (row.important and BOLD or 0) + C.text)
+      local y, color = listTop + (i - 1) * rowH, statusColor(row)
+      lcd.drawText(colRole, y, row.label,
+                   SMLSIZE + (row.important and BOLD or 0) + Theme.ink)
       lcd.drawText(colSensor, y, row.sensor or "-", SMLSIZE + color)
-      lcd.drawText(colHow, y, row.how and HOW_LABEL[row.how] or "", SMLSIZE + C.dim)
+      lcd.drawText(colHow, y, row.how and HOW[row.how] or "", SMLSIZE + Theme.dim)
       lcd.drawText(colValue, y, formatValue(row), RIGHT + SMLSIZE + color)
     end
   end
 
-  -- Footer: the two things that explain most "why is it blank" questions.
   local fy = h - footerH + (compact and 1 or 3)
-  local note
   if #Config.problems > 0 then
-    note = "cfg: " .. Config.problems[1]
-    lcd.drawText(pad, fy, note, SMLSIZE + C.bad)
+    lcd.drawText(pad, fy, "cfg: " .. Config.problems[1], SMLSIZE + Theme.crit)
   else
-    note = State.armed and "ARMED" or "disarmed"
-    note = note .. "  " .. (RF2.craftName or Host.modelName())
+    local note = (State.armed and "ARMED" or "disarmed") .. "  " ..
+                 (RF2.craftName or Host.modelName())
     if #Sensors.unresolved > 0 then
       note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
     end
-    lcd.drawText(pad, fy, note, SMLSIZE + C.dim)
-  end
-
-  -- RF Tool status sits on the header line, where there is room on both
-  -- screen sizes. Absent RF Tool draws nothing at all rather than an error:
-  -- it is an optional enhancement, not a missing dependency.
-  if RF2.available() then
-    local rfNote, rfColor
-    if RF2.statsStatus == "ok" and RF2.totalFlights then
-      rfNote = string.format("RF2 %d flights", RF2.totalFlights)
-      rfColor = C.ok
-    elseif RF2.statsStatus == "unsupported" then
-      rfNote, rfColor = "RF2 (needs MSP 12.9)", C.warn
-    elseif RF2.connected == false then
-      rfNote, rfColor = "RF2 disconnected", C.dim
-    elseif RF2.registered then
-      rfNote, rfColor = "RF2 linked", C.dim
-    else
-      rfNote, rfColor = "RF2 found", C.dim
-    end
-    lcd.drawText(colSensor, compact and 2 or 5, rfNote, SMLSIZE + rfColor)
+    lcd.drawText(pad, fy, note, SMLSIZE + Theme.dim)
   end
   if #rows > visible then
     lcd.drawText(w - pad, fy,
                  string.format("%d-%d", scroll + 1, math.min(#rows, scroll + visible)),
-                 RIGHT + SMLSIZE + C.dim)
+                 RIGHT + SMLSIZE + Theme.dim)
   end
 end
 
 --------------------------------------------------------------------------
--- Widget lifecycle
+-- Lifecycle
 --------------------------------------------------------------------------
 
-local function readOptions(widget)
+local function serviceOpts(widget)
   local opts = widget.options or {}
   State.armSwitch = opts.ArmSwitch
-  return opts.HoldSwitch and Host.read(opts.HoldSwitch) or nil
+  local hold = false
+  if opts.HoldSwitch and opts.HoldSwitch ~= 0 then
+    local v = Host.read(opts.HoldSwitch)
+    hold = v ~= nil and v > 0
+  end
+  return { hold = hold }
 end
 
-local function serviceOpts(widget)
-  local hold = readOptions(widget)
-  return { hold = hold ~= nil and hold > 0 }
+-- Rebuild only when the screen we should be showing actually changes.
+-- Tearing down and recreating every LVGL object per frame would defeat the
+-- entire point of retained mode.
+local function ensureScreen()
+  if Widget.showSensors then
+    if built ~= "sensors" then
+      if type(lvgl) == "table" then lvgl.clear() end
+      built = "sensors"
+    end
+    return
+  end
+  local want = Dashboard.shouldStandby() and "standby" or "dash"
+  if built ~= want then
+    Dashboard.build(want == "standby")
+    built = want
+  end
 end
 
 function Widget.create(zone, options)
-  initColors()
+  Theme.build()
   Config.load()
   State.reloadModel()
+  built = nil
   return { zone = zone, options = options }
 end
 
 function Widget.update(widget, options)
   widget.options = options
+  Widget.showSensors = (options and options.SensorMap == 1) or false
   Config.load()
   Sensors.reload(Host.modelName())
+  built = nil
+  ensureScreen()
 end
 
 function Widget.refresh(widget, event, touchState)
   State.service(Host.now(), serviceOpts(widget))
+  ensureScreen()
 
-  if event == EVT_NEXT then
-    scroll = scroll + 1
-  elseif event == EVT_PREV then
-    scroll = scroll - 1
+  if Widget.showSensors then
+    if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1
+    elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1 end
+    drawSensorMap()
+  else
+    Dashboard.update()
   end
-
-  drawScreen(widget)
 end
 
 -- Telemetry is serviced here too, so session peaks and flight time are
--- recorded while another screen is in front. Both reference dashboards do
--- this, and it is the single most important structural decision in either.
+-- recorded while another screen is in front.
 function Widget.background(widget)
   State.service(Host.now(), serviceOpts(widget))
 end
@@ -1660,11 +2431,13 @@ end
 Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
+  { "SensorMap",  BOOL,   0 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
+  SensorMap  = "Show Sensor Map",
 }
 
 function Widget.translate(name)
@@ -1687,4 +2460,5 @@ return {
   refresh    = ZD.Widget.refresh,
   background = ZD.Widget.background,
   translate  = ZD.Widget.translate,
+  useLvgl    = true,
 }
