@@ -149,7 +149,7 @@ def render_800(standby=False):
 
 
 # ----------------------------------------------------------------- 480 x 320
-def render_480(wide_logo=False):
+def render_480():
     s = Screen(480, 320)
     s.text(8, 8, "GOBLIN 700", sans(11), INK)
     s.text(196, 4, "02:14", mono(18), INK)
@@ -189,35 +189,20 @@ def render_480(wide_logo=False):
     s.text(390, 40, "GOVERNOR", sans(9), DIM, anchor="ma", spacing=0)
     s.text(390, 53, "ACTIVE", sans(24), LIME, anchor="ma")
 
-    if wide_logo:
-        # Three narrower tiles free the whole bottom row for the lockup, which
-        # goes from 80px wide to 153px - about four times the area.
-        for x, lab, val, foot in [(306, "CURR A", "42",  "MAX 118"),
-                                  (363, "ESC °C", "71",  "MAX 84"),
-                                  (420, "BEC V",  "8.1", "MIN 7.9")]:
-            s.panel(x, 94, 54, 88)
-            s.text(x + 6, 101, lab, sans(7), DIM)
-            s.text(x + 6, 117, val, mono(24), INK)
-            s.text(x + 6, 161, foot, mono(8), PEAK)
-        s.logo(D + "logo_tx15wide.png", 313, 190, 153, 86)
-    else:
-        for x, y, w, hh, lab, val, foot in [
-                (306,  94, 80, 88, "CURRENT A", "42",  "MAX 118"),
-                (394,  94, 80, 88, "ESC °C",    "71",  "MAX 84"),
-                (306, 190, 80, 86, "BEC V",     "8.1", "MIN 7.9")]:
-            s.panel(x, y, w, hh)
-            s.text(x + 7, y + 7, lab, sans(8), DIM)
-            s.text(x + 7, y + 23, val, mono(28), INK)
-            s.text(x + 7, y + 63, foot, mono(9), PEAK)
-        s.logo(D + "logo_small.png", 394, 211, 80, 45)
+    # Three narrower tiles free the whole bottom row for the lockup: 153px
+    # across instead of 80. The cost is paid entirely by ground data - the
+    # critical trio on the left is untouched.
+    for x, lab, val, foot in [(306, "CURR A", "42",  "MAX 118"),
+                              (363, "ESC °C", "71",  "MAX 84"),
+                              (420, "BEC V",  "8.1", "MIN 7.9")]:
+        s.panel(x, 94, 54, 88)
+        s.text(x + 6, 101, lab, sans(7), DIM)
+        s.text(x + 6, 117, val, mono(24), INK)
+        s.text(x + 6, 161, foot, mono(8), PEAK)
+    s.logo(D + "logo_small.png", 313, 190, 153, 86)
 
     s.rule(0, 284, 480)
-    # The lockup is unreadable below ~110px wide, and the strip is only 36px
-    # tall. Set the wordmark as type instead; the lion badge above carries the
-    # mark itself.
-    s.text(8, 294, "ZELION", sans(11), INK)
-    s.text(62, 294, "POWER", sans(11), STEEL)
-    s.text(250, 295, "137 FLIGHTS", mono(9), DIM)
+    s.text(8, 295, "137 FLIGHTS · 11:27:10", mono(9), DIM)
     s.text(472, 295, "RF2 LINKED", mono(9), STEEL, anchor="ra")
     return s
 
@@ -225,5 +210,4 @@ def render_480(wide_logo=False):
 O = "/tmp/claude-0/-home-user-zelionpowerflightdashboard/f6f3c57b-5b54-5436-9af8-d3abc1676ed5/scratchpad/"
 render_800().save(O + "zeliondash_800x480.png")
 render_480().save(O + "zeliondash_480x320.png")
-render_480(wide_logo=True).save(O + "zeliondash_480x320_widelogo.png")
 render_800(standby=True).save(O + "zeliondash_standby.png")
