@@ -13,6 +13,7 @@ local function boot(w, h, setup)
   if setup then setup() end
   Mock.install()
   Mock.installLvgl()
+  Mock.installLogos()
   local ZD = Loader.load()
   ZD.State.reloadModel()
   Mock.advanceSeconds(0.2)
@@ -123,6 +124,49 @@ H.test("fill height tracks the percentage", function()
   Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
   ZD.Dashboard.build(false)
   H.truthy(fillH() < at68, "a flatter pack draws a shorter bar")
+end)
+
+H.test("missing artwork falls back to type and says so", function()
+  local ZD = boot(800, 480, flying)
+  Mock.state.files["/WIDGETS/ZelionDash/logo_panel.png"] = nil
+  ZD.Dashboard.build(false, 800, 480)
+  H.truthy(ZD.Dashboard.logoMissing)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "ZELION", 1, true), "wordmark stands in for the image")
+  H.truthy(string.find(t, "LOGO PNG MISSING", 1, true),
+           "a silently absent image is the likeliest first-run mistake")
+end)
+
+H.group("dashboard: widget zone")
+
+H.test("lays out against the zone, not the screen", function()
+  -- The zone is only the whole screen in a full-screen slot. Laying out
+  -- against LCD_W/LCD_H clips the dashboard at the zone edge.
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 480, 320)
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.props.x and o.props.w then
+      H.truthy(o.props.x + o.props.w <= 480,
+               "object escaped the zone: x=" .. o.props.x .. " w=" .. o.props.w)
+    end
+  end
+end)
+
+H.test("a zone too small says so instead of drawing a mess", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 300, 180)
+  H.eq(ZD.Dashboard.mode(), "toosmall")
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "FULL SCREEN", 1, true))
+  H.truthy(string.find(t, "300x180", 1, true), "reports the actual zone size")
+end)
+
+H.test("update is inert on the too-small screen", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 300, 180)
+  local before = Mock.lv.sets
+  ZD.Dashboard.update()
+  H.eq(Mock.lv.sets, before)
 end)
 
 H.group("dashboard: standby")

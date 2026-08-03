@@ -317,6 +317,14 @@ function Mock.installLvgl()
   _G.XXLSIZE = 8
 end
 
+-- The widget loads its artwork from the SD card. Tests that expect the real
+-- image path need those files to exist in the virtual filesystem.
+function Mock.installLogos()
+  for _, f in ipairs({"logo_panel.png", "logo_small.png", "logo_standby.png"}) do
+    Mock.state.files["/WIDGETS/ZelionDash/" .. f] = "PNG"
+  end
+end
+
 function Mock.removeLvgl()
   _G.lvgl = nil
   Mock.lv = nil

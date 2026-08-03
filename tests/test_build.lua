@@ -22,6 +22,7 @@ local function boot(w, h, opts, setup)
   if setup then setup() end
   Mock.install()
   Mock.installLvgl()
+  Mock.installLogos()
   local widgetDef = loadDist()
   local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts or {})
   widgetDef.update(widget, opts or {})
@@ -118,7 +119,7 @@ H.test("shows the flight controller's flight count", function()
   Mock.reset(); Mock.removeRf2()
   Mock.state.lcdW, Mock.state.lcdH = 800, 480
   flying()
-  Mock.install(); Mock.installLvgl()
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
   Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
 
   local def = loadDist()

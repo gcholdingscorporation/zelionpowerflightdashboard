@@ -29,6 +29,20 @@ local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 
 Widget.showSensors = false
 local built = nil          -- "dash" | "standby" | "sensors" | nil
 local scroll = 0
+local zoneW, zoneH = nil, nil
+
+-- EdgeTX gives each widget a zone, which is only the whole screen when it sits
+-- in a full-screen layout slot. LVGL objects are children of the widget, so
+-- anything laid out against LCD_W/LCD_H gets clipped at the zone edge - the
+-- dashboard renders with its right-hand side simply missing.
+local function readZone(widget)
+  local z = widget and widget.zone
+  local w = tonumber(z and z.w) or Host.lcdW
+  local h = tonumber(z and z.h) or Host.lcdH
+  if w <= 0 then w = Host.lcdW end
+  if h <= 0 then h = Host.lcdH end
+  return w, h
+end
 
 --------------------------------------------------------------------------
 -- Diagnostics screen (immediate mode - it is a tool, not the product)
@@ -56,7 +70,7 @@ local function formatValue(row)
 end
 
 local function drawSensorMap()
-  local w, h = Host.lcdW, Host.lcdH
+  local w, h = zoneW or Host.lcdW, zoneH or Host.lcdH
   local compact = w < 700
   lcd.drawFilledRectangle(0, 0, w, h, Theme.bg)
 
@@ -130,7 +144,12 @@ end
 -- Rebuild only when the screen we should be showing actually changes.
 -- Tearing down and recreating every LVGL object per frame would defeat the
 -- entire point of retained mode.
-local function ensureScreen()
+local function ensureScreen(widget)
+  local w, h = readZone(widget)
+  if w ~= zoneW or h ~= zoneH then
+    zoneW, zoneH = w, h
+    built = nil          -- a resized zone needs a fresh layout
+  end
   if Widget.showSensors then
     if built ~= "sensors" then
       if type(lvgl) == "table" then lvgl.clear() end
@@ -140,7 +159,7 @@ local function ensureScreen()
   end
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
-    Dashboard.build(want == "standby")
+    Dashboard.build(want == "standby", zoneW, zoneH)
     built = want
   end
 end
@@ -150,6 +169,7 @@ function Widget.create(zone, options)
   Config.load()
   State.reloadModel()
   built = nil
+  zoneW, zoneH = nil, nil
   return { zone = zone, options = options }
 end
 
@@ -159,12 +179,12 @@ function Widget.update(widget, options)
   Config.load()
   Sensors.reload(Host.modelName())
   built = nil
-  ensureScreen()
+  ensureScreen(widget)
 end
 
 function Widget.refresh(widget, event, touchState)
   State.service(Host.now(), serviceOpts(widget))
-  ensureScreen()
+  ensureScreen(widget)
 
   if Widget.showSensors then
     if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1

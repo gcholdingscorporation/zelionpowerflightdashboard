@@ -158,6 +158,27 @@ end
 local L
 local mode  -- "dash" | "standby"
 
+
+-- Artwork lives on the SD card, so it can simply be absent - a widget copied
+-- without its PNGs is the likeliest first-run mistake. Check before asking
+-- LVGL to load it: a missing image otherwise fails silently and leaves a hole
+-- with nothing to explain it.
+Dashboard.logoMissing = false
+
+function Dashboard.placeLogo(r, filename)
+  local path = ASSETS .. filename
+  if Host.exists(path) then
+    lvgl.image({ x=r.x, y=r.y, w=r.w, h=r.h, fill=false, file=path })
+    return
+  end
+  Dashboard.logoMissing = true
+  local F = Theme.font
+  label(r.x, r.y + math.floor(r.h / 2) - 18, r.w, "ZELION",
+        F.large + F.bold, Theme.steel, ALIGN_CENTER)
+  label(r.x, r.y + math.floor(r.h / 2) + 6, r.w, "POWER",
+        F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+end
+
 local function buildTopBar()
   local F = Theme.font
   V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
@@ -278,8 +299,7 @@ local function buildRightColumn()
   end
 
   -- No frame: a panel border fought the mark's own outline.
-  lvgl.image({ x=L.logo.x, y=L.logo.y, w=L.logo.w, h=L.logo.h, fill=false,
-               file=ASSETS .. (roomy and "logo_panel.png" or "logo_small.png") })
+  Dashboard.placeLogo(L.logo, roomy and "logo_panel.png" or "logo_small.png")
 end
 
 local function buildStrip()
@@ -299,8 +319,7 @@ local function buildStandby()
                       F.small + F.bold, Theme.ink)
   lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
 
-  lvgl.image({ x=L.logo.x, y=L.logo.y, w=L.logo.w, h=L.logo.h, fill=false,
-               file=ASSETS .. "logo_standby.png" })
+  Dashboard.placeLogo(L.logo, "logo_standby.png")
   lvgl.hline({ x=L.divider.x, y=L.divider.y, w=L.divider.w, h=1, color=Theme.rule })
   label(0, L.tagline.y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER",
         F.small, Theme.dim, ALIGN_CENTER)
@@ -312,19 +331,49 @@ local function buildStandby()
                     300, "", F.small, Theme.dim)
 end
 
-function Dashboard.build(standby)
+-- Smallest zone the tight layout can be drawn into honestly. Below this the
+-- panels would overlap, so say so rather than render a mess.
+Dashboard.MIN_W, Dashboard.MIN_H = 440, 250
+
+local function buildTooSmall(w, h)
+  local F = Theme.font
+  rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
+  label(0, math.floor(h / 2) - 26, w, "ZELIONDASH", F.mid + F.bold,
+        Theme.steel, ALIGN_CENTER)
+  label(0, math.floor(h / 2), w, "NEEDS A FULL SCREEN WIDGET SLOT",
+        F.small + F.bold, Theme.warn, ALIGN_CENTER)
+  label(0, math.floor(h / 2) + 20, w,
+        string.format("this zone is %dx%d, minimum is %dx%d",
+                      w, h, Dashboard.MIN_W, Dashboard.MIN_H),
+        F.small, Theme.dim, ALIGN_CENTER)
+end
+
+-- w,h are the WIDGET ZONE, not the screen. LVGL objects are children of the
+-- widget, so anything drawn past the zone edge is silently clipped - laying
+-- out against LCD_W/LCD_H produces a dashboard with its right half missing.
+function Dashboard.build(standby, w, h)
   if type(lvgl) ~= "table" then return end
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  Dashboard.logoMissing = false
+  w = w or Host.lcdW
+  h = h or Host.lcdH
+
+  if w < Dashboard.MIN_W or h < Dashboard.MIN_H then
+    mode = "toosmall"
+    buildTooSmall(w, h)
+    return
+  end
+
   mode = standby and "standby" or "dash"
 
   if standby then
-    L = Layout.buildStandby(Host.lcdW, Host.lcdH)
+    L = Layout.buildStandby(w, h)
     rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
     buildStandby()
   else
-    L = Layout.build(Host.lcdW, Host.lcdH)
+    L = Layout.build(w, h)
     rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
     buildTopBar()
     buildLeftColumn()
@@ -466,6 +515,10 @@ end
 local function updateStrip()
   setp(V.flights, { text = flightsText() })
   local text, color = "", Theme.steel
+  if Dashboard.logoMissing then
+    setp(V.link, { text = "LOGO PNG MISSING", color = Theme.warn })
+    return
+  end
   if RF2.available() then
     if State.linkConnected == false then
       text, color = "RF2 DISCONNECTED", Theme.dim
@@ -477,7 +530,7 @@ local function updateStrip()
 end
 
 function Dashboard.update()
-  if type(lvgl) ~= "table" or not V.flights then return end
+  if type(lvgl) ~= "table" or mode == "toosmall" or not V.flights then return end
   if mode == "standby" then
     setp(V.modelName, { text = RF2.craftName or Host.modelName() })
     setp(V.flights, { text = flightsText() })
