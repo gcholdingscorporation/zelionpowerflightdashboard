@@ -27,7 +27,10 @@ ZD.Roles = Roles
 -- so an incorrect fallback number degrades to "no auto-match" rather than a
 -- wrong binding.
 local function unit(name, fallback)
-  return rawget(_G, name) or fallback
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
 end
 
 local U_VOLTS   = unit("UNIT_VOLTS", 1)

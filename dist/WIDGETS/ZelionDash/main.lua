@@ -24,10 +24,13 @@ return function(ZD)
 local Host = {}
 ZD.Host = Host
 
--- Bind the host globals once. rawget avoids EdgeTX's read-only global lookup
--- raising on names the running firmware does not define.
+-- Bind the host globals once. EdgeTX publishes much of its API through a read-only global lookup table,
+-- not as raw entries in _G. rawget() alone therefore reports half the host as
+-- missing, so fall through to a normal index.
 local function g(name)
-  return rawget(_G, name)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  return v
 end
 
 local getTimeFn        = g("getTime")
@@ -365,7 +368,10 @@ ZD.Roles = Roles
 -- so an incorrect fallback number degrades to "no auto-match" rather than a
 -- wrong binding.
 local function unit(name, fallback)
-  return rawget(_G, name) or fallback
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
 end
 
 local U_VOLTS   = unit("UNIT_VOLTS", 1)
@@ -1447,8 +1453,16 @@ return function(ZD)
 local Theme = {}
 ZD.Theme = Theme
 
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
 local function flag(name, fallback)
-  return rawget(_G, name) or fallback
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
 end
 
 -- EdgeTX offers a fixed ladder of font sizes, not arbitrary point values.
@@ -1765,7 +1779,17 @@ ZD.Dashboard = Dashboard
 
 local ASSETS = "/WIDGETS/ZelionDash/"
 
-local function flag(n, f) return rawget(_G, n) or f end
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
+local function flag(name, fallback)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
+end
 local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
 local ALIGN_RIGHT  = flag("RIGHT", 0)
 
@@ -2069,6 +2093,10 @@ local function buildStandby()
         F.small, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
                    F.mid + F.bold, Theme.warn, ALIGN_CENTER)
+  -- Standby is exactly where a first run lands, so the missing-artwork notice
+  -- has to appear here too - not only on the dashboard.
+  V.link = label(0, L.status.y + 24, L.w, "", F.small + F.bold,
+                 Theme.warn, ALIGN_CENTER)
 
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   V.flights = label(L.c.pad, L.stripRule + (L.class == "roomy" and 14 or 10),
@@ -2278,6 +2306,7 @@ function Dashboard.update()
   if mode == "standby" then
     setp(V.modelName, { text = RF2.craftName or Host.modelName() })
     setp(V.flights, { text = flightsText() })
+    setp(V.link, { text = Dashboard.logoMissing and "LOGO PNG MISSING" or "" })
     return
   end
   updateTopBar()
@@ -2321,7 +2350,17 @@ local Dashboard = ZD.Dashboard
 local Widget = {}
 ZD.Widget = Widget
 
-local function flag(n, f) return rawget(_G, n) or f end
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
+local function flag(name, fallback)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
+end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)

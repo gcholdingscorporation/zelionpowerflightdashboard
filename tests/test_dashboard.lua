@@ -137,6 +137,57 @@ H.test("missing artwork falls back to type and says so", function()
            "a silently absent image is the likeliest first-run mistake")
 end)
 
+H.group("dashboard: host constant lookup")
+
+H.test("resolves constants published through the read-only lookup", function()
+  -- The radio does not put its constants in _G raw. A rawget-only lookup
+  -- silently yields 0 for every font and alignment, which on hardware renders
+  -- the whole dashboard in the default font, left-aligned, with no error.
+  Mock.reset()
+  Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.install()
+  Mock.installLvgl()
+  Mock.installLogos()
+  Mock.hideConstants()
+  local ZD = Loader.load()
+
+  H.truthy(ZD.Theme.font.mid ~= 0, "MIDSIZE must resolve")
+  H.truthy(ZD.Theme.font.huge ~= 0, "the hero font must resolve")
+
+  ZD.State.reloadModel()
+  Mock.advanceSeconds(0.2)
+  ZD.State.service(Mock.state.time)
+  ZD.Dashboard.build(false, 800, 480)
+
+  local centred, sized = false, false
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "label" then
+      if (o.props.align or 0) ~= 0 then centred = true end
+      if (o.props.font  or 0) ~= 0 then sized   = true end
+    end
+  end
+  Mock.restoreConstants()
+  H.truthy(centred, "centred labels must actually be centred")
+  H.truthy(sized,   "sized labels must actually be sized")
+end)
+
+H.test("host API also survives the read-only lookup", function()
+  Mock.reset()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  Mock.addSensor("Hspd", 18, 1850)
+  Mock.install()
+  Mock.hideConstants()
+  local ZD = Loader.load()
+  H.eq(ZD.Host.lcdW, 800, "LCD_W comes through the same lookup")
+  ZD.State.reloadModel()
+  Mock.advanceSeconds(0.2)
+  ZD.State.service(Mock.state.time)
+  Mock.restoreConstants()
+  H.eq(ZD.State.num("headspeed"), 1850, "telemetry still reads")
+end)
+
 H.group("dashboard: widget zone")
 
 H.test("lays out against the zone, not the screen", function()

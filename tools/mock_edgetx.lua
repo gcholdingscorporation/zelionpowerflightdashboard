@@ -77,6 +77,7 @@ function Mock.writeFile(path, contents)
 end
 
 function Mock.reset()
+  Mock.restoreConstants()
   Mock.removeLvgl()
   Mock.state.time = 0
   Mock.state.sensors = {}
@@ -202,7 +203,12 @@ function Mock.install()
   -- prove the draw path runs without erroring and to assert on what was drawn.
   Mock.draws = {}
   _G.SOLID = 0
-  _G.SMLSIZE, _G.BOLD, _G.RIGHT = 1, 2, 4
+  -- Distinct non-zero values so a constant that failed to resolve (and so
+  -- collapsed to 0) is visible in an assertion rather than blending in.
+  _G.LEFT,    _G.CENTER,  _G.RIGHT   = 0, 0x0800, 0x1000
+  _G.SMLSIZE, _G.MIDSIZE             = 0x0020, 0x0040
+  _G.DBLSIZE, _G.XXLSIZE             = 0x0060, 0x0080
+  _G.BOLD                            = 0x2000
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
   _G.SOURCE, _G.BOOL = 1, 2
   _G.lcd = {
@@ -218,6 +224,39 @@ function Mock.install()
       Mock.draws[#Mock.draws + 1] = { op = "line", x = x1, y = y1 }
     end,
   }
+end
+
+--------------------------------------------------------------------------
+-- Read-only constant lookup
+--------------------------------------------------------------------------
+
+-- The real radio does NOT expose its constants as raw entries in _G; they come
+-- through a read-only lookup table, so rawget() returns nil for all of them.
+-- Installing them raw - which is the convenient thing for a mock to do - hides
+-- an entire class of bug that only appears on hardware. This reproduces the
+-- real exposure.
+local HIDDEN_CONSTANTS = {
+  "SMLSIZE", "BOLD", "MIDSIZE", "DBLSIZE", "XXLSIZE", "CENTER", "CENTERED",
+  "RIGHT", "LEFT", "SOLID", "SOURCE", "BOOL", "VALUE", "STRING", "COLOR",
+  "EVT_VIRTUAL_NEXT", "EVT_VIRTUAL_PREV", "EVT_VIRTUAL_ENTER", "PLAY_NOW",
+  "UNIT_VOLTS", "UNIT_AMPS", "UNIT_CELSIUS", "UNIT_PERCENT", "UNIT_MAH",
+  "UNIT_RPMS", "LCD_W", "LCD_H",
+}
+
+function Mock.hideConstants()
+  local hidden = {}
+  for _, n in ipairs(HIDDEN_CONSTANTS) do
+    hidden[n] = rawget(_G, n)
+    rawset(_G, n, nil)
+  end
+  Mock._hidden = hidden
+  setmetatable(_G, { __index = function(_, k) return hidden[k] end })
+end
+
+function Mock.restoreConstants()
+  setmetatable(_G, nil)
+  for n, v in pairs(Mock._hidden or {}) do rawset(_G, n, v) end
+  Mock._hidden = nil
 end
 
 --------------------------------------------------------------------------
@@ -314,7 +353,6 @@ function Mock.installLvgl()
     isFullScreen = function() return true end,
     isAppMode    = function() return false end,
   }
-  _G.XXLSIZE = 8
 end
 
 -- The widget loads its artwork from the SD card. Tests that expect the real

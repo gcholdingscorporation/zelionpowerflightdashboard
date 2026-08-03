@@ -21,7 +21,17 @@ ZD.Dashboard = Dashboard
 
 local ASSETS = "/WIDGETS/ZelionDash/"
 
-local function flag(n, f) return rawget(_G, n) or f end
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
+local function flag(name, fallback)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
+end
 local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
 local ALIGN_RIGHT  = flag("RIGHT", 0)
 
@@ -325,6 +335,10 @@ local function buildStandby()
         F.small, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
                    F.mid + F.bold, Theme.warn, ALIGN_CENTER)
+  -- Standby is exactly where a first run lands, so the missing-artwork notice
+  -- has to appear here too - not only on the dashboard.
+  V.link = label(0, L.status.y + 24, L.w, "", F.small + F.bold,
+                 Theme.warn, ALIGN_CENTER)
 
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   V.flights = label(L.c.pad, L.stripRule + (L.class == "roomy" and 14 or 10),
@@ -534,6 +548,7 @@ function Dashboard.update()
   if mode == "standby" then
     setp(V.modelName, { text = RF2.craftName or Host.modelName() })
     setp(V.flights, { text = flightsText() })
+    setp(V.link, { text = Dashboard.logoMissing and "LOGO PNG MISSING" or "" })
     return
   end
   updateTopBar()

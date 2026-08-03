@@ -14,8 +14,16 @@ return function(ZD)
 local Theme = {}
 ZD.Theme = Theme
 
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
 local function flag(name, fallback)
-  return rawget(_G, name) or fallback
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
 end
 
 -- EdgeTX offers a fixed ladder of font sizes, not arbitrary point values.

@@ -13,10 +13,13 @@ return function(ZD)
 local Host = {}
 ZD.Host = Host
 
--- Bind the host globals once. rawget avoids EdgeTX's read-only global lookup
--- raising on names the running firmware does not define.
+-- Bind the host globals once. EdgeTX publishes much of its API through a read-only global lookup table,
+-- not as raw entries in _G. rawget() alone therefore reports half the host as
+-- missing, so fall through to a normal index.
 local function g(name)
-  return rawget(_G, name)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  return v
 end
 
 local getTimeFn        = g("getTime")

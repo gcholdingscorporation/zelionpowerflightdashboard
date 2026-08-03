@@ -21,7 +21,17 @@ local Dashboard = ZD.Dashboard
 local Widget = {}
 ZD.Widget = Widget
 
-local function flag(n, f) return rawget(_G, n) or f end
+-- EdgeTX publishes its constants through a read-only global lookup table
+-- rather than as raw entries in _G, so rawget() alone returns nil for every
+-- one of them. Missing this silently collapses every font size and alignment
+-- to 0: on hardware the dashboard rendered entirely in the default font,
+-- left-aligned, with no error anywhere to say why.
+local function flag(name, fallback)
+  local v = rawget(_G, name)
+  if v == nil then v = _G[name] end
+  if v == nil then v = fallback end
+  return v
+end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
