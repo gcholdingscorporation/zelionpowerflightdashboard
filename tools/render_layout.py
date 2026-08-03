@@ -91,14 +91,15 @@ def render_800(standby=False):
         s.text(788, 451, "RF2 IDLE", mono(10), DIM, anchor="ra")
         return s
 
-    # --- battery bar: full height, brand-green border, cell voltage overlaid ---
-    s.d.rounded_rectangle([10, 46, 105, 427], 7, fill=TRACK, outline=LIME, width=2)
-    s.d.rounded_rectangle([13, 169, 102, 424], 5, fill=LIME)
-    # The chip keeps the cell reading legible whatever the fill level behind it.
-    s.d.rounded_rectangle([15, 186, 100, 262], 6, fill=(6, 8, 11), outline=LIMED)
-    s.text(58, 193, "CELL", sans(9), LIME, anchor="ma", spacing=0)
-    s.text(58, 206, "3.94", mono(26), INK, anchor="ma")
-    s.text(58, 240, "MIN 3.62", mono(9), PEAK, anchor="ma")
+    # --- cell voltage: pinned to the top of the column ---
+    s.d.rounded_rectangle([10, 46, 105, 121], 6, fill=(6, 8, 11), outline=LIMED)
+    s.text(58, 53, "CELL", sans(9), LIME, anchor="ma")
+    s.text(58, 64, "3.94", mono(26), INK, anchor="ma")
+    s.text(58, 99, "MIN 3.62", mono(9), PEAK, anchor="ma")
+
+    # --- battery bar: starts below the chip, brand-green border ---
+    s.d.rounded_rectangle([10, 129, 105, 427], 7, fill=TRACK, outline=LIME, width=2)
+    s.d.rounded_rectangle([13, 226, 102, 424], 5, fill=LIME)
 
     # --- battery percentage: upper hero tile ---
     s.panel(116, 46, 390, 190)
@@ -108,8 +109,9 @@ def render_800(standby=False):
     s.text(408, 148, "47.3 V", sans(15), INK, spacing=.6)
     s.rule(132, 186, 358)
     s.text(132, 196, "MIN 44.8V", mono(10), PEAK)
-    s.text(248, 196, "1240 mAh", mono(10), DIM)
-    s.text(388, 196, "12S · 85C", mono(10), DIM)
+    s.text(222, 196, "SAG 0.32", mono(10), DIM)
+    s.text(312, 196, "1240 mAh", mono(10), DIM)
+    s.text(402, 196, "12S · 85C", mono(10), DIM)
 
     # --- headspeed: lower hero tile ---
     s.panel(116, 244, 390, 184)
@@ -147,7 +149,7 @@ def render_800(standby=False):
 
 
 # ----------------------------------------------------------------- 480 x 320
-def render_480():
+def render_480(wide_logo=False):
     s = Screen(480, 320)
     s.text(8, 8, "GOBLIN 700", sans(11), INK)
     s.text(196, 4, "02:14", mono(18), INK)
@@ -156,13 +158,14 @@ def render_480():
     s.text(444, 10, "7.9", mono(11), INK)
     s.rule(0, 28, 480)
 
-    # battery bar: full height, green border, cell voltage overlaid
-    s.d.rounded_rectangle([6, 34, 69, 275], 6, fill=TRACK, outline=LIME, width=2)
-    s.d.rounded_rectangle([9, 111, 66, 272], 4, fill=LIME)
-    s.d.rounded_rectangle([10, 124, 65, 186], 5, fill=(6, 8, 11), outline=LIMED)
-    s.text(37, 129, "CELL", sans(8), LIME, anchor="ma")
-    s.text(37, 141, "3.94", mono(18), INK, anchor="ma")
-    s.text(37, 168, "MIN 3.62", mono(8), PEAK, anchor="ma")
+    # cell voltage pinned top, bar below it
+    s.d.rounded_rectangle([6, 34, 69, 95], 5, fill=(6, 8, 11), outline=LIMED)
+    s.text(37, 38, "CELL", sans(8), LIME, anchor="ma")
+    s.text(37, 48, "3.94", mono(18), INK, anchor="ma")
+    s.text(37, 74, "MIN 3.62", mono(8), PEAK, anchor="ma")
+
+    s.d.rounded_rectangle([6, 102, 69, 275], 6, fill=TRACK, outline=LIME, width=2)
+    s.d.rounded_rectangle([9, 161, 66, 272], 4, fill=LIME)
 
     s.panel(76, 34, 224, 118)
     s.text(88, 43, "BATTERY", sans(9), DIM, spacing=1)
@@ -171,7 +174,8 @@ def render_480():
     s.text(250, 92, "47.3 V", sans(12), INK)
     s.rule(88, 122, 200)
     s.text(88, 129, "MIN 44.8V", mono(9), PEAK)
-    s.text(196, 129, "1240 mAh", mono(9), DIM)
+    s.text(155, 129, "SAG 0.32", mono(9), DIM)
+    s.text(222, 129, "1240 mAh", mono(9), DIM)
 
     s.panel(76, 158, 224, 118)
     s.text(88, 167, "HEADSPEED", sans(9), DIM, spacing=1)
@@ -185,16 +189,27 @@ def render_480():
     s.text(390, 40, "GOVERNOR", sans(9), DIM, anchor="ma", spacing=0)
     s.text(390, 53, "ACTIVE", sans(24), LIME, anchor="ma")
 
-    for x, y, w, hh, lab, val, foot in [
-            (306,  94, 80, 88, "CURRENT A", "42",  "MAX 118"),
-            (394,  94, 80, 88, "ESC °C",    "71",  "MAX 84"),
-            (306, 190, 80, 86, "BEC V",     "8.1", "MIN 7.9")]:
-        s.panel(x, y, w, hh)
-        s.text(x + 7, y + 7, lab, sans(8), DIM)
-        s.text(x + 7, y + 23, val, mono(28), INK)
-        s.text(x + 7, y + 63, foot, mono(9), PEAK)
-
-    s.logo(D + "logo_small.png", 396, 212, 76, 43)
+    if wide_logo:
+        # Three narrower tiles free the whole bottom row for the lockup, which
+        # goes from 80px wide to 153px - about four times the area.
+        for x, lab, val, foot in [(306, "CURR A", "42",  "MAX 118"),
+                                  (363, "ESC °C", "71",  "MAX 84"),
+                                  (420, "BEC V",  "8.1", "MIN 7.9")]:
+            s.panel(x, 94, 54, 88)
+            s.text(x + 6, 101, lab, sans(7), DIM)
+            s.text(x + 6, 117, val, mono(24), INK)
+            s.text(x + 6, 161, foot, mono(8), PEAK)
+        s.logo(D + "logo_tx15wide.png", 313, 190, 153, 86)
+    else:
+        for x, y, w, hh, lab, val, foot in [
+                (306,  94, 80, 88, "CURRENT A", "42",  "MAX 118"),
+                (394,  94, 80, 88, "ESC °C",    "71",  "MAX 84"),
+                (306, 190, 80, 86, "BEC V",     "8.1", "MIN 7.9")]:
+            s.panel(x, y, w, hh)
+            s.text(x + 7, y + 7, lab, sans(8), DIM)
+            s.text(x + 7, y + 23, val, mono(28), INK)
+            s.text(x + 7, y + 63, foot, mono(9), PEAK)
+        s.logo(D + "logo_small.png", 394, 211, 80, 45)
 
     s.rule(0, 284, 480)
     # The lockup is unreadable below ~110px wide, and the strip is only 36px
@@ -210,4 +225,5 @@ def render_480():
 O = "/tmp/claude-0/-home-user-zelionpowerflightdashboard/f6f3c57b-5b54-5436-9af8-d3abc1676ed5/scratchpad/"
 render_800().save(O + "zeliondash_800x480.png")
 render_480().save(O + "zeliondash_480x320.png")
+render_480(wide_logo=True).save(O + "zeliondash_480x320_widelogo.png")
 render_800(standby=True).save(O + "zeliondash_standby.png")
