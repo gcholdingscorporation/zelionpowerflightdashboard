@@ -184,6 +184,19 @@ function Mock.install()
     lines = realIo and realIo.lines or nil,
   }
 
+  -- EdgeTX's bitmap loader. imageExists() prefers this over fstat because it
+  -- answers the question that actually matters: will this image render.
+  _G.Bitmap = {
+    open = function(path)
+      if Mock.state.files[path] == nil then return nil end
+      return { path = path }
+    end,
+    getSize = function(bmp)
+      if not bmp then return 0, 0 end
+      return 100, 100
+    end,
+  }
+
   _G.fstat = function(path)
     local c = Mock.state.files[path]
     if not c then return nil end

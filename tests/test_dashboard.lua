@@ -133,7 +133,7 @@ H.test("missing artwork falls back to type and says so", function()
   H.truthy(ZD.Dashboard.logoMissing)
   local t = Mock.lvglText()
   H.truthy(string.find(t, "ZELION", 1, true), "wordmark stands in for the image")
-  H.truthy(string.find(t, "LOGO PNG MISSING", 1, true),
+  H.truthy(string.find(t, "NO IMAGE: /WIDGETS/ZelionDash/logo_panel.png", 1, true),
            "a silently absent image is the likeliest first-run mistake")
 end)
 

@@ -174,18 +174,21 @@ local mode  -- "dash" | "standby"
 -- LVGL to load it: a missing image otherwise fails silently and leaves a hole
 -- with nothing to explain it.
 Dashboard.logoMissing = false
+Dashboard.missingPath = nil
 
 function Dashboard.placeLogo(r, filename)
   local path = ASSETS .. filename
-  if Host.exists(path) then
+  if Host.imageExists(path) then
     lvgl.image({ x=r.x, y=r.y, w=r.w, h=r.h, fill=false, file=path })
     return
   end
   Dashboard.logoMissing = true
+  Dashboard.missingPath = path
+  -- One label, not two stacked: without a way to measure text there is no safe
+  -- gap to leave between them, and an earlier two-line version overlapped
+  -- itself the moment the fonts started resolving.
   local F = Theme.font
-  label(r.x, r.y + math.floor(r.h / 2) - 18, r.w, "ZELION",
-        F.large + F.bold, Theme.steel, ALIGN_CENTER)
-  label(r.x, r.y + math.floor(r.h / 2) + 6, r.w, "POWER",
+  label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
         F.mid + F.bold, Theme.steel, ALIGN_CENTER)
 end
 
@@ -335,14 +338,15 @@ local function buildStandby()
         F.small, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
                    F.mid + F.bold, Theme.warn, ALIGN_CENTER)
-  -- Standby is exactly where a first run lands, so the missing-artwork notice
-  -- has to appear here too - not only on the dashboard.
-  V.link = label(0, L.status.y + 24, L.w, "", F.small + F.bold,
-                 Theme.warn, ALIGN_CENTER)
 
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
-  V.flights = label(L.c.pad, L.stripRule + (L.class == "roomy" and 14 or 10),
-                    300, "", F.small, Theme.dim)
+  local sy = L.stripRule + (L.class == "roomy" and 14 or 10)
+  V.flights = label(L.c.pad, sy, 300, "", F.small, Theme.dim)
+  -- Standby is where a first run lands, so the missing-artwork notice belongs
+  -- here as well as on the dashboard. It lives in the strip rather than under
+  -- the status line, which is where it previously collided with it.
+  V.link = label(0, sy, L.w - L.c.pad, "", F.small + F.bold,
+                 Theme.warn, ALIGN_RIGHT)
 end
 
 -- Smallest zone the tight layout can be drawn into honestly. Below this the
@@ -530,7 +534,9 @@ local function updateStrip()
   setp(V.flights, { text = flightsText() })
   local text, color = "", Theme.steel
   if Dashboard.logoMissing then
-    setp(V.link, { text = "LOGO PNG MISSING", color = Theme.warn })
+    -- Name the exact path that failed: "missing" is not actionable, a path is.
+    setp(V.link, { text = "NO IMAGE: " .. tostring(Dashboard.missingPath),
+                   color = Theme.warn })
     return
   end
   if RF2.available() then
@@ -548,7 +554,9 @@ function Dashboard.update()
   if mode == "standby" then
     setp(V.modelName, { text = RF2.craftName or Host.modelName() })
     setp(V.flights, { text = flightsText() })
-    setp(V.link, { text = Dashboard.logoMissing and "LOGO PNG MISSING" or "" })
+    setp(V.link, { text = Dashboard.logoMissing
+                          and ("NO IMAGE: " .. tostring(Dashboard.missingPath))
+                          or "" })
     return
   end
   updateTopBar()

@@ -35,6 +35,7 @@ local dirTbl           = g("dir")
 local osTbl            = g("os")
 local mkdirFn          = g("mkdir")
 local fstatFn          = g("fstat")
+local bitmapTbl        = g("Bitmap")
 
 Host.hasSourceValue = type(getSourceValueFn) == "function"
 Host.hasLvgl        = type(g("lvgl")) == "table"
@@ -213,13 +214,38 @@ function Host.exists(path)
   if fstatFn then
     local ok, info = pcall(fstatFn, path)
     if ok and info ~= nil then return true end
-    if ok then return false end
   end
-  if type(ioTbl) ~= "table" then return false end
-  local f = ioTbl.open(path, "r")
-  if not f then return false end
-  pcall(ioTbl.close, f)
-  return true
+  if type(ioTbl) == "table" then
+    local f = ioTbl.open(path, "r")
+    if f then
+      pcall(ioTbl.close, f)
+      return true
+    end
+  end
+  return false
+end
+
+-- Whether an image will actually load, which is a different question from
+-- whether a path resolves. fstat and io.open both reported the artwork
+-- missing on hardware while the files were plainly on the card, so ask the
+-- bitmap loader - the same one LVGL uses - and treat its answer as final.
+-- Any of the three saying yes is good enough; only unanimous failure is a
+-- missing image.
+function Host.imageExists(path)
+  if type(bitmapTbl) == "table" and type(bitmapTbl.open) == "function" then
+    local ok, bmp = pcall(bitmapTbl.open, path)
+    if ok and bmp ~= nil then
+      if type(bitmapTbl.getSize) == "function" then
+        local sized, w = pcall(bitmapTbl.getSize, bmp)
+        -- EdgeTX hands back a placeholder rather than nil for a file it could
+        -- not decode, and that placeholder measures zero.
+        if sized and tonumber(w) and tonumber(w) > 0 then return true end
+      else
+        return true
+      end
+    end
+  end
+  return Host.exists(path)
 end
 
 function Host.readFile(path)
