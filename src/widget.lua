@@ -83,14 +83,15 @@ end
 -- actually in the widget folder and what each probe makes of it - rather than
 -- inferring any of it from this side of the SD card.
 local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
-local ASSET_DIR = "/WIDGETS/ZelionDash/"
 
 local function assetRows()
+  local dir = Host.widgetDir()
   local rows = {}
-  rows[#rows + 1] = { label = "-- ASSETS --", sensor = ASSET_DIR,
+  rows[#rows + 1] = { label = "-- ASSETS --",
+                      sensor = dir .. " (" .. Host.widgetDirSource .. ")",
                       status = "ok", important = true }
 
-  local listing = Host.listDir(ASSET_DIR)
+  local listing = Host.listDir(dir)
   if listing == nil then
     rows[#rows + 1] = { label = "dir()", sensor = "unavailable", status = "unbound" }
   elseif #listing == 0 then
@@ -102,7 +103,7 @@ local function assetRows()
   end
 
   for _, f in ipairs(ASSET_FILES) do
-    local p = Host.probeImage(ASSET_DIR .. f)
+    local p = Host.probeImage(dir .. f)
     local flags = string.format("%s%s%s",
       p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-")
     local detail = flags

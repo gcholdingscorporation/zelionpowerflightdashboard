@@ -22,8 +22,6 @@ ZD.Dashboard = Dashboard
 local function assetDir() return Host.widgetDir() end
 
 function Dashboard.assetDir() return assetDir() end
-function Dashboard.assetDirResolved() return Host.widgetDirSource ~= "fallback"
-                                             and Host.widgetDir() or false end
 
 -- EdgeTX publishes its constants through a read-only global lookup table
 -- rather than as raw entries in _G, so rawget() alone returns nil for every
