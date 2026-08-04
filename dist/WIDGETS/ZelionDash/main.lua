@@ -1866,10 +1866,10 @@ function Theme.build()
   -- tools/make_logos.py flattens the artwork onto Theme.bg. Change this and
   -- the PNGs have to be regenerated, or every logo carries a box of the old
   -- background around it.
-  Theme.bg     = rgb( 10,  18,  42)
-  Theme.panel  = rgb( 18,  30,  62)
-  Theme.rule   = rgb( 42,  58, 100)
-  Theme.track  = rgb(  6,  11,  28)
+  Theme.bg     = rgb( 10,  17,  40)
+  Theme.panel  = rgb( 17,  29,  59)
+  Theme.rule   = rgb( 40,  55,  95)
+  Theme.track  = rgb(  6,  10,  27)
   Theme.ink    = rgb(242, 245, 248)
   Theme.dim    = rgb(148, 163, 190)
 
