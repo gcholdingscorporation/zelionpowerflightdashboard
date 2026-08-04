@@ -383,7 +383,12 @@ local function buildStandby()
 
   local roomy = L.class == "roomy"
   local lineH = roomy and 15 or 12
-  local dy = L.status.y + (roomy and 28 or 22)
+  -- When the artwork failed there is no image in the logo box, only a one-line
+  -- wordmark, so the diagnosis can use the space the image would have taken.
+  -- placeLogo has already run by this point, so we know which case we are in.
+  local dy = Dashboard.logoMissing
+             and (L.logo.y + math.floor(L.logo.h / 2) + (roomy and 26 or 20))
+             or (L.status.y + (roomy and 28 or 22))
   local room = math.floor((L.stripRule - dy) / lineH)
   V.diag = {}
   for i = 1, math.max(0, math.min(roomy and 6 or 3, room)) do

@@ -1870,11 +1870,11 @@ function Layout.buildStandby(w, h)
   -- Reserve room beneath the mark for the tagline and the status line.
   local reserve = (className == "roomy") and 96 or 62
   local boxH = avail - reserve
-  -- Matches the shipped asset. Deliberately modest: a radio has to decode the
-  -- image into RAM, and a 500x281 RGBA logo needed 549KB, which EdgeTX's Lua
-  -- sandbox could not allocate - the artwork silently failed to load.
-  local lw, lh = 320, 180
-  if className ~= "roomy" then lw, lh = 240, 135 end
+  -- Matches the shipped asset. This was briefly cut to 320x180 while chasing a
+  -- suspected decode-memory limit; the real fault was a hardcoded folder name,
+  -- so the full size is back.
+  local lw, lh = 500, 281
+  if className ~= "roomy" then lw, lh = 300, 169 end
   if lh > boxH then
     lw = round(lw * boxH / lh)
     lh = boxH
@@ -2287,7 +2287,12 @@ local function buildStandby()
 
   local roomy = L.class == "roomy"
   local lineH = roomy and 15 or 12
-  local dy = L.status.y + (roomy and 28 or 22)
+  -- When the artwork failed there is no image in the logo box, only a one-line
+  -- wordmark, so the diagnosis can use the space the image would have taken.
+  -- placeLogo has already run by this point, so we know which case we are in.
+  local dy = Dashboard.logoMissing
+             and (L.logo.y + math.floor(L.logo.h / 2) + (roomy and 26 or 20))
+             or (L.status.y + (roomy and 28 or 22))
   local room = math.floor((L.stripRule - dy) / lineH)
   V.diag = {}
   for i = 1, math.max(0, math.min(roomy and 6 or 3, room)) do
