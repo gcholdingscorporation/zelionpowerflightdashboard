@@ -100,7 +100,13 @@ end
 -- pixel tall with a radius of 2. Both are clamped here rather than at every
 -- call site, because the offending sizes are runtime values - a gauge at 0%
 -- is one pixel tall no matter what radius the design asked for.
+-- Render level 1 forces every corner square. Both screens that survive on
+-- hardware happen to contain no rounded rectangle at all, and that is the
+-- largest untested difference left between them and the dashboard.
+Dashboard.noRound = false
+
 local function safeRadius(w, h, rounded)
+  if Dashboard.noRound then return 0 end
   local r = rounded or 0
   if r <= 0 then return 0 end
   local limit = math.floor(math.min(w or 0, h or 0) / 2)
@@ -369,6 +375,10 @@ end
 
 local function buildStrip()
   local F = Theme.font
+  if Dashboard.level then
+    label(L.w - L.c.pad - 40, L.top.y + 2, 40, "L" .. tostring(Dashboard.level),
+          F.small + F.bold, Theme.warn, ALIGN_RIGHT)
+  end
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local y = L.stripRule + (L.class == "roomy" and 14 or 10)
   V.flights = label(L.c.pad, y, 300, "", F.small, Theme.dim)

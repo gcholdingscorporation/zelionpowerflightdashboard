@@ -26,7 +26,7 @@ local function boot(w, h, opts, setup)
   -- Safe Mode defaults on so a stricken radio can boot; tests exercising the
   -- real dashboard have to opt out of it explicitly.
   opts = opts or {}
-  if opts.SafeMode == nil then opts.SafeMode = 0 end
+  if opts.Level == nil then opts.Level = 3 end
   local widgetDef = loadDist()
   local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts)
   widgetDef.update(widget, opts)
@@ -127,7 +127,7 @@ H.test("shows the flight controller's flight count", function()
   Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
 
   local def = loadDist()
-  local opts = { SafeMode = 0 }
+  local opts = { Level = 3 }
   local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
   def.update(widget, opts)
   for _ = 1, 70 do
@@ -186,6 +186,28 @@ H.test("safe mode is a fraction of the full dashboard", function()
   ZD.Dashboard.buildMinimal(800, 480)
   H.truthy(#Mock.lv.objects < full / 3,
            string.format("safe mode %d vs full %d", #Mock.lv.objects, full))
+end)
+
+H.test("level 1 draws no rounded corner anywhere", function()
+  local def, widget = boot(800, 480, { Level = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "rect" then
+      H.eq(o.props.rounded, 0, "level 1 must be square-cornered throughout")
+    end
+  end
+  H.eq(#Mock.lvglImages(), 0, "and carry no images")
+end)
+
+H.test("level 2 restores rounded corners but still no images", function()
+  local def, widget = boot(800, 480, { Level = 2 }, flying)
+  def.refresh(widget, 0, nil)
+  local rounded = 0
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "rect" and (o.props.rounded or 0) > 0 then rounded = rounded + 1 end
+  end
+  H.truthy(rounded > 0, "corners are back")
+  H.eq(#Mock.lvglImages(), 0, "images are not")
 end)
 
 H.test("safe mode is the default, so a stricken radio still boots", function()

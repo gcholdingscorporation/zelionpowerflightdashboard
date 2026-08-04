@@ -34,6 +34,7 @@ local function flag(name, fallback)
 end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
+local VALUE  = flag("VALUE", 0)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
 Widget.showSensors = false
@@ -230,6 +231,11 @@ local function ensureScreen(widget)
       Widget.degraded = "no-logo"
       ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
     end
+    if not ok and not Dashboard.noRound then
+      Dashboard.noRound = true         -- then without rounded corners
+      Widget.degraded = "no-round"
+      ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    end
     if not ok then
       Widget.degraded = "safe-mode"
       pcall(Dashboard.buildMinimal, zoneW, zoneH)
@@ -252,11 +258,21 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
-  Dashboard.noLogo   = (options and options.NoLogo == 1) or false
-  -- Render level, so the failure can be bisected on the radio rather than
-  -- guessed at from here. Defaults ON: the widget must boot before it can be
-  -- diagnosed, and a degraded screen beats an emergency-mode transmitter.
-  Widget.safeMode    = (options == nil) or (options.SafeMode ~= 0)
+  -- Render level, so the failure can be bisected on the radio instead of
+  -- guessed at from here. Each step adds exactly one construct:
+  --   0  safe mode - labels and one square rectangle
+  --   1  full dashboard, square corners, no images
+  --   2  full dashboard, rounded corners, no images
+  --   3  full dashboard, rounded corners, images
+  -- Defaults to 0: the widget has to boot before it can be diagnosed, and a
+  -- degraded screen beats an emergency-mode transmitter.
+  local level = tonumber(options and options.Level) or 0
+  if level < 0 then level = 0 elseif level > 3 then level = 3 end
+  Widget.level      = level
+  Widget.safeMode   = (level == 0)
+  Dashboard.level   = level
+  Dashboard.noRound = (level <= 1)
+  Dashboard.noLogo  = (level <= 2)
   Widget.degraded = nil
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName())
@@ -289,16 +305,14 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
-  { "NoLogo",     BOOL,   0 },
-  { "SafeMode",   BOOL,   1 },
+  { "Level",      VALUE,  0, 0, 3 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
-  NoLogo     = "Disable Logo (low memory)",
-  SafeMode   = "Safe Mode (minimal screen)",
+  Level      = "Render Level 0-3",
 }
 
 function Widget.translate(name)
