@@ -356,16 +356,42 @@ end
 -- Bitmap.open never returns nil - it hands back a "not found" placeholder that
 -- measures zero. So a non-nil bitmap proves nothing and a positive width
 -- proves everything.
+-- Results are cached per path, and the probe bitmap is dropped and collected
+-- immediately. Bitmap.open ALLOCATES: probing a file costs as much memory as
+-- displaying it, and on a radio the Lua heap is small enough that repeating
+-- that every rebuild - on top of the copy lvgl.image loads - exhausts it and
+-- faults the script.
+local imageProbeCache = {}
+
+local function collect()
+  local gc = g("collectgarbage")
+  if type(gc) == "function" then pcall(gc) end
+end
+
 function Host.imageLoads(path)
+  local cached = imageProbeCache[path]
+  if cached ~= nil then return cached end
   if type(bitmapTbl) ~= "table" or type(bitmapTbl.open) ~= "function" then
+    imageProbeCache[path] = false
     return false
   end
+  local result = false
   local ok, bmp = pcall(bitmapTbl.open, path)
-  if not ok or bmp == nil then return false end
-  if type(bitmapTbl.getSize) ~= "function" then return true end
-  local sized, w = pcall(bitmapTbl.getSize, bmp)
-  return sized and tonumber(w) ~= nil and tonumber(w) > 0
+  if ok and bmp ~= nil then
+    if type(bitmapTbl.getSize) ~= "function" then
+      result = true
+    else
+      local sized, w = pcall(bitmapTbl.getSize, bmp)
+      result = sized and tonumber(w) ~= nil and tonumber(w) > 0
+    end
+  end
+  bmp = nil
+  collect()
+  imageProbeCache[path] = result
+  return result
 end
+
+Host.collect = collect
 
 function Host.imageExists(path)
   if Host.imageLoads(path) then return true end
@@ -2085,7 +2111,14 @@ Dashboard.logoMissing = false
 Dashboard.missingPath = nil
 
 function Dashboard.placeLogo(r, filename)
+  if Dashboard.noLogo then
+    local F = Theme.font
+    label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
+          F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+    return
+  end
   local path = assetDir() .. filename
+  -- Cached in Host, so a rebuild does not re-open (and re-allocate) the file.
   local ok = Host.imageExists(path)
 
   -- Draw the wordmark FIRST, then the image over it. A probe that says
@@ -2337,6 +2370,9 @@ function Dashboard.build(standby, w, h)
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  -- lvgl.clear() drops the previous screen's objects and bitmaps; reclaim them
+  -- before allocating the next screen rather than letting both coexist.
+  Host.collect()
   Dashboard.logoMissing = false
   w = w or Host.lcdW
   h = h or Host.lcdH
@@ -2778,6 +2814,7 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
+  Dashboard.noLogo = (options and options.NoLogo == 1) or false
   Config.load()
   Sensors.reload(Host.modelName())
   built = nil
@@ -2807,12 +2844,14 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
+  { "NoLogo",     BOOL,   0 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
+  NoLogo     = "Disable Logo (low memory)",
 }
 
 function Widget.translate(name)

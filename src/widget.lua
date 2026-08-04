@@ -229,6 +229,7 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
+  Dashboard.noLogo = (options and options.NoLogo == 1) or false
   Config.load()
   Sensors.reload(Host.modelName())
   built = nil
@@ -258,12 +259,14 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
+  { "NoLogo",     BOOL,   0 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
+  NoLogo     = "Disable Logo (low memory)",
 }
 
 function Widget.translate(name)

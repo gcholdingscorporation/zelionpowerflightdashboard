@@ -179,7 +179,14 @@ Dashboard.logoMissing = false
 Dashboard.missingPath = nil
 
 function Dashboard.placeLogo(r, filename)
+  if Dashboard.noLogo then
+    local F = Theme.font
+    label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
+          F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+    return
+  end
   local path = assetDir() .. filename
+  -- Cached in Host, so a rebuild does not re-open (and re-allocate) the file.
   local ok = Host.imageExists(path)
 
   -- Draw the wordmark FIRST, then the image over it. A probe that says
@@ -431,6 +438,9 @@ function Dashboard.build(standby, w, h)
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  -- lvgl.clear() drops the previous screen's objects and bitmaps; reclaim them
+  -- before allocating the next screen rather than letting both coexist.
+  Host.collect()
   Dashboard.logoMissing = false
   w = w or Host.lcdW
   h = h or Host.lcdH

@@ -345,16 +345,42 @@ end
 -- Bitmap.open never returns nil - it hands back a "not found" placeholder that
 -- measures zero. So a non-nil bitmap proves nothing and a positive width
 -- proves everything.
+-- Results are cached per path, and the probe bitmap is dropped and collected
+-- immediately. Bitmap.open ALLOCATES: probing a file costs as much memory as
+-- displaying it, and on a radio the Lua heap is small enough that repeating
+-- that every rebuild - on top of the copy lvgl.image loads - exhausts it and
+-- faults the script.
+local imageProbeCache = {}
+
+local function collect()
+  local gc = g("collectgarbage")
+  if type(gc) == "function" then pcall(gc) end
+end
+
 function Host.imageLoads(path)
+  local cached = imageProbeCache[path]
+  if cached ~= nil then return cached end
   if type(bitmapTbl) ~= "table" or type(bitmapTbl.open) ~= "function" then
+    imageProbeCache[path] = false
     return false
   end
+  local result = false
   local ok, bmp = pcall(bitmapTbl.open, path)
-  if not ok or bmp == nil then return false end
-  if type(bitmapTbl.getSize) ~= "function" then return true end
-  local sized, w = pcall(bitmapTbl.getSize, bmp)
-  return sized and tonumber(w) ~= nil and tonumber(w) > 0
+  if ok and bmp ~= nil then
+    if type(bitmapTbl.getSize) ~= "function" then
+      result = true
+    else
+      local sized, w = pcall(bitmapTbl.getSize, bmp)
+      result = sized and tonumber(w) ~= nil and tonumber(w) > 0
+    end
+  end
+  bmp = nil
+  collect()
+  imageProbeCache[path] = result
+  return result
 end
+
+Host.collect = collect
 
 function Host.imageExists(path)
   if Host.imageLoads(path) then return true end

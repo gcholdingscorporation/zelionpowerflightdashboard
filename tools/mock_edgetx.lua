@@ -187,8 +187,12 @@ function Mock.install()
 
   -- EdgeTX's bitmap loader. imageExists() prefers this over fstat because it
   -- answers the question that actually matters: will this image render.
+  Mock.bitmapOpens = 0
   _G.Bitmap = {
     open = function(path)
+      -- Counted: Bitmap.open allocates on a radio, and re-probing a file on
+      -- every rebuild is what exhausted the Lua heap and faulted the script.
+      Mock.bitmapOpens = Mock.bitmapOpens + 1
       if Mock.state.files[path] == nil then return nil end
       return { path = path }
     end,

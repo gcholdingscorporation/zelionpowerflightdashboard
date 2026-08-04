@@ -127,8 +127,12 @@ H.test("fill height tracks the percentage", function()
 end)
 
 H.test("missing artwork falls back to type and says so", function()
-  local ZD = boot(800, 480, flying)
-  Mock.state.files["/WIDGETS/ZelionDash/logo_panel.png"] = nil
+  local ZD = boot(800, 480, function()
+    flying()
+    Mock.noDefaultLogos = true
+    Mock.state.files["/WIDGETS/ZelionDash/logo_standby.png"] = "PNG"
+    Mock.state.files["/WIDGETS/ZelionDash/logo_small.png"]   = "PNG"
+  end)
   ZD.Dashboard.build(false, 800, 480)
   H.truthy(ZD.Dashboard.logoMissing)
   local t = Mock.lvglText()
@@ -169,6 +173,17 @@ H.test("finds the artwork in a differently named widget folder", function()
   H.falsy(ZD.Dashboard.logoMissing, "artwork found, so nothing to report")
   H.truthy(string.find(table.concat(Mock.lvglImages(), "|"),
                        "/WIDGETS/zelion/logo_panel.png", 1, true))
+end)
+
+H.test("a rebuild does not re-open the artwork", function()
+  -- Bitmap.open allocates. Probing on every rebuild, on top of the copy
+  -- lvgl.image loads, exhausted the radio's Lua heap and put the transmitter
+  -- into emergency mode.
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 800, 480)
+  local after = Mock.bitmapOpens
+  for _ = 1, 10 do ZD.Dashboard.build(false, 800, 480) end
+  H.eq(Mock.bitmapOpens, after, "probe results must be cached, not re-taken")
 end)
 
 H.group("dashboard: host constant lookup")
