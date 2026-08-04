@@ -23,9 +23,13 @@ local function boot(w, h, opts, setup)
   Mock.install()
   Mock.installLvgl()
   Mock.installLogos()
+  -- Safe Mode defaults on so a stricken radio can boot; tests exercising the
+  -- real dashboard have to opt out of it explicitly.
+  opts = opts or {}
+  if opts.SafeMode == nil then opts.SafeMode = 0 end
   local widgetDef = loadDist()
-  local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts or {})
-  widgetDef.update(widget, opts or {})
+  local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts)
+  widgetDef.update(widget, opts)
   Mock.advanceSeconds(0.2)
   return widgetDef, widget
 end
@@ -123,8 +127,9 @@ H.test("shows the flight controller's flight count", function()
   Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
 
   local def = loadDist()
-  local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
-  def.update(widget, {})
+  local opts = { SafeMode = 0 }
+  local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
+  def.update(widget, opts)
   for _ = 1, 70 do
     Mock.advanceSeconds(0.1)
     def.background(widget)
@@ -181,6 +186,20 @@ H.test("safe mode is a fraction of the full dashboard", function()
   ZD.Dashboard.buildMinimal(800, 480)
   H.truthy(#Mock.lv.objects < full / 3,
            string.format("safe mode %d vs full %d", #Mock.lv.objects, full))
+end)
+
+H.test("safe mode is the default, so a stricken radio still boots", function()
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+  local def = loadDist()
+  local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
+  def.update(widget, {})            -- no SafeMode key at all
+  Mock.advanceSeconds(0.2)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "SAFE MODE", 1, true))
+  H.eq(#Mock.lvglImages(), 0, "no bitmap until explicitly enabled")
 end)
 
 H.group("build: sensor map")

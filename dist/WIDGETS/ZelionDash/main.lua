@@ -2828,6 +2828,14 @@ local function ensureScreen(widget)
     end
     return
   end
+  if Widget.safeMode then
+    if built ~= "safe" then
+      pcall(Dashboard.buildMinimal, zoneW, zoneH)
+      built = "safe"
+    end
+    return
+  end
+
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
     -- A widget must never be able to fault the transmitter. Lua raises on
@@ -2849,9 +2857,11 @@ local function ensureScreen(widget)
 end
 
 function Widget.create(zone, options)
-  Theme.build()
-  Config.load()
-  State.reloadModel()
+  -- create() and update() were the two entry points still unguarded. Anything
+  -- that raises here happens before a screen exists at all.
+  pcall(Theme.build)
+  pcall(Config.load)
+  pcall(State.reloadModel)
   built = nil
   zoneW, zoneH = nil, nil
   return { zone = zone, options = options }
@@ -2860,10 +2870,14 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
-  Dashboard.noLogo = (options and options.NoLogo == 1) or false
+  Dashboard.noLogo   = (options and options.NoLogo == 1) or false
+  -- Render level, so the failure can be bisected on the radio rather than
+  -- guessed at from here. Defaults ON: the widget must boot before it can be
+  -- diagnosed, and a degraded screen beats an emergency-mode transmitter.
+  Widget.safeMode    = (options == nil) or (options.SafeMode ~= 0)
   Widget.degraded = nil
-  Config.load()
-  Sensors.reload(Host.modelName())
+  pcall(Config.load)
+  pcall(Sensors.reload, Host.modelName())
   built = nil
   ensureScreen(widget)
 end
@@ -2894,6 +2908,7 @@ Widget.options = {
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
   { "NoLogo",     BOOL,   0 },
+  { "SafeMode",   BOOL,   1 },
 }
 
 Widget.OPTION_LABELS = {
@@ -2901,6 +2916,7 @@ Widget.OPTION_LABELS = {
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
   NoLogo     = "Disable Logo (low memory)",
+  SafeMode   = "Safe Mode (minimal screen)",
 }
 
 function Widget.translate(name)
