@@ -1859,17 +1859,18 @@ function Theme.build()
   if type(lcd) ~= "table" or type(lcd.RGB) ~= "function" then return end
   local rgb = lcd.RGB
 
-  -- Navy, not near-black. The three greys have to stay separable on a screen
-  -- being read in daylight: track is darker than bg so the empty part of the
-  -- gauge reads as a hole, and panel is lighter so a tile lifts off the page.
+  -- Navy, not near-black. Tiles are the same navy as the screen behind them,
+  -- so a panel is defined entirely by its green outline - there is no fill
+  -- contrast doing any of that work. Only two darks remain distinct: track
+  -- sits below bg so the empty part of the gauge still reads as a hole.
   --
   -- tools/make_logos.py flattens the artwork onto Theme.bg. Change this and
   -- the PNGs have to be regenerated, or every logo carries a box of the old
   -- background around it.
-  Theme.bg     = rgb( 10,  17,  40)
-  Theme.panel  = rgb( 17,  29,  59)
-  Theme.rule   = rgb( 40,  55,  95)
-  Theme.track  = rgb(  6,  10,  27)
+  Theme.bg     = rgb(  9,  16,  37)
+  Theme.panel  = Theme.bg
+  Theme.rule   = rgb( 37,  51,  87)
+  Theme.track  = rgb(  6,   9,  25)
   Theme.ink    = rgb(242, 245, 248)
   Theme.dim    = rgb(148, 163, 190)
 
@@ -1892,14 +1893,18 @@ function Theme.build()
   -- border when the state is one that needs attention.
   Theme.panelBr = Theme.lime
 
-  -- Governor panel backgrounds, keyed by the severity of the state.
-  Theme.govRunBg  = rgb( 21,  52,  22)
+  -- The governor tile matches every other tile while nothing is wrong - idle
+  -- and running are both just navy behind green, and the state is carried by
+  -- the word itself. Warning and critical keep a filled background: those are
+  -- the two an unmissable tile is for, and flattening them to match the rest
+  -- would be uniformity bought with the one signal worth having.
+  Theme.govRunBg  = Theme.bg
   Theme.govRunBr  = Theme.lime
   Theme.govWarnBg = rgb( 52,  40,  10)
   Theme.govWarnBr = rgb(160, 118,  20)
   Theme.govCritBg = rgb( 58,  16,  16)
   Theme.govCritBr = rgb(170,  50,  50)
-  Theme.govIdleBg = Theme.panel
+  Theme.govIdleBg = Theme.bg
   Theme.govIdleBr = Theme.lime
 
   Theme.built = true
@@ -2483,7 +2488,7 @@ local function buildLeftColumn()
   local c, b = L.cell, L.bar
 
   local roomy = L.class == "roomy"
-  V.cellPanel = panel(c, Theme.bg, Theme.limeDark, 6)
+  V.cellPanel = panel(c, Theme.panel, Theme.panelBr, 6)
   local y = c.y + (roomy and 4 or 3)
   label(c.x, y, c.w, "CELL", F.tiny, Theme.lime, ALIGN_CENTER)
   -- smallBold, not large: DBLSIZE is 58px on a TX16S and this chip is 75 tall.

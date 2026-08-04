@@ -306,7 +306,7 @@ local function buildLeftColumn()
   local c, b = L.cell, L.bar
 
   local roomy = L.class == "roomy"
-  V.cellPanel = panel(c, Theme.bg, Theme.limeDark, 6)
+  V.cellPanel = panel(c, Theme.panel, Theme.panelBr, 6)
   local y = c.y + (roomy and 4 or 3)
   label(c.x, y, c.w, "CELL", F.tiny, Theme.lime, ALIGN_CENTER)
   -- smallBold, not large: DBLSIZE is 58px on a TX16S and this chip is 75 tall.
