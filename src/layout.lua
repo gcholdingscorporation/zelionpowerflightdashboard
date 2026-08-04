@@ -22,26 +22,40 @@ Layout.ROOMY_MIN_WIDTH = 700
 
 -- Per-class constants. Vertical figures marked "anchor" are the design values
 -- at that class's reference height and are scaled when the screen differs.
+-- The right column was widened at the hero column's expense. The three tiles
+-- were 88px wide on a TX16S, which is barely three digits of MIDSIZE, and the
+-- logo sat in a 252px box with the governor cramped above it. Taking that
+-- width off the hero costs nothing: the hero only has to fit "1850" and "100",
+-- and both still do.
+--
+-- valShare is the fraction of a hero tile's inner width the big number gets,
+-- per tile, because a four-digit headspeed needs more of it than a
+-- three-digit percentage. See buildHeroTile.
 local CLASS = {
   roomy = {
     name = "roomy", refH = 480,
-    pad = 10, gap = 10, barW = 96, rightW = 274,
+    pad = 10, gap = 10, barW = 96, rightW = 340,
     topH = 40, stripH = 44, contentGap = 6, stripGap = 8,
     chipH = 75, colGapV = 8,
     heroGapV = 8, batShare = 0.508,
-    govH = 86, rowGapV = 8, tileH = 132, tileGapH = 5,
-    logoW = 252, logoH = 142,
+    batValShare = 0.62, hsValShare = 0.78,
+    govH = 90, rowGapV = 8, tileH = 110, tileGapH = 3,
   },
   tight = {
     name = "tight", refH = 320,
-    pad = 6, gap = 6, barW = 64, rightW = 168,
+    pad = 6, gap = 6, barW = 64, rightW = 190,
     topH = 28, stripH = 36, contentGap = 6, stripGap = 8,
     chipH = 61, colGapV = 7,
     heroGapV = 6, batShare = 0.5,
-    govH = 53, rowGapV = 7, tileH = 88, tileGapH = 3,
-    logoW = 153, logoH = 86,
+    batValShare = 0.62, hsValShare = 0.82,
+    govH = 56, rowGapV = 7, tileH = 74, tileGapH = 3,
   },
 }
+
+-- Height over width of the Zelion lockup, from assets/zelion_lockup.png.
+-- Everything that places the mark works from this rather than from a pair of
+-- pixel dimensions, so the artwork can be regenerated at any size.
+local LOGO_ASPECT = 1522 / 2708
 
 local function rect(x, y, w, h)
   return { x = x, y = y, w = w, h = h }
@@ -111,12 +125,15 @@ function Layout.build(w, h)
   local logoBox = rect(rightX, logoY, C.rightW, (contentTop + contentH) - logoY)
   L.logoBox = logoBox
 
-  -- The mark is centred in whatever space is left, never stretched: an
-  -- unevenly scaled logo is worse than a slightly smaller one.
-  local lw, lh = C.logoW, C.logoH
+  -- The mark fills whatever space is left at its own aspect ratio, never
+  -- stretched: an unevenly scaled logo is worse than a slightly smaller one.
+  -- Derived from the box rather than from fixed dimensions, so widening the
+  -- right column actually grows the logo instead of leaving it adrift in the
+  -- middle of a bigger box.
+  local lw, lh = logoBox.w, round(logoBox.w * LOGO_ASPECT)
   if lh > logoBox.h then
-    lw = round(lw * logoBox.h / lh)
     lh = logoBox.h
+    lw = round(lh / LOGO_ASPECT)
   end
   L.logo = rect(logoBox.x + round((logoBox.w - lw) / 2),
                 logoBox.y + round((logoBox.h - lh) / 2), lw, lh)
@@ -158,10 +175,19 @@ function Layout.buildStandby(w, h)
     lw = w - C.pad * 2
   end
 
-  L.logo    = rect(round((w - lw) / 2), top, lw, lh)
-  L.divider = rect(round(w * 0.25), L.logo.y + lh + 14, round(w * 0.5), 1)
-  L.tagline = rect(0, L.divider.y + 10, w, 16)
-  L.status  = rect(0, L.tagline.y + (className == "roomy" and 30 or 22), w, 20)
+  -- Centre the whole block - mark, divider, tagline, status - in the space
+  -- between the two rules, rather than pinning it to the top and letting all
+  -- the slack collect underneath. Measured from the same offsets used below,
+  -- so the two stay in step.
+  local dividerGap, taglineGap = 14, 10
+  local statusGap = (className == "roomy") and 30 or 22
+  local blockH = lh + dividerGap + taglineGap + statusGap + 20
+  local logoY  = top + math.max(0, round((avail - blockH) / 2))
+
+  L.logo    = rect(round((w - lw) / 2), logoY, lw, lh)
+  L.divider = rect(round(w * 0.25), L.logo.y + lh + dividerGap, round(w * 0.5), 1)
+  L.tagline = rect(0, L.divider.y + taglineGap, w, 16)
+  L.status  = rect(0, L.tagline.y + statusGap, w, 20)
   return L
 end
 

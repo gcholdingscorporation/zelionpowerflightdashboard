@@ -120,4 +120,55 @@ H.test("works without model.getSensor, losing only unit discovery", function()
   H.nilv(ZD.Sensors.boundTo("current"), "unit discovery is unavailable")
 end)
 
+H.group("config: [battery] settings")
+
+local function parse(text)
+  Mock.reset(); Mock.install()
+  local ZD = Loader.load()
+  local _, problems, settings = ZD.Config.parse(text)
+  return settings, problems, ZD
+end
+
+H.test("defaults match Rotorflight's stock cell thresholds", function()
+  local s = parse(nil)
+  H.eq(s.cellFull, 4.00)
+  H.eq(s.cellMin, 3.30)
+end)
+
+H.test("a pilot can retune the curve for their chemistry", function()
+  local s, problems = parse("[battery]\ncellFull = 4.20\ncellMin = 3.00\n")
+  H.eq(s.cellFull, 4.20)
+  H.eq(s.cellMin, 3.00)
+  H.eq(#problems, 0)
+end)
+
+H.test("the reserved section does not swallow sensor overrides", function()
+  Mock.reset(); Mock.install()
+  local ZD = Loader.load()
+  local sections, problems = ZD.Config.parse(
+    "[battery]\ncellMin = 3.20\n\n[Goblin 700]\nheadspeed = Hspd\n")
+  H.eq(#problems, 0)
+  H.eq(sections["goblin 700"].headspeed, "Hspd")
+  H.nilv(sections["battery"], "settings are not sensor bindings")
+end)
+
+H.test("a value outside the plausible range is a typo, not an intention", function()
+  local s, problems = parse("[battery]\ncellMin = 33\n")
+  H.truthy(#problems > 0, "must be reported")
+  H.eq(s.cellMin, 3.30, "and must not be applied")
+end)
+
+H.test("an inverted pair falls back rather than inverting the curve", function()
+  local s, problems = parse("[battery]\ncellFull = 3.40\ncellMin = 3.90\n")
+  H.truthy(#problems > 0)
+  H.eq(s.cellMin, 3.30)
+  H.eq(s.cellFull, 4.00)
+end)
+
+H.test("an unknown setting is named, not silently ignored", function()
+  local _, problems = parse("[battery]\ncellNominal = 3.7\n")
+  H.truthy(#problems > 0)
+  H.truthy(string.find(problems[1], "cellNominal", 1, true))
+end)
+
 end

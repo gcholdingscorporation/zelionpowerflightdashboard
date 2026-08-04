@@ -37,11 +37,27 @@ local function trim(s)
   return (string.gsub(tostring(s or ""), "^%s*(.-)%s*$", "%1"))
 end
 
--- Parse into { [sectionLower] = { [roleName] = sensorName } }.
--- Returns sections, problems.
+-- One reserved section name that holds settings rather than sensor overrides.
+-- A model called "battery" would be an odd thing to name a helicopter, and the
+-- alternative - a second file - is worse.
+Config.SETTINGS_SECTION = "battery"
+
+-- Numbers, with the range each is allowed to take. Anything outside it is a
+-- typo rather than an intention, and a wrong cell voltage here would quietly
+-- misreport the state of charge in the air.
+local SETTINGS = {
+  cellFull = { default = 4.00, min = 3.00, max = 4.50 },
+  cellMin  = { default = 3.30, min = 2.50, max = 4.00 },
+}
+
+-- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus
+-- Config.settings for the reserved section.
+-- Returns sections, problems, settings.
 function Config.parse(text)
   local sections, problems = {}, {}
-  if not text or text == "" then return sections, problems end
+  local settings = {}
+  for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
+  if not text or text == "" then return sections, problems, settings end
 
   local current = "*"
   sections[current] = sections[current] or {}
@@ -57,7 +73,10 @@ function Config.parse(text)
       local section = string.match(line, "^%[(.+)%]$")
       if section then
         current = string.lower(trim(section))
-        sections[current] = sections[current] or {}
+        -- The reserved section holds settings, so it gets no bindings table.
+        if current ~= Config.SETTINGS_SECTION then
+          sections[current] = sections[current] or {}
+        end
       else
         local key, value = string.match(line, "^([^=]+)=(.*)$")
         key   = trim(key)
@@ -65,6 +84,19 @@ function Config.parse(text)
         if key == "" or value == "" then
           problems[#problems + 1] =
             string.format("line %d: expected 'role = sensor'", lineNo)
+        elseif current == Config.SETTINGS_SECTION then
+          local spec = SETTINGS[key]
+          local n = tonumber(value)
+          if not spec then
+            problems[#problems + 1] =
+              string.format("line %d: unknown [battery] setting '%s'", lineNo, key)
+          elseif not n or n < spec.min or n > spec.max then
+            problems[#problems + 1] =
+              string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
+                            spec.min, spec.max)
+          else
+            settings[key] = n
+          end
         elseif not Roles.get(key) then
           problems[#problems + 1] =
             string.format("line %d: unknown role '%s'", lineNo, key)
@@ -75,12 +107,29 @@ function Config.parse(text)
     end
   end
 
-  return sections, problems
+  if settings.cellMin >= settings.cellFull then
+    problems[#problems + 1] = "cellMin must be below cellFull"
+    settings.cellMin  = SETTINGS.cellMin.default
+    settings.cellFull = SETTINGS.cellFull.default
+  end
+
+  return sections, problems, settings
 end
 
 Config.sections = {}
 Config.problems = {}
+Config.settings = {}
 Config.loaded   = false
+
+-- The reserved section is not model-scoped: one pack chemistry per radio is
+-- the common case, and per-model curves would need a second lookup for a
+-- setting almost nobody changes.
+function Config.setting(name)
+  if not Config.loaded then Config.load() end
+  local v = Config.settings[name]
+  if v ~= nil then return v end
+  return SETTINGS[name] and SETTINGS[name].default
+end
 
 function Config.load()
   Config.sections = {}
@@ -90,9 +139,11 @@ function Config.load()
   if not text then
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.
+    local _, _, defaults = Config.parse(nil)
+    Config.settings = defaults
     return false
   end
-  Config.sections, Config.problems = Config.parse(text)
+  Config.sections, Config.problems, Config.settings = Config.parse(text)
   return true
 end
 

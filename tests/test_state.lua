@@ -185,4 +185,72 @@ H.test("disarm is latched once and consumed once", function()
   H.falsy(ZD.State.consumeDisarm(), "second consumer must not re-log it")
 end)
 
+--------------------------------------------------------------------------
+-- Battery charge
+--------------------------------------------------------------------------
+--
+-- Rotorflight computes this on the flight controller (Smart Fuel) and ships it
+-- as the Bat% sensor, so on a Rotorflight heli none of this runs. The fallback
+-- exists for a flight controller that is not Rotorflight, or one with Smart
+-- Fuel switched off, and it reproduces Rotorflight's own VOLTAGE-mode curve so
+-- the two setups do not disagree about the same pack.
+
+H.group("state: battery charge from voltage")
+
+H.test("matches Rotorflight's curve", function()
+  local ZD = fresh()
+  local f = ZD.State.chargeFromCellVoltage
+  -- The sigmoid from src/main/sensors/smartfuel.c, evaluated at the stock
+  -- 3.30/4.00 thresholds. EdgeTX Lua has no reliable math.exp, so this is an
+  -- approximation - it has to stay within a percentage point of the real one.
+  for _, c in ipairs({ {4.20,100.0}, {4.00,100.0}, {3.90,98.1}, {3.80,86.8},
+                       {3.75,70.2},  {3.70,45.7},  {3.65,23.1}, {3.60,9.7},
+                       {3.50,1.4},   {3.30,0.0},   {3.20,0.0} }) do
+    local got = f(c[1], 3.30, 4.00)
+    H.truthy(math.abs(got - c[2]) < 1.0,
+             string.format("%.2fV/cell: got %.1f%%, Rotorflight says %.1f%%",
+                           c[1], got, c[2]))
+  end
+end)
+
+H.test("never leaves 0..100, and never goes backwards", function()
+  local ZD = fresh()
+  local f, last = ZD.State.chargeFromCellVoltage, -1
+  for mv = 250, 450 do
+    local pct = f(mv / 100, 3.30, 4.00)
+    H.truthy(pct >= 0 and pct <= 100,
+             string.format("%.2fV gave %.2f%%", mv / 100, pct))
+    H.truthy(pct >= last, "charge must rise with voltage")
+    last = pct
+  end
+end)
+
+H.test("derives a percentage when the flight controller publishes none", function()
+  local ZD = fresh(function() Mock.addSensor("Vcel", 1, 3.80) end)
+  run(ZD, 0.3)
+  H.truthy(ZD.State.valid("batteryPercent"), "cell voltage is enough on its own")
+  H.eq(ZD.State.status("batteryPercent"), "derived")
+  H.truthy(math.abs(ZD.State.num("batteryPercent") - 86.8) < 1.0)
+end)
+
+H.test("the flight controller's own reading always wins", function()
+  -- Rotorflight knows the pack's history, models sag from stick deflection and
+  -- can count coulombs. Overriding that with a bare voltage curve would be a
+  -- downgrade, so a valid Bat% is never touched.
+  local ZD = fresh(function()
+    Mock.addSensor("Vcel", 1, 3.80)      -- the curve would say ~87%
+    Mock.addSensor("Bat%", 13, 42)
+  end)
+  run(ZD, 0.3)
+  H.eq(ZD.State.num("batteryPercent"), 42)
+  H.eq(ZD.State.status("batteryPercent"), "ok")
+end)
+
+H.test("no cell voltage means no guess", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1850) end)
+  run(ZD, 0.3)
+  H.falsy(ZD.State.valid("batteryPercent"),
+          "a fabricated percentage is worse than an honest --")
+end)
+
 end

@@ -23,10 +23,7 @@ local function boot(w, h, opts, setup)
   Mock.install()
   Mock.installLvgl()
   Mock.installLogos()
-  -- Safe Mode defaults on so a stricken radio can boot; tests exercising the
-  -- real dashboard have to opt out of it explicitly.
   opts = opts or {}
-  if opts.Level == nil then opts.Level = 3 end
   local widgetDef = loadDist()
   local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts)
   widgetDef.update(widget, opts)
@@ -127,7 +124,7 @@ H.test("shows the flight controller's flight count", function()
   Mock.installRf2({ apiVersion = 12.09, modelName = "Goblin 700" })
 
   local def = loadDist()
-  local opts = { Level = 3 }
+  local opts = {}
   local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
   def.update(widget, opts)
   for _ = 1, 70 do
@@ -188,51 +185,48 @@ H.test("safe mode is a fraction of the full dashboard", function()
            string.format("safe mode %d vs full %d", #Mock.lv.objects, full))
 end)
 
-H.test("level 1 draws no rounded corner anywhere", function()
-  local def, widget = boot(800, 480, { Level = 1 }, flying)
-  def.refresh(widget, 0, nil)
-  for _, o in ipairs(Mock.lv.objects) do
-    if o.kind == "rect" then
-      H.eq(o.props.rounded, 0, "level 1 must be square-cornered throughout")
-    end
-  end
-  H.eq(#Mock.lvglImages(), 0, "and carry no images")
-end)
-
-H.test("level 2 restores rounded corners but still no images", function()
-  local def, widget = boot(800, 480, { Level = 2 }, flying)
-  def.refresh(widget, 0, nil)
-  local rounded = 0
-  for _, o in ipairs(Mock.lv.objects) do
-    if o.kind == "rect" and (o.props.rounded or 0) > 0 then rounded = rounded + 1 end
-  end
-  H.truthy(rounded > 0, "corners are back")
-  H.eq(#Mock.lvglImages(), 0, "images are not")
-end)
-
-H.test("the full dashboard is the default", function()
-  -- It defaulted to safe mode while the emergency-mode reboot was unexplained.
-  -- The cause was XXLSIZE + BOLD selecting a font index EdgeTX has no font for;
-  -- with that fixed at the source, a fresh install should show the product.
+H.test("the full dashboard is what a fresh install shows", function()
+  -- There used to be a Level option that stepped the renderer down one
+  -- construct at a time, defaulting to safe mode. It existed only to bisect
+  -- the emergency-mode reboot on hardware, and that turned out to be
+  -- XXLSIZE + BOLD selecting a font index EdgeTX has no font for. Option gone;
+  -- the automatic ladder below is the part that still matters.
   Mock.reset(); Mock.removeRf2()
   Mock.state.lcdW, Mock.state.lcdH = 800, 480
   flying()
   Mock.install(); Mock.installLvgl(); Mock.installLogos()
   local def = loadDist()
   local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
-  def.update(widget, {})            -- no Level key at all
+  def.update(widget, {})            -- no options at all
   Mock.advanceSeconds(0.2)
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
   H.falsy(string.find(t, "SAFE MODE", 1, true), "not degraded out of the box")
   H.truthy(string.find(t, "1850", 1, true), "headspeed on screen")
+  H.truthy(#Mock.lvglImages() > 0, "and the artwork is on")
+  for _, name in ipairs({"ArmSwitch", "HoldSwitch", "SensorMap"}) do
+    local found = false
+    for _, o in ipairs(def.options) do if o[1] == name then found = true end end
+    H.truthy(found, name .. " must survive")
+  end
+  for _, o in ipairs(def.options) do
+    H.truthy(o[1] ~= "Level", "the Level option is gone")
+  end
 end)
 
-H.test("safe mode is still reachable when a radio needs it", function()
-  local def, widget = boot(800, 480, { Level = 0 }, flying)
+H.test("a build that keeps failing still lands on something drawable", function()
+  -- The ladder: full -> no logo -> no rounded corners -> safe mode. Nothing
+  -- selects those any more, so this is the only thing exercising them.
+  local def, widget = boot(800, 480, nil, flying)
   def.refresh(widget, 0, nil)
-  H.truthy(string.find(Mock.lvglText(), "SAFE MODE", 1, true))
-  H.eq(#Mock.lvglImages(), 0, "no bitmap in safe mode")
+  Mock.lvglFailAfter = 3
+  local ok = pcall(function()
+    Mock.advanceSeconds(5)
+    Mock.setSensor("Hspd", 0)
+    for _ = 1, 20 do Mock.advanceSeconds(0.3); def.refresh(widget, 0, nil) end
+  end)
+  Mock.lvglFailAfter = nil
+  H.truthy(ok, "a failing build must never propagate out of refresh")
 end)
 
 H.group("build: sensor map")

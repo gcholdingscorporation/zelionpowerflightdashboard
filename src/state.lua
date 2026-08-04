@@ -16,6 +16,7 @@ return function(ZD)
 local Host    = ZD.Host
 local Roles   = ZD.Roles
 local Sensors = ZD.Sensors
+local Config  = ZD.Config
 local RF2     = ZD.RF2
 
 local State = {}
@@ -216,6 +217,73 @@ local function derivePower()
   end
 end
 
+-- Rotorflight computes the state of charge on the flight controller - the
+-- "Smart Fuel" feature - and publishes the result as the Bat% telemetry
+-- sensor (sid 0x1014, "Main battery charge / fuel level"). So on a Rotorflight
+-- heli the batteryPercent role binds straight to it and nothing here runs:
+-- the FC has the pack's history, the sag model and the stick positions, and
+-- this widget has none of those.
+--
+-- Its four modes, from src/main/sensors/smartfuel.c:
+--   OFF       nothing is computed
+--   VOLTAGE   sag-compensated cell voltage through a sigmoid
+--   CURRENT   initial charge minus used capacity, falling back to VOLTAGE
+--             when no capacity is configured
+--   COMBINED  the lower of the two - the conservative reading, and the one
+--             worth setting on a heli
+--
+-- The fallback below is for the other case: a flight controller that is not
+-- Rotorflight, or one with Smart Fuel switched off. It is deliberately the
+-- same curve Rotorflight uses in VOLTAGE mode, so a pilot who has seen the
+-- number on one setup reads the same number on the other:
+--
+--   scaled = 3.0 + (cell - min) / (full - min) * 1.2      clamped to 3.0..4.2
+--   charge = 1 / (1 + e^(-12 * (scaled - 3.7)))
+--
+-- What it cannot do is Rotorflight's sag compensation, which needs collective
+-- and cyclic deflection. Under load this therefore reads low - which is the
+-- safe direction to be wrong in, and why it is only ever a fallback.
+local function expApprox(x)
+  -- No math.exp in some EdgeTX Lua builds, and this is cheaper anyway.
+  -- Two-term scaling and squaring: exact enough for a curve drawn at 1% steps.
+  local n = 1 + x / 256
+  for _ = 1, 8 do n = n * n end
+  return n
+end
+
+local function chargeFromCellVoltage(cell, cellMin, cellFull)
+  if cell >= cellFull then return 100 end
+  if cell <= cellMin  then return 0 end
+  local scaled = 3.0 + ((cell - cellMin) / (cellFull - cellMin)) * 1.2
+  if scaled < 3.0 then scaled = 3.0 elseif scaled > 4.2 then scaled = 4.2 end
+  local charge = 1 / (1 + expApprox(-12 * (scaled - 3.7)))
+  if charge < 0 then charge = 0 elseif charge > 1 then charge = 1 end
+  return charge * 100
+end
+
+State.chargeFromCellVoltage = chargeFromCellVoltage
+
+local function deriveFuel()
+  local s = slot("batteryPercent")
+  if s.valid then return end          -- the FC already said; never second-guess it
+  local cell, cellOk = State.get("cellVoltage")
+  if not cellOk then return end
+  local pct = chargeFromCellVoltage(cell,
+                                    Config.setting("cellMin"),
+                                    Config.setting("cellFull"))
+  if not Roles.isSane("batteryPercent", pct) then return end
+  s.value  = pct
+  s.valid  = true
+  s.status = "derived"
+  if State.holdActive then return end
+  if not s.hasExtremes then
+    s.min, s.max, s.hasExtremes = pct, pct, true
+  else
+    if pct > s.max then s.max = pct end
+    if pct < s.min then s.min = pct end
+  end
+end
+
 local function updateFlightTimer(now)
   -- Count wall-clock seconds rather than service ticks so a skipped frame does
   -- not shorten the recorded flight time.
@@ -273,6 +341,7 @@ function State.service(now, opts)
   for i = 1, #Roles.order do
     sampleRole(Roles.order[i])
   end
+  deriveFuel()
   derivePower()
 
   updateFlightTimer(now)

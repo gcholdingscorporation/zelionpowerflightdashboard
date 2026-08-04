@@ -36,8 +36,8 @@ H.group("layout: 800x480 matches the design")
 H.test("columns land on the design coordinates", function()
   local L = load(800, 480).Layout.build(800, 480)
   H.eq(L.cell.x, 10);   H.eq(L.cell.w, 96)
-  H.eq(L.battery.x, 116); H.eq(L.battery.w, 390)
-  H.eq(L.gov.x, 516);   H.eq(L.gov.w, 274)
+  H.eq(L.battery.x, 116); H.eq(L.battery.w, 324)
+  H.eq(L.gov.x, 450);   H.eq(L.gov.w, 340)
 end)
 
 H.test("vertical bands land on the design coordinates", function()
@@ -48,16 +48,33 @@ H.test("vertical bands land on the design coordinates", function()
   H.eq(L.content.h, 382)
   H.eq(L.cell.y, 46);  H.eq(L.cell.h, 75)
   H.eq(L.bar.y, 129);  H.eq(L.bar.h, 299)
-  H.eq(L.gov.h, 86)
-  H.eq(L.tiles[1].y, 140); H.eq(L.tiles[1].h, 132)
+  H.eq(L.gov.h, 90)
+  H.eq(L.tiles[1].y, 144); H.eq(L.tiles[1].h, 110)
 end)
 
 H.test("three tiles fill the right column exactly", function()
   local L = load(800, 480).Layout.build(800, 480)
-  H.eq(L.tiles[1].x, 516)
-  H.eq(L.tiles[3].x + L.tiles[3].w, 516 + 274, "row ends flush with the column")
+  H.eq(L.tiles[1].x, 450)
+  H.eq(L.tiles[3].x + L.tiles[3].w, 450 + 340, "row ends flush with the column")
   for i = 1, 2 do
     H.truthy(L.tiles[i].x + L.tiles[i].w <= L.tiles[i+1].x, "tiles must not overlap")
+  end
+end)
+
+H.test("the hero still fits its biggest reading after the trim", function()
+  -- Width moved from the hero column to the right column. The hero only has
+  -- to hold "100" and "1850" at XXLSIZE, where a digit is about 0.55 of the
+  -- line height; if that stops being true the numbers clip into their units.
+  for _, s in ipairs({ {800, 480, "lrg", 102}, {480, 320, "std", 69} }) do
+    local ZD = load(s[1], s[2])
+    local L = ZD.Layout.build(s[1], s[2])
+    local digit = s[4] * 0.55
+    local padX = (L.class == "roomy") and 14 or 8
+    local inner = L.battery.w - padX * 2
+    H.truthy(math.floor(inner * L.c.batValShare) >= digit * 3,
+             string.format("%dx%d battery cannot hold 3 digits", s[1], s[2]))
+    H.truthy(math.floor(inner * L.c.hsValShare) >= digit * 4,
+             string.format("%dx%d headspeed cannot hold 4 digits", s[1], s[2]))
   end
 end)
 
@@ -66,21 +83,27 @@ H.group("layout: 480x320 matches the design")
 H.test("columns and bands land on the design coordinates", function()
   local L = load(480, 320).Layout.build(480, 320)
   H.eq(L.cell.x, 6);     H.eq(L.cell.w, 64)
-  H.eq(L.battery.x, 76); H.eq(L.battery.w, 224)
-  H.eq(L.gov.x, 306);    H.eq(L.gov.w, 168)
+  H.eq(L.battery.x, 76); H.eq(L.battery.w, 202)
+  H.eq(L.gov.x, 284);    H.eq(L.gov.w, 190)
   H.eq(L.topRule, 28)
   H.eq(L.stripRule, 284)
   H.eq(L.content.y, 34); H.eq(L.content.h, 242)
   H.eq(L.bar.y, 102)
-  H.eq(L.tiles[1].w, 54, "narrow tiles are what buys the logo its width")
+  H.eq(L.tiles[1].w, 61)
 end)
 
-H.test("the logo gets its full 153px", function()
-  local L = load(480, 320).Layout.build(480, 320)
-  H.eq(L.logo.w, 153)
-  H.eq(L.logo.h, 86)
-  H.truthy(L.logo.x >= L.logoBox.x, "centred inside its box")
-  H.eq(L.logo.x + L.logo.w <= L.logoBox.x + L.logoBox.w, true)
+H.test("the logo fills its box at the artwork's own aspect ratio", function()
+  -- It used to be a fixed 153x86 that stayed put when the column widened.
+  -- The sizes here are what tools/make_logos.py has to write.
+  for _, s in ipairs({ {800, 480, 295, 166}, {480, 320, 174, 98} }) do
+    local L = load(s[1], s[2]).Layout.build(s[1], s[2])
+    H.eq(L.logo.w, s[3]); H.eq(L.logo.h, s[4])
+    H.truthy(L.logo.x >= L.logoBox.x, "centred inside its box")
+    H.truthy(L.logo.x + L.logo.w <= L.logoBox.x + L.logoBox.w)
+    H.truthy(L.logo.y + L.logo.h <= L.logoBox.y + L.logoBox.h)
+    H.truthy(L.logo.w * L.logo.h <= 320 * 180,
+             "over the pixel count verified good on hardware")
+  end
 end)
 
 H.group("layout: structural invariants")

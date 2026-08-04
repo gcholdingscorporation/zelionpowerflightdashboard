@@ -34,7 +34,6 @@ local function flag(name, fallback)
 end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
-local VALUE  = flag("VALUE", 0)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
 Widget.showSensors = false
@@ -213,13 +212,6 @@ local function ensureScreen(widget)
     end
     return
   end
-  if Widget.safeMode then
-    if built ~= "safe" then
-      pcall(Dashboard.buildMinimal, zoneW, zoneH)
-      built = "safe"
-    end
-    return
-  end
 
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
@@ -260,25 +252,14 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
-  -- Render level. 3 is the product; the lower steps each drop one construct
-  -- and exist as an escape hatch on a radio that misbehaves:
-  --   0  safe mode - labels and one square rectangle
-  --   1  full dashboard, square corners, no images
-  --   2  full dashboard, rounded corners, no images
-  --   3  full dashboard, rounded corners, images
-  --
-  -- It used to default to 0. That was while the emergency-mode reboot was
-  -- still unexplained and any screen at all beat a dead transmitter; the cause
-  -- turned out to be XXLSIZE + BOLD resolving to a font index EdgeTX has no
-  -- font for (see Theme.font), which is fixed at the source. The ladder below
-  -- in ensureScreen() stays as a backstop.
-  local level = tonumber(options and options.Level) or 3
-  if level < 0 then level = 0 elseif level > 3 then level = 3 end
-  Widget.level      = level
-  Widget.safeMode   = (level == 0)
-  Dashboard.level   = level
-  Dashboard.noRound = (level <= 1)
-  Dashboard.noLogo  = (level <= 2)
+  -- There used to be a Level option here, stepping the renderer down one
+  -- construct at a time. It existed only to bisect the emergency-mode reboot
+  -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
+  -- index EdgeTX has no font for (see Theme.font), so the option has done its
+  -- job. The automatic ladder in ensureScreen() stays - it is the part that
+  -- protects a radio nobody is standing next to.
+  Dashboard.noRound = false
+  Dashboard.noLogo  = false
   Widget.degraded = nil
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName())
@@ -311,14 +292,12 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
-  { "Level",      VALUE,  3, 0, 3 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
-  Level      = "Render Level 0-3",
 }
 
 function Widget.translate(name)

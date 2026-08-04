@@ -755,11 +755,27 @@ local function trim(s)
   return (string.gsub(tostring(s or ""), "^%s*(.-)%s*$", "%1"))
 end
 
--- Parse into { [sectionLower] = { [roleName] = sensorName } }.
--- Returns sections, problems.
+-- One reserved section name that holds settings rather than sensor overrides.
+-- A model called "battery" would be an odd thing to name a helicopter, and the
+-- alternative - a second file - is worse.
+Config.SETTINGS_SECTION = "battery"
+
+-- Numbers, with the range each is allowed to take. Anything outside it is a
+-- typo rather than an intention, and a wrong cell voltage here would quietly
+-- misreport the state of charge in the air.
+local SETTINGS = {
+  cellFull = { default = 4.00, min = 3.00, max = 4.50 },
+  cellMin  = { default = 3.30, min = 2.50, max = 4.00 },
+}
+
+-- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus
+-- Config.settings for the reserved section.
+-- Returns sections, problems, settings.
 function Config.parse(text)
   local sections, problems = {}, {}
-  if not text or text == "" then return sections, problems end
+  local settings = {}
+  for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
+  if not text or text == "" then return sections, problems, settings end
 
   local current = "*"
   sections[current] = sections[current] or {}
@@ -775,7 +791,10 @@ function Config.parse(text)
       local section = string.match(line, "^%[(.+)%]$")
       if section then
         current = string.lower(trim(section))
-        sections[current] = sections[current] or {}
+        -- The reserved section holds settings, so it gets no bindings table.
+        if current ~= Config.SETTINGS_SECTION then
+          sections[current] = sections[current] or {}
+        end
       else
         local key, value = string.match(line, "^([^=]+)=(.*)$")
         key   = trim(key)
@@ -783,6 +802,19 @@ function Config.parse(text)
         if key == "" or value == "" then
           problems[#problems + 1] =
             string.format("line %d: expected 'role = sensor'", lineNo)
+        elseif current == Config.SETTINGS_SECTION then
+          local spec = SETTINGS[key]
+          local n = tonumber(value)
+          if not spec then
+            problems[#problems + 1] =
+              string.format("line %d: unknown [battery] setting '%s'", lineNo, key)
+          elseif not n or n < spec.min or n > spec.max then
+            problems[#problems + 1] =
+              string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
+                            spec.min, spec.max)
+          else
+            settings[key] = n
+          end
         elseif not Roles.get(key) then
           problems[#problems + 1] =
             string.format("line %d: unknown role '%s'", lineNo, key)
@@ -793,12 +825,29 @@ function Config.parse(text)
     end
   end
 
-  return sections, problems
+  if settings.cellMin >= settings.cellFull then
+    problems[#problems + 1] = "cellMin must be below cellFull"
+    settings.cellMin  = SETTINGS.cellMin.default
+    settings.cellFull = SETTINGS.cellFull.default
+  end
+
+  return sections, problems, settings
 end
 
 Config.sections = {}
 Config.problems = {}
+Config.settings = {}
 Config.loaded   = false
+
+-- The reserved section is not model-scoped: one pack chemistry per radio is
+-- the common case, and per-model curves would need a second lookup for a
+-- setting almost nobody changes.
+function Config.setting(name)
+  if not Config.loaded then Config.load() end
+  local v = Config.settings[name]
+  if v ~= nil then return v end
+  return SETTINGS[name] and SETTINGS[name].default
+end
 
 function Config.load()
   Config.sections = {}
@@ -808,9 +857,11 @@ function Config.load()
   if not text then
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.
+    local _, _, defaults = Config.parse(nil)
+    Config.settings = defaults
     return false
   end
-  Config.sections, Config.problems = Config.parse(text)
+  Config.sections, Config.problems, Config.settings = Config.parse(text)
   return true
 end
 
@@ -1323,6 +1374,7 @@ return function(ZD)
 local Host    = ZD.Host
 local Roles   = ZD.Roles
 local Sensors = ZD.Sensors
+local Config  = ZD.Config
 local RF2     = ZD.RF2
 
 local State = {}
@@ -1523,6 +1575,73 @@ local function derivePower()
   end
 end
 
+-- Rotorflight computes the state of charge on the flight controller - the
+-- "Smart Fuel" feature - and publishes the result as the Bat% telemetry
+-- sensor (sid 0x1014, "Main battery charge / fuel level"). So on a Rotorflight
+-- heli the batteryPercent role binds straight to it and nothing here runs:
+-- the FC has the pack's history, the sag model and the stick positions, and
+-- this widget has none of those.
+--
+-- Its four modes, from src/main/sensors/smartfuel.c:
+--   OFF       nothing is computed
+--   VOLTAGE   sag-compensated cell voltage through a sigmoid
+--   CURRENT   initial charge minus used capacity, falling back to VOLTAGE
+--             when no capacity is configured
+--   COMBINED  the lower of the two - the conservative reading, and the one
+--             worth setting on a heli
+--
+-- The fallback below is for the other case: a flight controller that is not
+-- Rotorflight, or one with Smart Fuel switched off. It is deliberately the
+-- same curve Rotorflight uses in VOLTAGE mode, so a pilot who has seen the
+-- number on one setup reads the same number on the other:
+--
+--   scaled = 3.0 + (cell - min) / (full - min) * 1.2      clamped to 3.0..4.2
+--   charge = 1 / (1 + e^(-12 * (scaled - 3.7)))
+--
+-- What it cannot do is Rotorflight's sag compensation, which needs collective
+-- and cyclic deflection. Under load this therefore reads low - which is the
+-- safe direction to be wrong in, and why it is only ever a fallback.
+local function expApprox(x)
+  -- No math.exp in some EdgeTX Lua builds, and this is cheaper anyway.
+  -- Two-term scaling and squaring: exact enough for a curve drawn at 1% steps.
+  local n = 1 + x / 256
+  for _ = 1, 8 do n = n * n end
+  return n
+end
+
+local function chargeFromCellVoltage(cell, cellMin, cellFull)
+  if cell >= cellFull then return 100 end
+  if cell <= cellMin  then return 0 end
+  local scaled = 3.0 + ((cell - cellMin) / (cellFull - cellMin)) * 1.2
+  if scaled < 3.0 then scaled = 3.0 elseif scaled > 4.2 then scaled = 4.2 end
+  local charge = 1 / (1 + expApprox(-12 * (scaled - 3.7)))
+  if charge < 0 then charge = 0 elseif charge > 1 then charge = 1 end
+  return charge * 100
+end
+
+State.chargeFromCellVoltage = chargeFromCellVoltage
+
+local function deriveFuel()
+  local s = slot("batteryPercent")
+  if s.valid then return end          -- the FC already said; never second-guess it
+  local cell, cellOk = State.get("cellVoltage")
+  if not cellOk then return end
+  local pct = chargeFromCellVoltage(cell,
+                                    Config.setting("cellMin"),
+                                    Config.setting("cellFull"))
+  if not Roles.isSane("batteryPercent", pct) then return end
+  s.value  = pct
+  s.valid  = true
+  s.status = "derived"
+  if State.holdActive then return end
+  if not s.hasExtremes then
+    s.min, s.max, s.hasExtremes = pct, pct, true
+  else
+    if pct > s.max then s.max = pct end
+    if pct < s.min then s.min = pct end
+  end
+end
+
 local function updateFlightTimer(now)
   -- Count wall-clock seconds rather than service ticks so a skipped frame does
   -- not shorten the recorded flight time.
@@ -1580,6 +1699,7 @@ function State.service(now, opts)
   for i = 1, #Roles.order do
     sampleRole(Roles.order[i])
   end
+  deriveFuel()
   derivePower()
 
   updateFlightTimer(now)
@@ -1862,26 +1982,40 @@ Layout.ROOMY_MIN_WIDTH = 700
 
 -- Per-class constants. Vertical figures marked "anchor" are the design values
 -- at that class's reference height and are scaled when the screen differs.
+-- The right column was widened at the hero column's expense. The three tiles
+-- were 88px wide on a TX16S, which is barely three digits of MIDSIZE, and the
+-- logo sat in a 252px box with the governor cramped above it. Taking that
+-- width off the hero costs nothing: the hero only has to fit "1850" and "100",
+-- and both still do.
+--
+-- valShare is the fraction of a hero tile's inner width the big number gets,
+-- per tile, because a four-digit headspeed needs more of it than a
+-- three-digit percentage. See buildHeroTile.
 local CLASS = {
   roomy = {
     name = "roomy", refH = 480,
-    pad = 10, gap = 10, barW = 96, rightW = 274,
+    pad = 10, gap = 10, barW = 96, rightW = 340,
     topH = 40, stripH = 44, contentGap = 6, stripGap = 8,
     chipH = 75, colGapV = 8,
     heroGapV = 8, batShare = 0.508,
-    govH = 86, rowGapV = 8, tileH = 132, tileGapH = 5,
-    logoW = 252, logoH = 142,
+    batValShare = 0.62, hsValShare = 0.78,
+    govH = 90, rowGapV = 8, tileH = 110, tileGapH = 3,
   },
   tight = {
     name = "tight", refH = 320,
-    pad = 6, gap = 6, barW = 64, rightW = 168,
+    pad = 6, gap = 6, barW = 64, rightW = 190,
     topH = 28, stripH = 36, contentGap = 6, stripGap = 8,
     chipH = 61, colGapV = 7,
     heroGapV = 6, batShare = 0.5,
-    govH = 53, rowGapV = 7, tileH = 88, tileGapH = 3,
-    logoW = 153, logoH = 86,
+    batValShare = 0.62, hsValShare = 0.82,
+    govH = 56, rowGapV = 7, tileH = 74, tileGapH = 3,
   },
 }
+
+-- Height over width of the Zelion lockup, from assets/zelion_lockup.png.
+-- Everything that places the mark works from this rather than from a pair of
+-- pixel dimensions, so the artwork can be regenerated at any size.
+local LOGO_ASPECT = 1522 / 2708
 
 local function rect(x, y, w, h)
   return { x = x, y = y, w = w, h = h }
@@ -1951,12 +2085,15 @@ function Layout.build(w, h)
   local logoBox = rect(rightX, logoY, C.rightW, (contentTop + contentH) - logoY)
   L.logoBox = logoBox
 
-  -- The mark is centred in whatever space is left, never stretched: an
-  -- unevenly scaled logo is worse than a slightly smaller one.
-  local lw, lh = C.logoW, C.logoH
+  -- The mark fills whatever space is left at its own aspect ratio, never
+  -- stretched: an unevenly scaled logo is worse than a slightly smaller one.
+  -- Derived from the box rather than from fixed dimensions, so widening the
+  -- right column actually grows the logo instead of leaving it adrift in the
+  -- middle of a bigger box.
+  local lw, lh = logoBox.w, round(logoBox.w * LOGO_ASPECT)
   if lh > logoBox.h then
-    lw = round(lw * logoBox.h / lh)
     lh = logoBox.h
+    lw = round(lh / LOGO_ASPECT)
   end
   L.logo = rect(logoBox.x + round((logoBox.w - lw) / 2),
                 logoBox.y + round((logoBox.h - lh) / 2), lw, lh)
@@ -1998,10 +2135,19 @@ function Layout.buildStandby(w, h)
     lw = w - C.pad * 2
   end
 
-  L.logo    = rect(round((w - lw) / 2), top, lw, lh)
-  L.divider = rect(round(w * 0.25), L.logo.y + lh + 14, round(w * 0.5), 1)
-  L.tagline = rect(0, L.divider.y + 10, w, 16)
-  L.status  = rect(0, L.tagline.y + (className == "roomy" and 30 or 22), w, 20)
+  -- Centre the whole block - mark, divider, tagline, status - in the space
+  -- between the two rules, rather than pinning it to the top and letting all
+  -- the slack collect underneath. Measured from the same offsets used below,
+  -- so the two stay in step.
+  local dividerGap, taglineGap = 14, 10
+  local statusGap = (className == "roomy") and 30 or 22
+  local blockH = lh + dividerGap + taglineGap + statusGap + 20
+  local logoY  = top + math.max(0, round((avail - blockH) / 2))
+
+  L.logo    = rect(round((w - lw) / 2), logoY, lw, lh)
+  L.divider = rect(round(w * 0.25), L.logo.y + lh + dividerGap, round(w * 0.5), 1)
+  L.tagline = rect(0, L.divider.y + taglineGap, w, 16)
+  L.status  = rect(0, L.tagline.y + statusGap, w, 20)
   return L
 end
 
@@ -2350,7 +2496,7 @@ end
 -- "100" percent needs half the panel and "1850" rpm needs three quarters.
 -- Sizing both the same either clips the headspeed or strands the % glyph out
 -- in the middle of the battery tile.
-local function buildHeroTile(r, title, unitText, slotCount, valShare)
+local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local F = Theme.font
   local roomy = L.class == "roomy"
   local padX  = roomy and 14 or 8
@@ -2364,12 +2510,20 @@ local function buildHeroTile(r, title, unitText, slotCount, valShare)
 
   local valY  = headY + headH + (roomy and 3 or 2)
   local valW  = math.floor(inner * valShare)
-  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
+  -- Right-aligned, so the number's right edge never moves. Left-aligned, "68"
+  -- and "100" end in different places and the unit beside them appeared to
+  -- drift as the reading changed. This is also why valShare only has to be
+  -- large enough for the widest reading - it no longer sets the gap.
+  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink, ALIGN_RIGHT)
 
-  -- The unit hangs off the number's right shoulder, sitting on its baseline.
+  -- The unit sits on the number's right shoulder, on its baseline, rather than
+  -- pinned to the far edge of the tile. Both "%" and "RPM" belong to the
+  -- number they qualify; at the far edge they read as separate fields.
   if unitText then
-    label(r.x + padX + valW, valY + fh(F.huge) - fh(F.mid), roomy and 46 or 30,
-          unitText, F.mid, Theme.dim)
+    label(r.x + padX + valW + (roomy and 6 or 3),
+          valY + fh(F.huge) - fh(unitFont),
+          inner - valW - (roomy and 6 or 3),
+          unitText, unitFont, Theme.dim)
   end
 
   local footH = fh(F.tiny)
@@ -2392,21 +2546,24 @@ local function buildHero()
   local F = Theme.font
   local roomy = L.class == "roomy"
 
+  -- Three footnotes, not four. The hero column gave width to the right column,
+  -- and a fourth slot no longer holds "MIN 47.3V" without touching its
+  -- neighbour. Cell count was the one worth losing: it moves up beside the
+  -- pack voltage, where it reads as the "12S" qualifying it.
   local packSlot
   V.batValue, V.batFoot, packSlot =
-    buildHeroTile(L.battery, "BATTERY", "%", roomy and 4 or 3,
-                  roomy and 0.50 or 0.56)
+    buildHeroTile(L.battery, "BATTERY", "%", F.mid, 3, L.c.batValShare)
   -- Total pack voltage shares the header line. It is the one reading with
   -- nowhere else to go once the percentage takes the whole value band, and it
   -- reads cleanly against the panel title.
   V.batPack = label(packSlot.x, packSlot.y, packSlot.w, "",
                     F.small, Theme.ink, ALIGN_RIGHT)
 
-  local rpmSlot
-  V.hsValue, V.hsFoot, rpmSlot =
-    buildHeroTile(L.headspeed, "HEADSPEED", nil, roomy and 3 or 2,
-                  roomy and 0.75 or 0.80)
-  label(rpmSlot.x, rpmSlot.y, rpmSlot.w, "RPM", F.tiny, Theme.dim, ALIGN_RIGHT)
+  -- "RPM" is a word, not a glyph, so it takes the smaller unit font. At F.mid
+  -- it would be wider than the space a four-digit headspeed leaves.
+  V.hsValue, V.hsFoot =
+    buildHeroTile(L.headspeed, "HEADSPEED", "RPM", F.small, roomy and 3 or 2,
+                  L.c.hsValShare)
 end
 
 local function buildRightColumn()
@@ -2415,16 +2572,20 @@ local function buildRightColumn()
 
   local g = L.gov
   V.govPanel = panel(g, Theme.govIdleBg, Theme.govIdleBr)
+  -- The wider right column pays for a bigger governor and bigger tile values.
+  -- Both were sized for a 274px column that had to hold three 88px tiles.
+  local govFont = roomy and F.large or F.mid
   local gy = g.y + (roomy and 5 or 4)
   label(g.x, gy, g.w, "GOVERNOR", F.tiny, Theme.dim, ALIGN_CENTER)
   V.govState = label(g.x, gy + fh(F.tiny) + (roomy and 4 or 2), g.w, "",
-                     F.mid, Theme.dim, ALIGN_CENTER)
+                     govFont, Theme.dim, ALIGN_CENTER)
 
   -- Labels carry their units on both screens; at 54px wide there is no room
   -- for a separate unit glyph, and consistency beats a spare pixel. Abbreviated
   -- on the wide screen too: "CURRENT A" is 88px of tile and TINSIZE is 17px
   -- tall, so it ran off its own panel.
   local defs = { "CURR A", "ESC °C", "BEC V" }
+  local tileFont = roomy and F.large or F.mid
   V.tiles = {}
   for i = 1, 3 do
     local t = L.tiles[i]
@@ -2433,7 +2594,7 @@ local function buildRightColumn()
     label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
     V.tiles[i] = {
       value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",
-                    F.mid, Theme.ink),
+                    tileFont, Theme.ink),
       foot  = label(t.x + 6, t.y + t.h - fh(F.tiny) - (roomy and 6 or 4),
                     t.w - 12, "", F.tiny, Theme.peak),
     }
@@ -2448,17 +2609,7 @@ local function buildStrip()
   local roomy = L.class == "roomy"
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local y = L.stripRule + (roomy and 10 or 7)
-  -- The render level lives here rather than in the top bar, where it sat on
-  -- top of the transmitter battery glyph. Only shown when it is holding
-  -- something back; at full level there is nothing to report.
-  local flightsW = 300
-  if Dashboard.level and Dashboard.level < 3 then
-    label(L.c.pad, y, 40, "L" .. tostring(Dashboard.level), F.tiny, Theme.warn)
-    flightsW = flightsW - 44
-    V.flights = label(L.c.pad + 44, y, flightsW, "", F.tiny, Theme.dim)
-  else
-    V.flights = label(L.c.pad, y, flightsW, "", F.tiny, Theme.dim)
-  end
+  V.flights = label(L.c.pad, y, 300, "", F.tiny, Theme.dim)
   if roomy then
     label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER", F.tiny, Theme.dim,
           ALIGN_CENTER)
@@ -2700,8 +2851,13 @@ local function updateHero()
   local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
   setp(V.batValue, { text = pct and string.format("%d", math.floor(pct + 0.5)) or "--",
                      color = pct and Theme.ink or Theme.dim })
+  -- Cell count qualifies the pack voltage, so it rides with it: "12S 47.3 V".
   local pack, packOk = State.get("packVoltage")
-  setp(V.batPack, { text = packOk and string.format("%.1f V", pack) or "--",
+  local packText = packOk and string.format("%.1f V", pack) or "--"
+  if packOk and State.valid("cellCount") then
+    packText = string.format("%dS %s", math.floor(State.num("cellCount")), packText)
+  end
+  setp(V.batPack, { text = packText,
                     color = packOk and Theme.ink or Theme.dim })
 
   local foots = {
@@ -2709,8 +2865,6 @@ local function updateHero()
     fmtExtreme("SAG", cellSag(), "%.2f"),
     State.valid("capacity") and string.format("%d mAh", math.floor(State.num("capacity")))
       or "-- mAh",
-    State.valid("cellCount") and string.format("%dS", math.floor(State.num("cellCount")))
-      or "--S",
   }
   for i = 1, #V.batFoot do
     setp(V.batFoot[i], { text = foots[i] or "" })
@@ -2857,7 +3011,6 @@ local function flag(name, fallback)
 end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
-local VALUE  = flag("VALUE", 0)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
 Widget.showSensors = false
@@ -3036,13 +3189,6 @@ local function ensureScreen(widget)
     end
     return
   end
-  if Widget.safeMode then
-    if built ~= "safe" then
-      pcall(Dashboard.buildMinimal, zoneW, zoneH)
-      built = "safe"
-    end
-    return
-  end
 
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
@@ -3083,25 +3229,14 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
-  -- Render level. 3 is the product; the lower steps each drop one construct
-  -- and exist as an escape hatch on a radio that misbehaves:
-  --   0  safe mode - labels and one square rectangle
-  --   1  full dashboard, square corners, no images
-  --   2  full dashboard, rounded corners, no images
-  --   3  full dashboard, rounded corners, images
-  --
-  -- It used to default to 0. That was while the emergency-mode reboot was
-  -- still unexplained and any screen at all beat a dead transmitter; the cause
-  -- turned out to be XXLSIZE + BOLD resolving to a font index EdgeTX has no
-  -- font for (see Theme.font), which is fixed at the source. The ladder below
-  -- in ensureScreen() stays as a backstop.
-  local level = tonumber(options and options.Level) or 3
-  if level < 0 then level = 0 elseif level > 3 then level = 3 end
-  Widget.level      = level
-  Widget.safeMode   = (level == 0)
-  Dashboard.level   = level
-  Dashboard.noRound = (level <= 1)
-  Dashboard.noLogo  = (level <= 2)
+  -- There used to be a Level option here, stepping the renderer down one
+  -- construct at a time. It existed only to bisect the emergency-mode reboot
+  -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
+  -- index EdgeTX has no font for (see Theme.font), so the option has done its
+  -- job. The automatic ladder in ensureScreen() stays - it is the part that
+  -- protects a radio nobody is standing next to.
+  Dashboard.noRound = false
+  Dashboard.noLogo  = false
   Widget.degraded = nil
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName())
@@ -3134,14 +3269,12 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
-  { "Level",      VALUE,  3, 0, 3 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
-  Level      = "Render Level 0-3",
 }
 
 function Widget.translate(name)

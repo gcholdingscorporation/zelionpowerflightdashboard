@@ -332,7 +332,7 @@ end
 -- "100" percent needs half the panel and "1850" rpm needs three quarters.
 -- Sizing both the same either clips the headspeed or strands the % glyph out
 -- in the middle of the battery tile.
-local function buildHeroTile(r, title, unitText, slotCount, valShare)
+local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local F = Theme.font
   local roomy = L.class == "roomy"
   local padX  = roomy and 14 or 8
@@ -346,12 +346,20 @@ local function buildHeroTile(r, title, unitText, slotCount, valShare)
 
   local valY  = headY + headH + (roomy and 3 or 2)
   local valW  = math.floor(inner * valShare)
-  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
+  -- Right-aligned, so the number's right edge never moves. Left-aligned, "68"
+  -- and "100" end in different places and the unit beside them appeared to
+  -- drift as the reading changed. This is also why valShare only has to be
+  -- large enough for the widest reading - it no longer sets the gap.
+  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink, ALIGN_RIGHT)
 
-  -- The unit hangs off the number's right shoulder, sitting on its baseline.
+  -- The unit sits on the number's right shoulder, on its baseline, rather than
+  -- pinned to the far edge of the tile. Both "%" and "RPM" belong to the
+  -- number they qualify; at the far edge they read as separate fields.
   if unitText then
-    label(r.x + padX + valW, valY + fh(F.huge) - fh(F.mid), roomy and 46 or 30,
-          unitText, F.mid, Theme.dim)
+    label(r.x + padX + valW + (roomy and 6 or 3),
+          valY + fh(F.huge) - fh(unitFont),
+          inner - valW - (roomy and 6 or 3),
+          unitText, unitFont, Theme.dim)
   end
 
   local footH = fh(F.tiny)
@@ -374,21 +382,24 @@ local function buildHero()
   local F = Theme.font
   local roomy = L.class == "roomy"
 
+  -- Three footnotes, not four. The hero column gave width to the right column,
+  -- and a fourth slot no longer holds "MIN 47.3V" without touching its
+  -- neighbour. Cell count was the one worth losing: it moves up beside the
+  -- pack voltage, where it reads as the "12S" qualifying it.
   local packSlot
   V.batValue, V.batFoot, packSlot =
-    buildHeroTile(L.battery, "BATTERY", "%", roomy and 4 or 3,
-                  roomy and 0.50 or 0.56)
+    buildHeroTile(L.battery, "BATTERY", "%", F.mid, 3, L.c.batValShare)
   -- Total pack voltage shares the header line. It is the one reading with
   -- nowhere else to go once the percentage takes the whole value band, and it
   -- reads cleanly against the panel title.
   V.batPack = label(packSlot.x, packSlot.y, packSlot.w, "",
                     F.small, Theme.ink, ALIGN_RIGHT)
 
-  local rpmSlot
-  V.hsValue, V.hsFoot, rpmSlot =
-    buildHeroTile(L.headspeed, "HEADSPEED", nil, roomy and 3 or 2,
-                  roomy and 0.75 or 0.80)
-  label(rpmSlot.x, rpmSlot.y, rpmSlot.w, "RPM", F.tiny, Theme.dim, ALIGN_RIGHT)
+  -- "RPM" is a word, not a glyph, so it takes the smaller unit font. At F.mid
+  -- it would be wider than the space a four-digit headspeed leaves.
+  V.hsValue, V.hsFoot =
+    buildHeroTile(L.headspeed, "HEADSPEED", "RPM", F.small, roomy and 3 or 2,
+                  L.c.hsValShare)
 end
 
 local function buildRightColumn()
@@ -397,16 +408,20 @@ local function buildRightColumn()
 
   local g = L.gov
   V.govPanel = panel(g, Theme.govIdleBg, Theme.govIdleBr)
+  -- The wider right column pays for a bigger governor and bigger tile values.
+  -- Both were sized for a 274px column that had to hold three 88px tiles.
+  local govFont = roomy and F.large or F.mid
   local gy = g.y + (roomy and 5 or 4)
   label(g.x, gy, g.w, "GOVERNOR", F.tiny, Theme.dim, ALIGN_CENTER)
   V.govState = label(g.x, gy + fh(F.tiny) + (roomy and 4 or 2), g.w, "",
-                     F.mid, Theme.dim, ALIGN_CENTER)
+                     govFont, Theme.dim, ALIGN_CENTER)
 
   -- Labels carry their units on both screens; at 54px wide there is no room
   -- for a separate unit glyph, and consistency beats a spare pixel. Abbreviated
   -- on the wide screen too: "CURRENT A" is 88px of tile and TINSIZE is 17px
   -- tall, so it ran off its own panel.
   local defs = { "CURR A", "ESC °C", "BEC V" }
+  local tileFont = roomy and F.large or F.mid
   V.tiles = {}
   for i = 1, 3 do
     local t = L.tiles[i]
@@ -415,7 +430,7 @@ local function buildRightColumn()
     label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
     V.tiles[i] = {
       value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",
-                    F.mid, Theme.ink),
+                    tileFont, Theme.ink),
       foot  = label(t.x + 6, t.y + t.h - fh(F.tiny) - (roomy and 6 or 4),
                     t.w - 12, "", F.tiny, Theme.peak),
     }
@@ -430,17 +445,7 @@ local function buildStrip()
   local roomy = L.class == "roomy"
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local y = L.stripRule + (roomy and 10 or 7)
-  -- The render level lives here rather than in the top bar, where it sat on
-  -- top of the transmitter battery glyph. Only shown when it is holding
-  -- something back; at full level there is nothing to report.
-  local flightsW = 300
-  if Dashboard.level and Dashboard.level < 3 then
-    label(L.c.pad, y, 40, "L" .. tostring(Dashboard.level), F.tiny, Theme.warn)
-    flightsW = flightsW - 44
-    V.flights = label(L.c.pad + 44, y, flightsW, "", F.tiny, Theme.dim)
-  else
-    V.flights = label(L.c.pad, y, flightsW, "", F.tiny, Theme.dim)
-  end
+  V.flights = label(L.c.pad, y, 300, "", F.tiny, Theme.dim)
   if roomy then
     label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER", F.tiny, Theme.dim,
           ALIGN_CENTER)
@@ -682,8 +687,13 @@ local function updateHero()
   local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
   setp(V.batValue, { text = pct and string.format("%d", math.floor(pct + 0.5)) or "--",
                      color = pct and Theme.ink or Theme.dim })
+  -- Cell count qualifies the pack voltage, so it rides with it: "12S 47.3 V".
   local pack, packOk = State.get("packVoltage")
-  setp(V.batPack, { text = packOk and string.format("%.1f V", pack) or "--",
+  local packText = packOk and string.format("%.1f V", pack) or "--"
+  if packOk and State.valid("cellCount") then
+    packText = string.format("%dS %s", math.floor(State.num("cellCount")), packText)
+  end
+  setp(V.batPack, { text = packText,
                     color = packOk and Theme.ink or Theme.dim })
 
   local foots = {
@@ -691,8 +701,6 @@ local function updateHero()
     fmtExtreme("SAG", cellSag(), "%.2f"),
     State.valid("capacity") and string.format("%d mAh", math.floor(State.num("capacity")))
       or "-- mAh",
-    State.valid("cellCount") and string.format("%dS", math.floor(State.num("cellCount")))
-      or "--S",
   }
   for i = 1, #V.batFoot do
     setp(V.batFoot[i], { text = foots[i] or "" })

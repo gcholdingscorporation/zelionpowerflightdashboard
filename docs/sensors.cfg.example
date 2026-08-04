@@ -52,3 +52,36 @@
 #
 # [Goblin 700]
 # escTemperature = Tmp1
+
+
+# ---------------------------------------------------------------------------
+# [battery] - settings, not sensor bindings
+# ---------------------------------------------------------------------------
+#
+# These matter ONLY when the widget has to work out the battery percentage
+# itself. On Rotorflight it never does: the flight controller computes the
+# state of charge - the "Smart Fuel" feature - and publishes it as the Bat%
+# sensor, which the widget reads directly. Smart Fuel has the pack's history,
+# a sag model and the stick positions, and a widget has none of those, so its
+# answer always wins.
+#
+# If your percentage looks wrong on a Rotorflight heli, the fix is in the
+# flight controller, not here: set Smart Fuel's mode on the Rotorflight
+# configurator's Smart Fuel page.
+#
+#   OFF        nothing is computed
+#   VOLTAGE    from sag-compensated cell voltage
+#   CURRENT    from consumed capacity, so it assumes a full pack at power-on
+#   COMBINED   the lower of the two - the conservative reading, and usually
+#              the one you want on a heli
+#
+# When Bat% is absent - a non-Rotorflight flight controller, or Smart Fuel OFF
+# - the widget derives the percentage from cell voltage using Rotorflight's own
+# VOLTAGE-mode curve, so both setups report the same number for the same pack.
+# These two values are that curve's endpoints, and match Rotorflight's stock
+# vbat_min_cell_voltage / vbat_full_cell_voltage. Change them only for a
+# chemistry that is not a standard LiPo.
+#
+# [battery]
+# cellFull = 4.00
+# cellMin  = 3.30
