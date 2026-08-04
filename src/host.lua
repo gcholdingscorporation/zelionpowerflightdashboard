@@ -181,6 +181,57 @@ function Host.listSensors()
 end
 
 --------------------------------------------------------------------------
+-- Directory listing and image probing (diagnostics)
+--------------------------------------------------------------------------
+
+-- EdgeTX exposes `dir` as an iterator function on some builds and as a table
+-- of file operations on others, so check which one this firmware has.
+function Host.listDir(path)
+  if type(dirTbl) ~= "function" then return nil end
+  local out = {}
+  local ok = pcall(function()
+    for name in dirTbl(path) do
+      out[#out + 1] = tostring(name)
+      if #out >= 32 then break end
+    end
+  end)
+  if not ok then return nil end
+  return out
+end
+
+-- Report what each method thinks of a file, separately. Collapsing them into
+-- one boolean is what left "the file is right there" and "the widget cannot
+-- see it" impossible to tell apart.
+function Host.probeImage(path)
+  local r = { fstat = false, io = false, bmp = false, size = nil, w = nil }
+  if fstatFn then
+    local ok, info = pcall(fstatFn, path)
+    if ok and info ~= nil then
+      r.fstat = true
+      r.size = tonumber(info.size)
+    end
+  end
+  if type(ioTbl) == "table" then
+    local f = ioTbl.open(path, "r")
+    if f then
+      r.io = true
+      pcall(ioTbl.close, f)
+    end
+  end
+  if type(bitmapTbl) == "table" and type(bitmapTbl.open) == "function" then
+    local ok, bmp = pcall(bitmapTbl.open, path)
+    if ok and bmp ~= nil then
+      r.bmp = true
+      if type(bitmapTbl.getSize) == "function" then
+        local sized, w = pcall(bitmapTbl.getSize, bmp)
+        if sized then r.w = tonumber(w) end
+      end
+    end
+  end
+  return r
+end
+
+--------------------------------------------------------------------------
 -- Model info
 --------------------------------------------------------------------------
 

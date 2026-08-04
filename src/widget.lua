@@ -79,6 +79,43 @@ local function formatValue(row)
   return string.format("%.2f", v)
 end
 
+-- Appended to the diagnostics list. Answers, from the radio itself, what is
+-- actually in the widget folder and what each probe makes of it - rather than
+-- inferring any of it from this side of the SD card.
+local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
+local ASSET_DIR = "/WIDGETS/ZelionDash/"
+
+local function assetRows()
+  local rows = {}
+  rows[#rows + 1] = { label = "-- ASSETS --", sensor = ASSET_DIR,
+                      status = "ok", important = true }
+
+  local listing = Host.listDir(ASSET_DIR)
+  if listing == nil then
+    rows[#rows + 1] = { label = "dir()", sensor = "unavailable", status = "unbound" }
+  elseif #listing == 0 then
+    rows[#rows + 1] = { label = "dir()", sensor = "EMPTY", status = "insane" }
+  else
+    for _, name in ipairs(listing) do
+      rows[#rows + 1] = { label = "  " .. name, sensor = "", status = "ok" }
+    end
+  end
+
+  for _, f in ipairs(ASSET_FILES) do
+    local p = Host.probeImage(ASSET_DIR .. f)
+    local flags = string.format("%s%s%s",
+      p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-")
+    local detail = flags
+    if p.size then detail = detail .. " " .. tostring(p.size) .. "b" end
+    if p.w then detail = detail .. " w" .. tostring(p.w) end
+    rows[#rows + 1] = {
+      label = f, sensor = detail,
+      status = (p.bmp and p.w and p.w > 0) and "ok" or "insane",
+    }
+  end
+  return rows
+end
+
 local function drawSensorMap()
   local w, h = zoneW or Host.lcdW, zoneH or Host.lcdH
   local compact = w < 700
@@ -88,13 +125,18 @@ local function drawSensorMap()
   local headerH = compact and 20 or 28
   local rowH    = compact and 14 or 20
 
-  local rows, bound = Sensors.report(), 0
-  for _, r in ipairs(rows) do if r.sensor then bound = bound + 1 end end
+  local sensorRows, bound = Sensors.report(), 0
+  for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
+  -- Assets lead the list: they are what a first run needs to check, they are
+  -- only a handful of lines, and burying them past the fold is what made the
+  -- artwork problem take several rounds to pin down.
+  local rows = assetRows()
+  for _, r in ipairs(sensorRows) do rows[#rows + 1] = r end
 
   lcd.drawText(pad, compact and 2 or 5,
                compact and "Sensors" or "ZelionDash - sensor map", BOLD + Theme.steel)
   lcd.drawText(w - pad, compact and 2 or 5,
-               string.format("%d/%d bound", bound, #rows), RIGHT + SMLSIZE + Theme.dim)
+               string.format("%d bound", bound), RIGHT + SMLSIZE + Theme.dim)
   lcd.drawLine(0, headerH, w, headerH, SOLID, Theme.rule)
 
   local colRole, colSensor = pad, math.floor(w * 0.34)

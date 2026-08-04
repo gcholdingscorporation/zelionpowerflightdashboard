@@ -207,7 +207,19 @@ function Mock.install()
   -- direct-write path, matching a radio whose firmware lacks dir.*. The real
   -- os table has to be shadowed too, otherwise desktop Lua's os.rename leaks
   -- in and the widget would try to rename files on the actual disk.
-  _G.dir = nil
+  -- EdgeTX's dir() is an iterator over a folder's filenames.
+  _G.dir = function(path)
+    local names, i = {}, 0
+    for full in pairs(Mock.state.files) do
+      local name = string.match(full, "^" .. path:gsub("%-", "%%-") .. "([^/]+)$")
+      if name then names[#names + 1] = name end
+    end
+    table.sort(names)
+    return function()
+      i = i + 1
+      return names[i]
+    end
+  end
   _G.os = { time = realOs.time, clock = realOs.clock,
             date = realOs.date, exit = realOs.exit }
   _G.mkdir = function() return true end

@@ -159,11 +159,23 @@ H.test("the diagnostics list scrolls on the small screen", function()
   H.truthy(first ~= Mock.drawnText(), "roles past the fold must be reachable")
 end)
 
+H.test("lists the widget folder so the radio reports its own assets", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  Mock.draws = {}
+  def.refresh(widget, 0, nil)
+  local t = Mock.drawnText()
+  -- "the PNGs are in the folder" and "the widget cannot load them" were
+  -- indistinguishable for three rounds. The radio can just say which.
+  H.truthy(string.find(t, "ASSETS", 1, true), "assets section present")
+  H.truthy(string.find(t, "logo_panel.png", 1, true), "each expected file probed")
+  H.truthy(string.find(t, "FIB", 1, true), "per-probe result shown")
+end)
+
 H.test("survives a model with no telemetry at all", function()
   local def, widget = boot(800, 480, { SensorMap = 1 })
   Mock.draws = {}
   def.refresh(widget, 0, nil)
-  H.truthy(string.find(Mock.drawnText(), "0/", 1, true),
+  H.truthy(string.find(Mock.drawnText(), "0 bound", 1, true),
            "reports nothing bound rather than erroring")
 end)
 
