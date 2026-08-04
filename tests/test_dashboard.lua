@@ -467,6 +467,61 @@ local function assertNoCollisions(ZD, h, what)
   end
 end
 
+-- EdgeTX's fonts are subsetted, and a codepoint they do not carry draws as
+-- nothing at all - no error, no box, just a gap. The tagline shipped with
+-- U+00B7 middle dots as separators and rendered on hardware as
+-- "NO HYPE  JUST VOLTAGE  REAL POWER".
+--
+-- Covered ranges, from the cmap table in the generated
+-- radio/src/fonts/lvgl/lrg/lv_font_en_*.c (v2.11.0):
+--   32..126    ASCII
+--   128..131, 136..148   EdgeTX's own symbol glyphs
+--   176        U+00B0 DEGREE SIGN, on its own - which is why "ESC °C" works
+--   192..383   Latin-1 upper + Latin Extended-A
+--   8226+      a sparse set of 62, starting at U+2022 BULLET
+-- Anything outside 32..126 and 176 has to be a deliberate decision, so the
+-- test rejects it rather than trying to model the sparse tail.
+local function codepoints(s)
+  local out, i = {}, 1
+  while i <= #s do
+    local b = s:byte(i)
+    local cp, n
+    if b < 0x80 then cp, n = b, 1
+    elseif b < 0xE0 then cp, n = (b - 0xC0) * 64 + (s:byte(i + 1) - 0x80), 2
+    elseif b < 0xF0 then
+      cp = (b - 0xE0) * 4096 + (s:byte(i + 1) - 0x80) * 64 + (s:byte(i + 2) - 0x80)
+      n = 3
+    else cp, n = -1, 4 end
+    out[#out + 1] = cp
+    i = i + n
+  end
+  return out
+end
+
+H.group("dashboard: text renders")
+
+H.test("no string uses a glyph EdgeTX's fonts do not carry", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    for _, standby in ipairs({ false, true }) do
+      local ZD = boot(size[1], size[2], flying)
+      ZD.RF2.statsStatus, ZD.RF2.totalFlights = "ok", 137
+      ZD.RF2.totalFlightSeconds = 40630        -- exercises the flights line
+      ZD.Dashboard.build(standby, size[1], size[2])
+      ZD.Dashboard.update()
+      for _, o in ipairs(Mock.lv.objects) do
+        local t = o.props.text
+        if o.kind == "label" and t and t ~= "" then
+          for _, cp in ipairs(codepoints(t)) do
+            H.truthy((cp >= 32 and cp <= 126) or cp == 176,
+                     string.format("%q uses U+%04X, which draws as a blank",
+                                   t, cp))
+          end
+        end
+      end
+    end
+  end
+end)
+
 H.group("dashboard: text fits")
 
 H.test("no two labels overlap on either radio", function()

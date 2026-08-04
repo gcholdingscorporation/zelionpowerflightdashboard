@@ -2460,7 +2460,7 @@ local function buildStrip()
     V.flights = label(L.c.pad, y, flightsW, "", F.tiny, Theme.dim)
   end
   if roomy then
-    label(0, y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER", F.tiny, Theme.dim,
+    label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER", F.tiny, Theme.dim,
           ALIGN_CENTER)
   end
   V.link = label(L.w - L.c.pad - 240, y, 240, "", F.tiny, Theme.steel, ALIGN_RIGHT)
@@ -2507,7 +2507,7 @@ local function buildStandby()
 
   Dashboard.placeLogo(L.logo, "logo_standby.png")
   lvgl.hline({ x=L.divider.x, y=L.divider.y, w=L.divider.w, h=1, color=Theme.rule })
-  label(0, L.tagline.y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER",
+  label(0, L.tagline.y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER",
         F.tiny, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
                    F.small, Theme.warn, ALIGN_CENTER)
@@ -2637,7 +2637,7 @@ local function flightsText()
     local t = string.format("%d FLIGHTS", RF2.totalFlights)
     if RF2.totalFlightSeconds then
       local s = RF2.totalFlightSeconds
-      t = t .. string.format(" · %d:%02d:%02d", math.floor(s / 3600),
+      t = t .. string.format(" - %d:%02d:%02d", math.floor(s / 3600),
                              math.floor(s % 3600 / 60), s % 60)
     end
     return t
