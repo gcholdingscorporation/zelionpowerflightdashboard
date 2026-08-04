@@ -142,11 +142,13 @@ function Layout.buildStandby(w, h)
   -- Reserve room beneath the mark for the tagline and the status line.
   local reserve = (className == "roomy") and 96 or 62
   local boxH = avail - reserve
-  -- Matches the shipped asset. This was briefly cut to 320x180 while chasing a
-  -- suspected decode-memory limit; the real fault was a hardcoded folder name,
-  -- so the full size is back.
-  local lw, lh = 500, 281
-  if className ~= "roomy" then lw, lh = 300, 169 end
+  -- Matches the shipped asset, and 320x180 is a hardware limit rather than a
+  -- design choice. Once the folder bug was fixed the artwork loaded, and a
+  -- 500x281 (140k pixel) version then rendered as corrupted scanlines - a
+  -- decode buffer overrun, not a failure to load. 320x180 (58k pixels) is
+  -- verified good on a TX16S Mk3; do not raise it without testing on hardware.
+  local lw, lh = 320, 180
+  if className ~= "roomy" then lw, lh = 240, 135 end
   if lh > boxH then
     lw = round(lw * boxH / lh)
     lh = boxH
