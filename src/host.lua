@@ -276,26 +276,25 @@ function Host.exists(path)
   return false
 end
 
--- Whether an image will actually load, which is a different question from
--- whether a path resolves. fstat and io.open both reported the artwork
--- missing on hardware while the files were plainly on the card, so ask the
--- bitmap loader - the same one LVGL uses - and treat its answer as final.
--- Any of the three saying yes is good enough; only unanimous failure is a
--- missing image.
-function Host.imageExists(path)
-  if type(bitmapTbl) == "table" and type(bitmapTbl.open) == "function" then
-    local ok, bmp = pcall(bitmapTbl.open, path)
-    if ok and bmp ~= nil then
-      if type(bitmapTbl.getSize) == "function" then
-        local sized, w = pcall(bitmapTbl.getSize, bmp)
-        -- EdgeTX hands back a placeholder rather than nil for a file it could
-        -- not decode, and that placeholder measures zero.
-        if sized and tonumber(w) and tonumber(w) > 0 then return true end
-      else
-        return true
-      end
-    end
+-- The only trustworthy test for artwork on this firmware.
+--
+-- Hardware verdict: fstat and io.open both fail for files that exist, and
+-- Bitmap.open never returns nil - it hands back a "not found" placeholder that
+-- measures zero. So a non-nil bitmap proves nothing and a positive width
+-- proves everything.
+function Host.imageLoads(path)
+  if type(bitmapTbl) ~= "table" or type(bitmapTbl.open) ~= "function" then
+    return false
   end
+  local ok, bmp = pcall(bitmapTbl.open, path)
+  if not ok or bmp == nil then return false end
+  if type(bitmapTbl.getSize) ~= "function" then return true end
+  local sized, w = pcall(bitmapTbl.getSize, bmp)
+  return sized and tonumber(w) ~= nil and tonumber(w) > 0
+end
+
+function Host.imageExists(path)
+  if Host.imageLoads(path) then return true end
   return Host.exists(path)
 end
 

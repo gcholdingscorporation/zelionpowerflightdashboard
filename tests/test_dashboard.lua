@@ -137,16 +137,35 @@ H.test("missing artwork falls back to type and says so", function()
            "a silently absent image is the likeliest first-run mistake")
 end)
 
-H.test("standby reports the folder contents when artwork fails", function()
+H.test("standby diagnoses failed artwork on screen", function()
   local ZD = boot(800, 480)
-  Mock.state.files["/WIDGETS/ZelionDash/logo_standby.png"] = nil
+  for _, f in ipairs({"logo_panel.png", "logo_standby.png", "logo_small.png"}) do
+    Mock.state.files["/WIDGETS/ZelionDash/" .. f] = nil
+  end
   ZD.Dashboard.build(true, 800, 480)
   ZD.Dashboard.update()
   local t = Mock.lvglText()
   -- Requiring a settings toggle to see this was the wrong call: the failure
   -- is visible on standby, so the diagnosis should be too.
-  H.truthy(string.find(t, "DIR (", 1, true), "directory listing on screen")
+  H.truthy(string.find(t, "control main.lua", 1, true),
+           "control probe of a file that must exist")
+  H.truthy(string.find(t, "no folder loaded", 1, true), "reports the search failed")
   H.truthy(string.find(t, "logo_standby.png", 1, true), "each file probed")
+end)
+
+H.test("finds the artwork in a differently named widget folder", function()
+  -- EdgeTX names a widget from its Lua table, not its folder, so the folder
+  -- can legitimately be called something else on any given card.
+  local ZD = boot(800, 480, flying)
+  for _, f in ipairs({"logo_panel.png", "logo_standby.png", "logo_small.png"}) do
+    Mock.state.files["/WIDGETS/ZelionDash/" .. f] = nil
+    Mock.state.files["/WIDGETS/ZelionPower/" .. f] = "PNG"
+  end
+  ZD.Dashboard.build(false, 800, 480)
+  H.eq(ZD.Dashboard.assetDirResolved(), "/WIDGETS/ZelionPower/")
+  H.falsy(ZD.Dashboard.logoMissing, "artwork found, so nothing to report")
+  H.truthy(string.find(table.concat(Mock.lvglImages(), "|"),
+                       "/WIDGETS/ZelionPower/logo_panel.png", 1, true))
 end)
 
 H.group("dashboard: host constant lookup")

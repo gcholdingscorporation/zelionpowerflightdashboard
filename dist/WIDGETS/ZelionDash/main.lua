@@ -287,26 +287,25 @@ function Host.exists(path)
   return false
 end
 
--- Whether an image will actually load, which is a different question from
--- whether a path resolves. fstat and io.open both reported the artwork
--- missing on hardware while the files were plainly on the card, so ask the
--- bitmap loader - the same one LVGL uses - and treat its answer as final.
--- Any of the three saying yes is good enough; only unanimous failure is a
--- missing image.
-function Host.imageExists(path)
-  if type(bitmapTbl) == "table" and type(bitmapTbl.open) == "function" then
-    local ok, bmp = pcall(bitmapTbl.open, path)
-    if ok and bmp ~= nil then
-      if type(bitmapTbl.getSize) == "function" then
-        local sized, w = pcall(bitmapTbl.getSize, bmp)
-        -- EdgeTX hands back a placeholder rather than nil for a file it could
-        -- not decode, and that placeholder measures zero.
-        if sized and tonumber(w) and tonumber(w) > 0 then return true end
-      else
-        return true
-      end
-    end
+-- The only trustworthy test for artwork on this firmware.
+--
+-- Hardware verdict: fstat and io.open both fail for files that exist, and
+-- Bitmap.open never returns nil - it hands back a "not found" placeholder that
+-- measures zero. So a non-nil bitmap proves nothing and a positive width
+-- proves everything.
+function Host.imageLoads(path)
+  if type(bitmapTbl) ~= "table" or type(bitmapTbl.open) ~= "function" then
+    return false
   end
+  local ok, bmp = pcall(bitmapTbl.open, path)
+  if not ok or bmp == nil then return false end
+  if type(bitmapTbl.getSize) ~= "function" then return true end
+  local sized, w = pcall(bitmapTbl.getSize, bmp)
+  return sized and tonumber(w) ~= nil and tonumber(w) > 0
+end
+
+function Host.imageExists(path)
+  if Host.imageLoads(path) then return true end
   return Host.exists(path)
 end
 
@@ -1857,7 +1856,37 @@ local RF2    = ZD.RF2
 local Dashboard = {}
 ZD.Dashboard = Dashboard
 
-local ASSETS = "/WIDGETS/ZelionDash/"
+-- EdgeTX names a widget from the Lua table it returns, NOT from the folder it
+-- lives in, so the folder on any given card can be called anything. Hardcoding
+-- one path meant the artwork silently failed on a perfectly good install.
+-- Probe for it instead, and cache the answer.
+local ASSET_DIRS = {
+  "/WIDGETS/ZelionDash/",
+  "/WIDGETS/ZELIONDASH/",
+  "/WIDGETS/Zeliondash/",
+  "/WIDGETS/zeliondash/",
+  "/WIDGETS/ZelionPower/",
+  "/WIDGETS/Zelion/",
+  "/WIDGETS/ZelionDash/dist/WIDGETS/ZelionDash/",
+  "/IMAGES/",
+}
+local PROBE_FILE = "logo_panel.png"
+local resolvedDir = nil        -- nil = not tried, false = nothing found
+
+local function assetDir()
+  if resolvedDir ~= nil then return resolvedDir or ASSET_DIRS[1] end
+  for _, d in ipairs(ASSET_DIRS) do
+    if Host.imageLoads(d .. PROBE_FILE) then
+      resolvedDir = d
+      return d
+    end
+  end
+  resolvedDir = false
+  return ASSET_DIRS[1]
+end
+
+function Dashboard.assetDir() return assetDir() end
+function Dashboard.assetDirResolved() return resolvedDir end
 
 -- EdgeTX publishes its constants through a read-only global lookup table
 -- rather than as raw entries in _G, so rawget() alone returns nil for every
@@ -2015,7 +2044,7 @@ Dashboard.logoMissing = false
 Dashboard.missingPath = nil
 
 function Dashboard.placeLogo(r, filename)
-  local path = ASSETS .. filename
+  local path = assetDir() .. filename
   local ok = Host.imageExists(path)
 
   -- Draw the wordmark FIRST, then the image over it. A probe that says
@@ -2175,22 +2204,31 @@ end
 -- Compact readout of what the radio itself finds in the widget folder.
 -- Lives on standby because that is where a failed load is actually seen;
 -- requiring the pilot to find a settings toggle to diagnose it was a mistake.
-local ASSET_DIR = "/WIDGETS/ZelionDash/"
 local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
 
 function Dashboard.assetDiagLines(maxLines)
   local out = {}
-  local listing = Host.listDir(ASSET_DIR)
-  if listing == nil then
-    out[#out + 1] = "dir() unavailable on this firmware"
+  assetDir()
+
+  -- main.lua is definitely present - the widget is running from it. If it also
+  -- reads as missing then the probes are useless here and only a positive
+  -- bitmap width means anything; if it reads fine, the folder is right and the
+  -- PNGs specifically are the problem.
+  local control = Host.probeImage(ASSET_DIRS[1] .. "main.lua")
+  out[#out + 1] = string.format("control main.lua %s%s%s  (must exist)",
+    control.fstat and "F" or "-", control.io and "I" or "-",
+    control.bmp and "B" or "-")
+
+  if resolvedDir then
+    out[#out + 1] = "FOUND: " .. resolvedDir
   else
-    local names = {}
-    for i = 1, #listing do names[#names + 1] = listing[i] end
-    out[#out + 1] = "DIR (" .. #names .. "): " ..
-                    (#names > 0 and table.concat(names, " ") or "EMPTY")
+    out[#out + 1] = "no folder loaded " .. PROBE_FILE ..
+                    " (tried " .. #ASSET_DIRS .. ")"
   end
+
   for _, f in ipairs(ASSET_FILES) do
-    local p = Host.probeImage(ASSET_DIR .. f)
+    local dir = resolvedDir or ASSET_DIRS[1]
+    local p = Host.probeImage(dir .. f)
     out[#out + 1] = string.format("%s %s%s%s%s%s", f,
       p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-",
       p.size and (" " .. p.size .. "b") or "",
