@@ -56,10 +56,34 @@ local function remember(obj, props)
   return obj
 end
 
+-- A corner radius larger than half the shorter side is geometrically
+-- impossible, and asking a graphics library to draw one is a classic way to
+-- crash it natively. This code was doing exactly that: the battery gauge fill
+-- is created one pixel tall with a radius of 5, and the TX battery fill one
+-- pixel tall with a radius of 2. Both are clamped here rather than at every
+-- call site, because the offending sizes are runtime values - a gauge at 0%
+-- is one pixel tall no matter what radius the design asked for.
+--
+-- Declared before setp(), which calls it. It used to sit below, so the call in
+-- setp() resolved to a nil global instead - harmless only because every radius
+-- that reached it happened to have clamped to zero at build time.
+Dashboard.noRound = false
+
+local function safeRadius(w, h, rounded)
+  if Dashboard.noRound then return 0 end
+  local r = rounded or 0
+  if r <= 0 then return 0 end
+  local limit = math.floor(math.min(w or 0, h or 0) / 2)
+  if limit < 0 then limit = 0 end
+  if r > limit then return limit end
+  return r
+end
+
 local function setp(obj, props)
   if not obj then return end
   local st = SHADOW[obj]
   if not st then st = {}; SHADOW[obj] = st end
+  if props.font ~= nil then props.font = Theme.safeFont(props.font) end
   -- Resizing can make an existing radius illegal - a gauge shrinking to one
   -- pixel keeps the radius it was built with unless it is re-clamped.
   if props.w ~= nil or props.h ~= nil then
@@ -87,32 +111,14 @@ local function setHidden(obj, hidden, bgColor)
   end
 end
 
+-- Every font passes through Theme.safeFont on its way to LVGL. EdgeTX indexes
+-- its font style array with no bounds check, so an index it has no font for is
+-- a native fault and an EMERGENCY MODE reboot - not something pcall can catch.
 local function label(x, y, w, text, font, color, align)
   local p = { x=x, y=y, w=w or 0, h=0, text=text or "",
-              font=font or 0, color=color or Theme.ink, align=align or 0 }
+              font=Theme.safeFont(font or 0),
+              color=color or Theme.ink, align=align or 0 }
   return remember(lvgl.label(p), p)
-end
-
--- A corner radius larger than half the shorter side is geometrically
--- impossible, and asking a graphics library to draw one is a classic way to
--- crash it natively. This code was doing exactly that: the battery gauge fill
--- is created one pixel tall with a radius of 5, and the TX battery fill one
--- pixel tall with a radius of 2. Both are clamped here rather than at every
--- call site, because the offending sizes are runtime values - a gauge at 0%
--- is one pixel tall no matter what radius the design asked for.
--- Render level 1 forces every corner square. Both screens that survive on
--- hardware happen to contain no rounded rectangle at all, and that is the
--- largest untested difference left between them and the dashboard.
-Dashboard.noRound = false
-
-local function safeRadius(w, h, rounded)
-  if Dashboard.noRound then return 0 end
-  local r = rounded or 0
-  if r <= 0 then return 0 end
-  local limit = math.floor(math.min(w or 0, h or 0) / 2)
-  if limit < 0 then limit = 0 end
-  if r > limit then return limit end
-  return r
 end
 
 local function rectangle(x, y, w, h, color, filled, rounded, thickness)
@@ -221,8 +227,8 @@ Dashboard.missingPath = nil
 function Dashboard.placeLogo(r, filename)
   if Dashboard.noLogo then
     local F = Theme.font
-    label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
-          F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+    label(r.x, r.y + math.floor((r.h - Theme.fontHeight(F.mid)) / 2), r.w,
+          "ZELION POWER", F.mid, Theme.steel, ALIGN_CENTER)
     return
   end
   local path = assetDir() .. filename
@@ -240,8 +246,8 @@ function Dashboard.placeLogo(r, filename)
     -- safe gap between them, and a two-line version overlapped itself the
     -- moment the fonts started resolving.
     local F = Theme.font
-    label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
-          F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+    label(r.x, r.y + math.floor((r.h - Theme.fontHeight(F.mid)) / 2), r.w,
+          "ZELION POWER", F.mid, Theme.steel, ALIGN_CENTER)
   end
 
   -- Attempted unconditionally: if LVGL can load it, it renders regardless of
@@ -249,12 +255,25 @@ function Dashboard.placeLogo(r, filename)
   lvgl.image({ x=r.x, y=r.y, w=r.w, h=r.h, fill=false, file=path })
 end
 
+-- Text is placed from measured font heights, not from offsets tuned against a
+-- design mock-up. EdgeTX's fonts are much larger than a mock-up implies -
+-- SMLSIZE is 23px on a TX16S and XXLSIZE is 102px - so every panel on this
+-- screen had its header sitting inside its own value. Asking Theme for the
+-- height and stacking from that is the only version that holds on both radios.
+local function fh(font) return Theme.fontHeight(font) end
+
 local function buildTopBar()
   local F = Theme.font
-  V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
-                      F.small + F.bold, Theme.ink)
-  V.timer = label(0, L.class == "roomy" and 4 or 2, L.w, "",
-                  F.mid + F.bold, Theme.ink, ALIGN_CENTER)
+  local roomy = L.class == "roomy"
+  -- Three items share the top bar, so each gets a bounded box rather than the
+  -- full width. A centred label spanning the whole screen looks fine until the
+  -- craft name is long enough to reach the clock.
+  local nameW = roomy and 260 or 150
+  V.modelName = label(L.c.pad, L.top.y + (roomy and 5 or 4), nameW, "",
+                      F.tiny, Theme.ink)
+  local timerX = L.c.pad + nameW + 10
+  V.timer = label(timerX, L.top.y + math.floor((L.c.topH - fh(F.small)) / 2),
+                  L.w - timerX * 2, "", F.small, Theme.ink, ALIGN_CENTER)
 
   -- Signal bars, then the TX battery glyph at the far right.
   local barsX = L.w - L.c.pad - (L.class == "roomy" and 200 or 128)
@@ -275,8 +294,9 @@ local function buildTopBar()
   V.txBody = panel({x=bx, y=by, w=bw, h=bh}, Theme.track, Theme.dim, 3)
   V.txFill = rectangle(bx + 2, by + bh - 3, bw - 4, 1, Theme.lime, true, 2, 0)
   V.txGeom = { x=bx, y=by, w=bw, h=bh }
-  V.txText = label(L.w - L.c.pad - 30, L.class == "roomy" and 13 or 9, 30, "",
-                   Theme.font.small + Theme.font.bold, Theme.ink)
+  -- Clear of the glyph itself: the reading used to be drawn on top of it.
+  local txW = roomy and 44 or 34
+  V.txText = label(bx - 6 - txW, by, txW, "", F.tiny, Theme.ink, ALIGN_RIGHT)
 
   lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
 end
@@ -285,12 +305,15 @@ local function buildLeftColumn()
   local F = Theme.font
   local c, b = L.cell, L.bar
 
+  local roomy = L.class == "roomy"
   V.cellPanel = panel(c, Theme.bg, Theme.limeDark, 6)
-  label(c.x, c.y + 6, c.w, "CELL", F.small + F.bold, Theme.lime, ALIGN_CENTER)
-  V.cellValue = label(c.x, c.y + (L.class == "roomy" and 20 or 16), c.w, "",
-                      F.large + F.bold, Theme.ink, ALIGN_CENTER)
-  V.cellMin = label(c.x, c.y + c.h - (L.class == "roomy" and 16 or 14), c.w, "",
-                    F.small, Theme.peak, ALIGN_CENTER)
+  local y = c.y + (roomy and 4 or 3)
+  label(c.x, y, c.w, "CELL", F.tiny, Theme.lime, ALIGN_CENTER)
+  -- smallBold, not large: DBLSIZE is 58px on a TX16S and this chip is 75 tall.
+  V.cellValue = label(c.x, y + fh(F.tiny) + (roomy and 3 or 2), c.w, "",
+                      F.smallBold, Theme.ink, ALIGN_CENTER)
+  V.cellMin = label(c.x, c.y + c.h - fh(F.tiny) - (roomy and 3 or 2), c.w, "",
+                    F.tiny, Theme.peak, ALIGN_CENTER)
 
   -- Brand-green border: the gauge is the Zelion instrument on this screen.
   -- Two filled rects rather than an outlined one, for the same reason as panel().
@@ -300,46 +323,72 @@ local function buildLeftColumn()
   V.barGeom = { x=b.x + 3, y=b.y + 3, w=b.w - 6, h=b.h - 6 }
 end
 
+-- Both hero tiles share one shape: a header line, a very large number under it,
+-- a rule, and a row of small footnotes on the floor of the tile. Only the
+-- header's right-hand item and the number's unit differ, so build it once.
+--
+-- The number gets a share of the tile's width rather than all of it, and the
+-- share is per tile: at XXLSIZE a digit is about 56px wide on a TX16S, so
+-- "100" percent needs half the panel and "1850" rpm needs three quarters.
+-- Sizing both the same either clips the headspeed or strands the % glyph out
+-- in the middle of the battery tile.
+local function buildHeroTile(r, title, unitText, slotCount, valShare)
+  local F = Theme.font
+  local roomy = L.class == "roomy"
+  local padX  = roomy and 14 or 8
+  local inner = r.w - padX * 2
+
+  panel(r, Theme.panel, Theme.rule)
+
+  local headY = r.y + (roomy and 6 or 4)
+  local headH = math.max(fh(F.tiny), fh(F.small))
+  label(r.x + padX, headY, math.floor(inner / 2), title, F.tiny, Theme.dim)
+
+  local valY  = headY + headH + (roomy and 3 or 2)
+  local valW  = math.floor(inner * valShare)
+  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
+
+  -- The unit hangs off the number's right shoulder, sitting on its baseline.
+  if unitText then
+    label(r.x + padX + valW, valY + fh(F.huge) - fh(F.mid), roomy and 46 or 30,
+          unitText, F.mid, Theme.dim)
+  end
+
+  local footH = fh(F.tiny)
+  local footY = r.y + r.h - footH - (roomy and 6 or 4)
+  local ruleY = footY - (roomy and 6 or 4)
+  lvgl.hline({ x=r.x + padX, y=ruleY, w=inner, h=1, color=Theme.rule })
+
+  local foots, slotW = {}, math.floor(inner / slotCount)
+  for i = 1, slotCount do
+    foots[i] = label(r.x + padX + slotW * (i - 1), footY, slotW, "",
+                     F.tiny, Theme.dim)
+  end
+
+  -- Returned so the caller can put its own reading on the header's right.
+  return value, foots, { x = r.x + padX + math.floor(inner / 2),
+                         y = headY, w = math.floor(inner / 2) }
+end
+
 local function buildHero()
   local F = Theme.font
   local roomy = L.class == "roomy"
-  local padX, footY = 16, roomy and 150 or 95
 
-  local r = L.battery
-  panel(r, Theme.panel, Theme.rule)
-  label(r.x + padX, r.y + 12, r.w - padX * 2, "BATTERY", F.small + F.bold, Theme.dim)
-  V.batValue = label(r.x + padX, r.y + (roomy and 30 or 22), r.w - padX * 2, "",
-                     F.huge + F.bold, Theme.ink)
-  V.batUnit  = label(r.x + r.w - padX - 40, r.y + (roomy and 60 or 44), 40, "%",
-                     F.mid, Theme.dim, ALIGN_RIGHT)
-  V.batPack  = label(r.x + padX, r.y + r.h - (roomy and 62 or 46), r.w - padX * 2, "",
-                     F.mid + F.bold, Theme.ink, ALIGN_RIGHT)
-  lvgl.hline({ x=r.x + padX, y=r.y + r.h - (roomy and 30 or 24),
-               w=r.w - padX * 2, h=1, color=Theme.rule })
-  V.batFoot = {}
-  local slots = roomy and 4 or 3
-  local slotW = math.floor((r.w - padX * 2) / slots)
-  for i = 1, slots do
-    V.batFoot[i] = label(r.x + padX + slotW * (i - 1), r.y + r.h - (roomy and 22 or 18),
-                         slotW, "", F.small, Theme.dim)
-  end
+  local packSlot
+  V.batValue, V.batFoot, packSlot =
+    buildHeroTile(L.battery, "BATTERY", "%", roomy and 4 or 3,
+                  roomy and 0.50 or 0.56)
+  -- Total pack voltage shares the header line. It is the one reading with
+  -- nowhere else to go once the percentage takes the whole value band, and it
+  -- reads cleanly against the panel title.
+  V.batPack = label(packSlot.x, packSlot.y, packSlot.w, "",
+                    F.small, Theme.ink, ALIGN_RIGHT)
 
-  r = L.headspeed
-  panel(r, Theme.panel, Theme.rule)
-  label(r.x + padX, r.y + 12, r.w - padX * 2, "HEADSPEED", F.small + F.bold, Theme.dim)
-  V.hsValue = label(r.x + padX, r.y + (roomy and 30 or 22), r.w - padX * 2, "",
-                    F.huge + F.bold, Theme.ink)
-  label(r.x + r.w - padX - 60, r.y + (roomy and 76 or 54), 60, "RPM",
-        F.small + F.bold, Theme.dim, ALIGN_RIGHT)
-  lvgl.hline({ x=r.x + padX, y=r.y + r.h - (roomy and 30 or 24),
-               w=r.w - padX * 2, h=1, color=Theme.rule })
-  V.hsFoot = {}
-  local hslots = roomy and 3 or 2
-  local hslotW = math.floor((r.w - padX * 2) / hslots)
-  for i = 1, hslots do
-    V.hsFoot[i] = label(r.x + padX + hslotW * (i - 1), r.y + r.h - (roomy and 22 or 18),
-                        hslotW, "", F.small, Theme.dim)
-  end
+  local rpmSlot
+  V.hsValue, V.hsFoot, rpmSlot =
+    buildHeroTile(L.headspeed, "HEADSPEED", nil, roomy and 3 or 2,
+                  roomy and 0.75 or 0.80)
+  label(rpmSlot.x, rpmSlot.y, rpmSlot.w, "RPM", F.tiny, Theme.dim, ALIGN_RIGHT)
 end
 
 local function buildRightColumn()
@@ -348,24 +397,27 @@ local function buildRightColumn()
 
   local g = L.gov
   V.govPanel = panel(g, Theme.govIdleBg, Theme.govIdleBr)
-  label(g.x, g.y + 8, g.w, "GOVERNOR", F.small + F.bold, Theme.dim, ALIGN_CENTER)
-  V.govState = label(g.x, g.y + (roomy and 28 or 20), g.w, "",
-                     F.large + F.bold, Theme.dim, ALIGN_CENTER)
+  local gy = g.y + (roomy and 5 or 4)
+  label(g.x, gy, g.w, "GOVERNOR", F.tiny, Theme.dim, ALIGN_CENTER)
+  V.govState = label(g.x, gy + fh(F.tiny) + (roomy and 4 or 2), g.w, "",
+                     F.mid, Theme.dim, ALIGN_CENTER)
 
   -- Labels carry their units on both screens; at 54px wide there is no room
-  -- for a separate unit glyph, and consistency beats a spare pixel.
-  local defs = roomy
-    and { {"CURRENT A"}, {"ESC °C"}, {"BEC V"} }
-    or  { {"CURR A"},    {"ESC °C"}, {"BEC V"} }
+  -- for a separate unit glyph, and consistency beats a spare pixel. Abbreviated
+  -- on the wide screen too: "CURRENT A" is 88px of tile and TINSIZE is 17px
+  -- tall, so it ran off its own panel.
+  local defs = { "CURR A", "ESC °C", "BEC V" }
   V.tiles = {}
   for i = 1, 3 do
     local t = L.tiles[i]
+    local ty = t.y + (roomy and 6 or 4)
     panel(t, Theme.panel, Theme.rule)
-    label(t.x + 6, t.y + 7, t.w - 12, defs[i][1], F.small, Theme.dim)
+    label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
     V.tiles[i] = {
-      value = label(t.x + 6, t.y + (roomy and 26 or 22), t.w - 12, "",
-                    F.mid + F.bold, Theme.ink),
-      foot  = label(t.x + 6, t.y + t.h - 16, t.w - 12, "", F.small, Theme.peak),
+      value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",
+                    F.mid, Theme.ink),
+      foot  = label(t.x + 6, t.y + t.h - fh(F.tiny) - (roomy and 6 or 4),
+                    t.w - 12, "", F.tiny, Theme.peak),
     }
   end
 
@@ -375,17 +427,25 @@ end
 
 local function buildStrip()
   local F = Theme.font
-  if Dashboard.level then
-    label(L.w - L.c.pad - 40, L.top.y + 2, 40, "L" .. tostring(Dashboard.level),
-          F.small + F.bold, Theme.warn, ALIGN_RIGHT)
-  end
+  local roomy = L.class == "roomy"
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
-  local y = L.stripRule + (L.class == "roomy" and 14 or 10)
-  V.flights = label(L.c.pad, y, 300, "", F.small, Theme.dim)
-  if L.class == "roomy" then
-    label(0, y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER", F.small, Theme.dim, ALIGN_CENTER)
+  local y = L.stripRule + (roomy and 10 or 7)
+  -- The render level lives here rather than in the top bar, where it sat on
+  -- top of the transmitter battery glyph. Only shown when it is holding
+  -- something back; at full level there is nothing to report.
+  local flightsW = 300
+  if Dashboard.level and Dashboard.level < 3 then
+    label(L.c.pad, y, 40, "L" .. tostring(Dashboard.level), F.tiny, Theme.warn)
+    flightsW = flightsW - 44
+    V.flights = label(L.c.pad + 44, y, flightsW, "", F.tiny, Theme.dim)
+  else
+    V.flights = label(L.c.pad, y, flightsW, "", F.tiny, Theme.dim)
   end
-  V.link = label(L.w - L.c.pad - 160, y, 160, "", F.small, Theme.steel, ALIGN_RIGHT)
+  if roomy then
+    label(0, y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER", F.tiny, Theme.dim,
+          ALIGN_CENTER)
+  end
+  V.link = label(L.w - L.c.pad - 240, y, 240, "", F.tiny, Theme.steel, ALIGN_RIGHT)
 end
 
 -- Compact readout of what the radio itself finds in the widget folder.
@@ -422,39 +482,40 @@ end
 
 local function buildStandby()
   local F = Theme.font
-  V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
-                      F.small + F.bold, Theme.ink)
+  local roomy = L.class == "roomy"
+  V.modelName = label(L.c.pad, L.top.y + (roomy and 5 or 4), 260, "",
+                      F.tiny, Theme.ink)
   lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
 
   Dashboard.placeLogo(L.logo, "logo_standby.png")
   lvgl.hline({ x=L.divider.x, y=L.divider.y, w=L.divider.w, h=1, color=Theme.rule })
   label(0, L.tagline.y, L.w, "NO HYPE · JUST VOLTAGE · REAL POWER",
-        F.small, Theme.dim, ALIGN_CENTER)
+        F.tiny, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
-                   F.mid + F.bold, Theme.warn, ALIGN_CENTER)
+                   F.small, Theme.warn, ALIGN_CENTER)
 
-  local roomy = L.class == "roomy"
-  local lineH = roomy and 15 or 12
-  -- When the artwork failed there is no image in the logo box, only a one-line
-  -- wordmark, so the diagnosis can use the space the image would have taken.
-  -- placeLogo has already run by this point, so we know which case we are in.
-  local dy = Dashboard.logoMissing
-             and (L.logo.y + math.floor(L.logo.h / 2) + (roomy and 26 or 20))
-             or (L.status.y + (roomy and 28 or 22))
+  -- Diagnostics run from below whatever is above them to the strip rule, one
+  -- measured line at a time. The old fixed 15px step was less than half the
+  -- height of the font it was stepping, so the lines wrote over each other.
+  local lineH = fh(F.tiny) + 2
+  -- Always below the status line. Starting them up in the logo box when the
+  -- artwork was missing reclaimed space the tagline and divider still occupy,
+  -- so the diagnosis printed straight through them.
+  local dy = L.status.y + fh(F.small) + 6
   local room = math.floor((L.stripRule - dy) / lineH)
   V.diag = {}
   for i = 1, math.max(0, math.min(roomy and 6 or 3, room)) do
     V.diag[i] = label(L.c.pad, dy + (i - 1) * lineH, L.w - L.c.pad * 2, "",
-                      F.small, Theme.dim, ALIGN_CENTER)
+                      F.tiny, Theme.dim, ALIGN_CENTER)
   end
 
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
-  local sy = L.stripRule + (L.class == "roomy" and 14 or 10)
-  V.flights = label(L.c.pad, sy, 300, "", F.small, Theme.dim)
+  local sy = L.stripRule + (roomy and 10 or 7)
+  V.flights = label(L.c.pad, sy, 300, "", F.tiny, Theme.dim)
   -- Standby is where a first run lands, so the missing-artwork notice belongs
   -- here as well as on the dashboard. It lives in the strip rather than under
   -- the status line, which is where it previously collided with it.
-  V.link = label(0, sy, L.w - L.c.pad, "", F.small + F.bold,
+  V.link = label(L.w - L.c.pad - 320, sy, 320, "", F.tiny,
                  Theme.warn, ALIGN_RIGHT)
 end
 
@@ -472,26 +533,37 @@ function Dashboard.buildMinimal(w, h)
   Host.collect()
   mode = "minimal"
   local F = Theme.font
+  Theme.useMetricsFor(Host.lcdW or w)
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
-  V.modelName = label(8, 6, w - 16, "", F.small + F.bold, Theme.ink)
-  label(0, 30, w, "ZELIONDASH - SAFE MODE", F.small + F.bold, Theme.warn, ALIGN_CENTER)
-  V.minBat  = label(8,  math.floor(h * 0.30), w - 16, "", F.large + F.bold, Theme.ink, ALIGN_CENTER)
-  V.minHs   = label(8,  math.floor(h * 0.55), w - 16, "", F.large + F.bold, Theme.ink, ALIGN_CENTER)
-  V.minCell = label(8,  math.floor(h * 0.78), w - 16, "", F.mid, Theme.dim, ALIGN_CENTER)
+  V.modelName = label(8, 6, w - 16, "", F.tiny, Theme.ink)
+  local y = 6 + fh(F.tiny) + 4
+  label(0, y, w, "ZELIONDASH - SAFE MODE", F.tiny, Theme.warn, ALIGN_CENTER)
+  -- Three readings on a clear screen. Spaced by their own height, so the last
+  -- one still lands above the bottom edge on a 320px-tall radio.
+  local rest = h - (y + fh(F.tiny) + 4)
+  local step = math.floor(rest / 3)
+  local top  = y + fh(F.tiny) + 4
+  V.minBat  = label(8, top + math.floor((step - fh(F.large)) / 2), w - 16, "",
+                    F.large, Theme.ink, ALIGN_CENTER)
+  V.minHs   = label(8, top + step + math.floor((step - fh(F.large)) / 2), w - 16, "",
+                    F.large, Theme.ink, ALIGN_CENTER)
+  V.minCell = label(8, top + step * 2 + math.floor((step - fh(F.mid)) / 2), w - 16, "",
+                    F.mid, Theme.dim, ALIGN_CENTER)
   Dashboard.update()
 end
 
 local function buildTooSmall(w, h)
   local F = Theme.font
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
-  label(0, math.floor(h / 2) - 26, w, "ZELIONDASH", F.mid + F.bold,
-        Theme.steel, ALIGN_CENTER)
-  label(0, math.floor(h / 2), w, "NEEDS A FULL SCREEN WIDGET SLOT",
-        F.small + F.bold, Theme.warn, ALIGN_CENTER)
-  label(0, math.floor(h / 2) + 20, w,
+  local y = math.floor(h / 2) - fh(F.mid)
+  label(0, y, w, "ZELIONDASH", F.mid, Theme.steel, ALIGN_CENTER)
+  y = y + fh(F.mid) + 2
+  label(0, y, w, "NEEDS A FULL SCREEN WIDGET SLOT",
+        F.tiny, Theme.warn, ALIGN_CENTER)
+  label(0, y + fh(F.tiny) + 2, w,
         string.format("this zone is %dx%d, minimum is %dx%d",
                       w, h, Dashboard.MIN_W, Dashboard.MIN_H),
-        F.small, Theme.dim, ALIGN_CENTER)
+        F.tiny, Theme.dim, ALIGN_CENTER)
 end
 
 -- w,h are the WIDGET ZONE, not the screen. LVGL objects are children of the
@@ -508,6 +580,9 @@ function Dashboard.build(standby, w, h)
   Dashboard.logoMissing = false
   w = w or Host.lcdW
   h = h or Host.lcdH
+  -- Which font set this firmware was compiled with follows the radio's screen,
+  -- not the widget's zone, so ask the host rather than the zone we were given.
+  Theme.useMetricsFor(Host.lcdW or w)
 
   if w < Dashboard.MIN_W or h < Dashboard.MIN_H then
     mode = "toosmall"

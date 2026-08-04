@@ -26,17 +26,103 @@ local function flag(name, fallback)
   return v
 end
 
--- EdgeTX offers a fixed ladder of font sizes, not arbitrary point values.
--- Everything the renderer draws picks from these, which is why the layout
--- positions text by anchor rather than by measured height.
+-- EdgeTX packs the font into bits 8..11 of a text flag as an ENUMERATED INDEX,
+-- not as independent bits (radio/src/gui/colorlcd/fonts.h):
+--
+--   0 STD   1 BOLD   2 TINSIZE   3 SMLSIZE   4 MIDSIZE   5 DBLSIZE   6 XXLSIZE
+--
+-- BOLD is a font in its own right - standard size, bold weight - and NOT a
+-- modifier. Adding it to a size does plain arithmetic inside that field and
+-- quietly selects a different font: SMLSIZE + BOLD is MIDSIZE, MIDSIZE + BOLD
+-- is DBLSIZE, DBLSIZE + BOLD is XXLSIZE. Every one of those is legal, merely
+-- wrong, which is why the mistake survived so long.
+--
+-- XXLSIZE + BOLD is index 7, and on EdgeTX 2.11 FONTS_COUNT is 7 - so index 7
+-- is one past the end. LvglWidgetLabel::setFont calls etx_font(), which does
+-- `etx_obj_add_style(obj, styles->font[fontIdx])` against `lv_style_t
+-- font[FONTS_COUNT]` with no bounds check, handing LVGL a style read from off
+-- the end of the array. That is a native fault, not a Lua error: no pcall can
+-- catch it, and the transmitter reboots into EMERGENCY MODE.
+--
+-- Exactly two labels used XXLSIZE + BOLD - battery percent and headspeed - and
+-- both live only on the dashboard. That is why safe mode (DBLSIZE + BOLD, which
+-- lands on XXLSIZE) and standby (MIDSIZE + BOLD, which lands on DBLSIZE) both
+-- ran fine while every render level that drew the dashboard took the radio down.
+--
+-- So each entry below is a COMPLETE font selection. Never add two together.
+-- DBLSIZE and XXLSIZE are drawn from bold glyph sets already; there is no bold
+-- variant of TINSIZE/SMLSIZE/MIDSIZE, which makes BOLD itself the only
+-- emphasis available at text sizes.
 Theme.font = {
-  small  = flag("SMLSIZE", 0),
-  normal = 0,
-  mid    = flag("MIDSIZE", 0),
-  large  = flag("DBLSIZE", 0),
-  huge   = flag("XXLSIZE", flag("DBLSIZE", 0)),
-  bold   = flag("BOLD", 0),
+  tiny      = flag("TINSIZE", 0),
+  small     = flag("SMLSIZE", 0),
+  smallBold = flag("BOLD", 0),      -- STD weight bold: the only small emphasis
+  normal    = flag("STDSIZE", 0),
+  mid       = flag("MIDSIZE", 0),
+  midBold   = flag("MIDSIZE", 0),   -- no bold MIDSIZE exists
+  large     = flag("DBLSIZE", 0),   -- already bold
+  huge      = flag("XXLSIZE", flag("DBLSIZE", 0)),  -- already bold
 }
+
+-- 2.12 appends an eighth font; 2.11 stops at XXLSIZE. Clamping to 6 is correct
+-- on both, and the extra one is a nicety nothing here asks for.
+Theme.FONT_MAX_INDEX = 6
+local FONT_SHIFT, FONT_STEPS = 256, 16
+
+-- Last line of defence, applied to every font that reaches LVGL. A call site
+-- that computes a size wrongly gets a cosmetic bug; one that computes an
+-- out-of-range index reboots the radio, so the index is clamped rather than
+-- trusted. Colour lives in bits 16+ and alignment in bits 0..7, so both pass
+-- through untouched.
+-- Counts how often it had to intervene. On the radio nobody reads this; in the
+-- test suite it is the assertion. Clamping makes a bad font harmless, which
+-- would also make a reintroduced `size + BOLD` invisible again - so the tests
+-- assert this stays at zero across every screen rather than merely asserting
+-- that nothing crashed.
+Theme.fontClamps = 0
+
+function Theme.safeFont(flags)
+  flags = tonumber(flags) or 0
+  local idx = math.floor(flags / FONT_SHIFT) % FONT_STEPS
+  if idx <= Theme.FONT_MAX_INDEX then return flags end
+  Theme.fontClamps = Theme.fontClamps + 1
+  return flags - (idx - Theme.FONT_MAX_INDEX) * FONT_SHIFT
+end
+
+--------------------------------------------------------------------------
+-- Font metrics
+--------------------------------------------------------------------------
+--
+-- EdgeTX compiles ONE of three font sets into the firmware, chosen by the
+-- radio's screen size at build time (radio/src/fonts/CMakeLists.txt): "lrg"
+-- for 800x480, "sml" for 320x240, "std" for everything else - which is where
+-- the TX15's 480x320 lands. The line heights below are read out of the
+-- generated lv_font_en_*.c files in v2.11.0.
+--
+-- These are far larger than a design mock-up suggests. SMLSIZE is 23px tall on
+-- a TX16S, not the ~11px "small" usually means, and XXLSIZE is 102px. Without
+-- the real numbers the layout is guesswork, and guessed text positions are how
+-- two labels 24px apart ended up on top of each other on hardware.
+local FONT_HEIGHTS = {
+  --      STD BOLD XXS  XS   L   XL  XXL
+  lrg = { [0]=29, 29, 17, 23, 46, 58, 102 },
+  std = { [0]=21, 20, 12, 17, 29, 40,  69 },
+  sml = { [0]=14, 14, 10, 12, 18, 26,  44 },
+}
+
+Theme.metrics = "std"
+
+function Theme.useMetricsFor(w)
+  Theme.metrics = ((tonumber(w) or 0) >= 800) and "lrg" or "std"
+  return Theme.metrics
+end
+
+-- Height of one line in the given font flags, in pixels on the current radio.
+function Theme.fontHeight(flags)
+  local idx = math.floor((tonumber(flags) or 0) / FONT_SHIFT) % FONT_STEPS
+  local set = FONT_HEIGHTS[Theme.metrics] or FONT_HEIGHTS.std
+  return set[idx] or set[0]
+end
 
 Theme.built = false
 

@@ -154,8 +154,10 @@ local function drawSensorMap()
     local row = rows[i + scroll]
     if row then
       local y, color = listTop + (i - 1) * rowH, statusColor(row)
+      -- One font, not a size plus a modifier: BOLD is font index 1, so
+      -- SMLSIZE + BOLD selects MIDSIZE rather than a bold small.
       lcd.drawText(colRole, y, row.label,
-                   SMLSIZE + (row.important and BOLD or 0) + Theme.ink)
+                   (row.important and BOLD or SMLSIZE) + Theme.ink)
       lcd.drawText(colSensor, y, row.sensor or "-", SMLSIZE + color)
       lcd.drawText(colHow, y, row.how and HOW[row.how] or "", SMLSIZE + Theme.dim)
       lcd.drawText(colValue, y, formatValue(row), RIGHT + SMLSIZE + color)
@@ -258,15 +260,19 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
-  -- Render level, so the failure can be bisected on the radio instead of
-  -- guessed at from here. Each step adds exactly one construct:
+  -- Render level. 3 is the product; the lower steps each drop one construct
+  -- and exist as an escape hatch on a radio that misbehaves:
   --   0  safe mode - labels and one square rectangle
   --   1  full dashboard, square corners, no images
   --   2  full dashboard, rounded corners, no images
   --   3  full dashboard, rounded corners, images
-  -- Defaults to 0: the widget has to boot before it can be diagnosed, and a
-  -- degraded screen beats an emergency-mode transmitter.
-  local level = tonumber(options and options.Level) or 0
+  --
+  -- It used to default to 0. That was while the emergency-mode reboot was
+  -- still unexplained and any screen at all beat a dead transmitter; the cause
+  -- turned out to be XXLSIZE + BOLD resolving to a font index EdgeTX has no
+  -- font for (see Theme.font), which is fixed at the source. The ladder below
+  -- in ensureScreen() stays as a backstop.
+  local level = tonumber(options and options.Level) or 3
   if level < 0 then level = 0 elseif level > 3 then level = 3 end
   Widget.level      = level
   Widget.safeMode   = (level == 0)
@@ -305,7 +311,7 @@ Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
-  { "Level",      VALUE,  0, 0, 3 },
+  { "Level",      VALUE,  3, 0, 3 },
 }
 
 Widget.OPTION_LABELS = {

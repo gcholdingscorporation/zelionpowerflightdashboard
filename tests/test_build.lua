@@ -210,18 +210,29 @@ H.test("level 2 restores rounded corners but still no images", function()
   H.eq(#Mock.lvglImages(), 0, "images are not")
 end)
 
-H.test("safe mode is the default, so a stricken radio still boots", function()
+H.test("the full dashboard is the default", function()
+  -- It defaulted to safe mode while the emergency-mode reboot was unexplained.
+  -- The cause was XXLSIZE + BOLD selecting a font index EdgeTX has no font for;
+  -- with that fixed at the source, a fresh install should show the product.
   Mock.reset(); Mock.removeRf2()
   Mock.state.lcdW, Mock.state.lcdH = 800, 480
   flying()
   Mock.install(); Mock.installLvgl(); Mock.installLogos()
   local def = loadDist()
   local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
-  def.update(widget, {})            -- no SafeMode key at all
+  def.update(widget, {})            -- no Level key at all
   Mock.advanceSeconds(0.2)
   def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.falsy(string.find(t, "SAFE MODE", 1, true), "not degraded out of the box")
+  H.truthy(string.find(t, "1850", 1, true), "headspeed on screen")
+end)
+
+H.test("safe mode is still reachable when a radio needs it", function()
+  local def, widget = boot(800, 480, { Level = 0 }, flying)
+  def.refresh(widget, 0, nil)
   H.truthy(string.find(Mock.lvglText(), "SAFE MODE", 1, true))
-  H.eq(#Mock.lvglImages(), 0, "no bitmap until explicitly enabled")
+  H.eq(#Mock.lvglImages(), 0, "no bitmap in safe mode")
 end)
 
 H.group("build: sensor map")

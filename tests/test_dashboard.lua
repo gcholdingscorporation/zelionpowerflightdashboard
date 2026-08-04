@@ -359,4 +359,165 @@ H.test("building does not leak objects from the previous screen", function()
   H.truthy(Mock.lv.cleared >= 2)
 end)
 
+--------------------------------------------------------------------------
+-- Fonts
+--------------------------------------------------------------------------
+--
+-- This is the bug that put the transmitter into EMERGENCY MODE. EdgeTX stores
+-- the font in bits 8..11 of a text flag as an enumerated INDEX, and BOLD is
+-- index 1 - a font, not a modifier. Every `size + BOLD` in the renderer was
+-- therefore arithmetic that landed on some other font, and XXLSIZE + BOLD
+-- landed on index 7, one past the end of EdgeTX 2.11's seven-entry font table.
+-- etx_font() indexes that array unchecked, so LVGL got a style read from off
+-- the end of it and the radio faulted natively - beneath anything pcall can
+-- see.
+
+H.group("dashboard: fonts")
+
+local FONT_MASK_STEP, FONT_STEPS = 256, 16
+local function fontIndex(flags)
+  return math.floor((tonumber(flags) or 0) / FONT_MASK_STEP) % FONT_STEPS
+end
+
+H.test("every font in the ladder is a real EdgeTX font", function()
+  local ZD = boot(800, 480, flying)
+  for name, flags in pairs(ZD.Theme.font) do
+    local idx = fontIndex(flags)
+    H.truthy(idx <= ZD.Theme.FONT_MAX_INDEX,
+             string.format("Theme.font.%s is index %d, max is %d",
+                           name, idx, ZD.Theme.FONT_MAX_INDEX))
+  end
+end)
+
+H.test("adding two fonts together is what breaks, and is detectable", function()
+  local ZD = boot(800, 480, flying)
+  local F = ZD.Theme.font
+  -- The exact combination that took the radio down. Kept as a test so the
+  -- reasoning survives even if every call site is later rewritten.
+  H.eq(fontIndex(F.huge + F.smallBold), 7,
+       "XXLSIZE + BOLD is index 7 - past the end of the 2.11 font table")
+  H.eq(ZD.Theme.safeFont(F.huge + F.smallBold), F.huge,
+       "and the guard has to bring it back into range")
+end)
+
+H.test("no screen asks LVGL for a font EdgeTX does not have", function()
+  -- Not just "did it crash": the guard would hide that. Assert instead that
+  -- the guard never had to fire, so a reintroduced `size + BOLD` fails here
+  -- rather than silently rendering at the wrong size.
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    for _, standby in ipairs({ true, false }) do
+      local ZD = boot(size[1], size[2], flying)
+      ZD.Theme.fontClamps = 0
+      ZD.Dashboard.build(standby, size[1], size[2])
+      ZD.Dashboard.update()
+      H.eq(ZD.Theme.fontClamps, 0,
+           string.format("%dx%d %s clamped a font",
+                         size[1], size[2], standby and "standby" or "dashboard"))
+      for _, o in ipairs(Mock.lv.objects) do
+        if o.props.font ~= nil then
+          H.truthy(fontIndex(o.props.font) <= ZD.Theme.FONT_MAX_INDEX,
+                   "object built with an out-of-range font index")
+        end
+      end
+    end
+  end
+end)
+
+H.test("safe mode's fonts are legal too", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Theme.fontClamps = 0
+  ZD.Dashboard.buildMinimal(800, 480)
+  H.eq(ZD.Theme.fontClamps, 0)
+end)
+
+-- Text placement was tuned against a design mock-up whose "small" was 9pt.
+-- EdgeTX's SMLSIZE is 23px on a TX16S and XXLSIZE is 102px, so every panel had
+-- its header inside its own value and the standby diagnostics printed through
+-- the tagline. None of that is visible from a mock that does not draw - unless
+-- the real line heights are used to check for it, which is what this does.
+local function labelBoxes(ZD)
+  local out = {}
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "label" and (o.props.text or "") ~= "" then
+      out[#out + 1] = { x = o.props.x, y = o.props.y,
+                        w = (o.props.w or 0) > 0 and o.props.w or 60,
+                        h = ZD.Theme.fontHeight(o.props.font),
+                        t = o.props.text }
+    end
+  end
+  return out
+end
+
+local function assertNoCollisions(ZD, h, what)
+  local boxes = labelBoxes(ZD)
+  H.truthy(#boxes > 0, what .. " drew no text at all")
+  for i = 1, #boxes do
+    local a = boxes[i]
+    H.truthy(a.y + a.h <= h,
+             string.format("%s: %q runs off the bottom (y%d..%d of %d)",
+                           what, a.t, a.y, a.y + a.h, h))
+    for j = i + 1, #boxes do
+      local b = boxes[j]
+      if a.x < b.x + b.w and b.x < a.x + a.w
+         and a.y < b.y + b.h and b.y < a.y + a.h then
+        H.truthy(false, string.format("%s: %q (y%d..%d) overlaps %q (y%d..%d)",
+                 what, a.t, a.y, a.y + a.h, b.t, b.y, b.y + b.h))
+      end
+    end
+  end
+end
+
+H.group("dashboard: text fits")
+
+H.test("no two labels overlap on either radio", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    local w, h = size[1], size[2]
+    for _, standby in ipairs({ false, true }) do
+      local ZD = boot(w, h, flying)
+      ZD.Dashboard.build(standby, w, h)
+      ZD.Dashboard.update()
+      assertNoCollisions(ZD, h, string.format("%dx%d %s", w, h,
+                                              standby and "standby" or "dashboard"))
+    end
+  end
+end)
+
+H.test("the standby diagnostics do not print through the tagline", function()
+  -- Only drawn when the artwork fails to load, which is exactly the run where
+  -- nobody is in a position to notice a layout bug before shipping it.
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    local w, h = size[1], size[2]
+    Mock.reset(); Mock.removeRf2()
+    Mock.state.lcdW, Mock.state.lcdH = w, h
+    Mock.noDefaultLogos = true
+    Mock.install(); Mock.installLvgl()
+    local ZD = Loader.load()
+    ZD.State.reloadModel()
+    ZD.Dashboard.build(true, w, h)
+    ZD.Dashboard.update()
+    Mock.noDefaultLogos = nil
+    H.truthy(ZD.Dashboard.logoMissing, "the artwork was supposed to be absent")
+    assertNoCollisions(ZD, h, string.format("%dx%d standby without artwork", w, h))
+  end
+end)
+
+H.test("safe mode fits too", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    local ZD = boot(size[1], size[2], flying)
+    ZD.Dashboard.buildMinimal(size[1], size[2])
+    assertNoCollisions(ZD, size[2],
+                       string.format("%dx%d safe mode", size[1], size[2]))
+  end
+end)
+
+H.test("the colour and alignment bits survive the guard", function()
+  local ZD = boot(800, 480, flying)
+  local F = ZD.Theme.font
+  -- Colour lives in bits 16+, alignment in bits 0..7. Clamping the font must
+  -- not disturb either, or a fix for the crash becomes a rendering bug.
+  local colour, align = 0x00AB0000, 0x08
+  H.eq(ZD.Theme.safeFont(F.huge + F.smallBold + colour + align),
+       F.huge + colour + align)
+end)
+
 end

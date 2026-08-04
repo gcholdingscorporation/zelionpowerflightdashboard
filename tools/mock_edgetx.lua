@@ -233,12 +233,18 @@ function Mock.install()
   -- prove the draw path runs without erroring and to assert on what was drawn.
   Mock.draws = {}
   _G.SOLID = 0
-  -- Distinct non-zero values so a constant that failed to resolve (and so
-  -- collapsed to 0) is visible in an assertion rather than blending in.
-  _G.LEFT,    _G.CENTER,  _G.RIGHT   = 0, 0x0800, 0x1000
-  _G.SMLSIZE, _G.MIDSIZE             = 0x0020, 0x0040
-  _G.DBLSIZE, _G.XXLSIZE             = 0x0060, 0x0080
-  _G.BOLD                            = 0x2000
+  -- The REAL EdgeTX values, not convenient distinct bits. Inventing
+  -- independent bits here is what hid an emergency-mode crash for four rounds
+  -- of hardware testing: on the radio the font occupies bits 8..11 as an
+  -- enumerated index, so SMLSIZE + BOLD is arithmetic that lands on MIDSIZE
+  -- and XXLSIZE + BOLD lands one past the end of the font table. With made-up
+  -- bit flags every one of those combinations looks fine.
+  -- (radio/src/gui/colorlcd/fonts.h and libopenui_defines.h, v2.11.0)
+  _G.LEFT,     _G.VCENTER, _G.CENTER, _G.RIGHT = 0x00, 0x02, 0x04, 0x08
+  _G.INVERS,   _G.SHADOWED, _G.BLINK           = 0x01, 0x80, 0x1000
+  _G.STDSIZE,  _G.BOLD                         = 0x0000, 0x0100
+  _G.TINSIZE,  _G.SMLSIZE                      = 0x0200, 0x0300
+  _G.MIDSIZE,  _G.DBLSIZE,  _G.XXLSIZE         = 0x0400, 0x0500, 0x0600
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
   _G.SOURCE, _G.BOOL = 1, 2
   _G.lcd = {
@@ -266,7 +272,8 @@ end
 -- an entire class of bug that only appears on hardware. This reproduces the
 -- real exposure.
 local HIDDEN_CONSTANTS = {
-  "SMLSIZE", "BOLD", "MIDSIZE", "DBLSIZE", "XXLSIZE", "CENTER", "CENTERED",
+  "STDSIZE", "TINSIZE", "SMLSIZE", "BOLD", "MIDSIZE", "DBLSIZE", "XXLSIZE",
+  "INVERS", "SHADOWED", "BLINK", "VCENTER", "CENTER", "CENTERED",
   "RIGHT", "LEFT", "SOLID", "SOURCE", "BOOL", "VALUE", "STRING", "COLOR",
   "EVT_VIRTUAL_NEXT", "EVT_VIRTUAL_PREV", "EVT_VIRTUAL_ENTER", "PLAY_NOW",
   "UNIT_VOLTS", "UNIT_AMPS", "UNIT_CELSIUS", "UNIT_PERCENT", "UNIT_MAH",
@@ -360,13 +367,37 @@ function Mock.installLvgl()
   -- only way to prove the widget degrades instead of faulting the transmitter.
   Mock.lvglFailAfter = nil
 
+  -- EdgeTX 2.11 has seven fonts, indexed 0..6 out of bits 8..11 of the text
+  -- flags. LvglWidgetLabel::setFont hands that index straight to etx_font(),
+  -- which indexes `lv_style_t font[FONTS_COUNT]` without checking it - so an
+  -- index of 7 or more reads a style off the end of the array and gives LVGL a
+  -- garbage pointer to walk. On hardware that is a native fault: the widget
+  -- never sees an error, pcall cannot catch it, and the radio reboots into
+  -- EMERGENCY MODE. Here it is a loud test failure instead.
+  local MAX_FONT_INDEX = 6
+
+  local function checkFont(kind, props)
+    local f = tonumber(props and props.font)
+    if not f then return end
+    local idx = math.floor(f / 256) % 16
+    if idx > MAX_FONT_INDEX then
+      error(string.format(
+        "EMERGENCY MODE: %s built with font index %d (flags 0x%X); EdgeTX 2.11 "
+        .. "has fonts 0..%d. BOLD is font index 1, not a modifier - adding it "
+        .. "to a size selects a different font, and XXLSIZE + BOLD runs off the "
+        .. "end of the table.", kind, idx, f, MAX_FONT_INDEX), 0)
+    end
+  end
+
   local function make(kind, props)
+    checkFont(kind, props)
     if Mock.lvglFailAfter and #Mock.lv.objects >= Mock.lvglFailAfter then
       error("not enough memory", 0)
     end
     local o = { kind = kind, props = {}, visible = true, setCount = 0 }
     for k, v in pairs(props or {}) do o.props[k] = v end
     function o:set(p)
+      checkFont(kind, p)
       self.setCount = self.setCount + 1
       Mock.lv.sets = Mock.lv.sets + 1
       for k, v in pairs(p) do self.props[k] = v end
