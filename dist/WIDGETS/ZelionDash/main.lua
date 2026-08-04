@@ -2172,6 +2172,34 @@ local function buildStrip()
   V.link = label(L.w - L.c.pad - 160, y, 160, "", F.small, Theme.steel, ALIGN_RIGHT)
 end
 
+-- Compact readout of what the radio itself finds in the widget folder.
+-- Lives on standby because that is where a failed load is actually seen;
+-- requiring the pilot to find a settings toggle to diagnose it was a mistake.
+local ASSET_DIR = "/WIDGETS/ZelionDash/"
+local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
+
+function Dashboard.assetDiagLines(maxLines)
+  local out = {}
+  local listing = Host.listDir(ASSET_DIR)
+  if listing == nil then
+    out[#out + 1] = "dir() unavailable on this firmware"
+  else
+    local names = {}
+    for i = 1, #listing do names[#names + 1] = listing[i] end
+    out[#out + 1] = "DIR (" .. #names .. "): " ..
+                    (#names > 0 and table.concat(names, " ") or "EMPTY")
+  end
+  for _, f in ipairs(ASSET_FILES) do
+    local p = Host.probeImage(ASSET_DIR .. f)
+    out[#out + 1] = string.format("%s %s%s%s%s%s", f,
+      p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-",
+      p.size and (" " .. p.size .. "b") or "",
+      p.w and (" w" .. p.w) or "")
+  end
+  while maxLines and #out > maxLines do table.remove(out) end
+  return out
+end
+
 local function buildStandby()
   local F = Theme.font
   V.modelName = label(L.c.pad, L.class == "roomy" and 10 or 7, 260, "",
@@ -2184,6 +2212,16 @@ local function buildStandby()
         F.small, Theme.dim, ALIGN_CENTER)
   V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
                    F.mid + F.bold, Theme.warn, ALIGN_CENTER)
+
+  local roomy = L.class == "roomy"
+  local lineH = roomy and 15 or 12
+  local dy = L.status.y + (roomy and 28 or 22)
+  local room = math.floor((L.stripRule - dy) / lineH)
+  V.diag = {}
+  for i = 1, math.max(0, math.min(roomy and 6 or 3, room)) do
+    V.diag[i] = label(L.c.pad, dy + (i - 1) * lineH, L.w - L.c.pad * 2, "",
+                      F.small, Theme.dim, ALIGN_CENTER)
+  end
 
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local sy = L.stripRule + (L.class == "roomy" and 14 or 10)
@@ -2403,6 +2441,13 @@ function Dashboard.update()
     setp(V.link, { text = Dashboard.logoMissing
                           and ("NO IMAGE: " .. tostring(Dashboard.missingPath))
                           or "" })
+    if V.diag then
+      local lines = Dashboard.logoMissing
+                    and Dashboard.assetDiagLines(#V.diag) or {}
+      for i = 1, #V.diag do
+        setp(V.diag[i], { text = lines[i] or "" })
+      end
+    end
     return
   end
   updateTopBar()

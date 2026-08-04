@@ -137,6 +137,18 @@ H.test("missing artwork falls back to type and says so", function()
            "a silently absent image is the likeliest first-run mistake")
 end)
 
+H.test("standby reports the folder contents when artwork fails", function()
+  local ZD = boot(800, 480)
+  Mock.state.files["/WIDGETS/ZelionDash/logo_standby.png"] = nil
+  ZD.Dashboard.build(true, 800, 480)
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  -- Requiring a settings toggle to see this was the wrong call: the failure
+  -- is visible on standby, so the diagnosis should be too.
+  H.truthy(string.find(t, "DIR (", 1, true), "directory listing on screen")
+  H.truthy(string.find(t, "logo_standby.png", 1, true), "each file probed")
+end)
+
 H.group("dashboard: host constant lookup")
 
 H.test("resolves constants published through the read-only lookup", function()
