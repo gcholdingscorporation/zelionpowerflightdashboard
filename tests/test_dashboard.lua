@@ -109,10 +109,13 @@ H.group("dashboard: battery gauge")
 H.test("fill height tracks the percentage", function()
   local ZD = boot(800, 480, flying)
   ZD.Dashboard.build(false)
+  -- Identify the gauge fill by its layout geometry rather than by guessing at
+  -- its shape: panels are filled rectangles too now.
+  local L = ZD.Layout.build(800, 480)
   local function fillH()
     for _, o in ipairs(Mock.lv.objects) do
-      if o.kind == "rect" and o.props.rounded == 5 and o.props.filled == 1
-         and o.props.w and o.props.w < 100 and o.props.h and o.props.h > 1 then
+      if o.kind == "rect" and o.props.x == L.bar.x + 3
+         and o.props.w == L.bar.w - 6 then
         return o.props.h
       end
     end
@@ -184,6 +187,27 @@ H.test("a rebuild does not re-open the artwork", function()
   local after = Mock.bitmapOpens
   for _ = 1, 10 do ZD.Dashboard.build(false, 800, 480) end
   H.eq(Mock.bitmapOpens, after, "probe results must be cached, not re-taken")
+end)
+
+H.test("no rectangle is ever drawn with an impossible corner radius", function()
+  -- A radius greater than half the shorter side cannot be drawn and can fault
+  -- the renderer natively. The gauge fill is one pixel tall at 0%, and was
+  -- being created with a radius of 5.
+  local ZD = boot(800, 480, flying)
+  for _, pct in ipairs({ 0, 1, 50, 100 }) do
+    Mock.setSensor("Bat%", pct)
+    Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+    ZD.Dashboard.build(false, 800, 480)
+    ZD.Dashboard.update()
+    for _, o in ipairs(Mock.lv.objects) do
+      if o.kind == "rect" and (o.props.rounded or 0) > 0 then
+        local limit = math.floor(math.min(o.props.w, o.props.h) / 2)
+        H.truthy(o.props.rounded <= limit,
+                 string.format("radius %d on a %dx%d rect at %d%%",
+                               o.props.rounded, o.props.w, o.props.h, pct))
+      end
+    end
+  end
 end)
 
 H.group("dashboard: host constant lookup")

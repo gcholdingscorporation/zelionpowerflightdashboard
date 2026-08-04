@@ -60,6 +60,16 @@ local function setp(obj, props)
   if not obj then return end
   local st = SHADOW[obj]
   if not st then st = {}; SHADOW[obj] = st end
+  -- Resizing can make an existing radius illegal - a gauge shrinking to one
+  -- pixel keeps the radius it was built with unless it is re-clamped.
+  if props.w ~= nil or props.h ~= nil then
+    local w = props.w or st.w
+    local h = props.h or st.h
+    if st.rounded and st.rounded > 0 and w and h then
+      local r = safeRadius(w, h, st.rounded)
+      if r ~= st.rounded then props.rounded = r end
+    end
+  end
   local changed = false
   for k, v in pairs(props) do
     if st[k] ~= v then st[k] = v; changed = true end
@@ -67,14 +77,14 @@ local function setp(obj, props)
   if changed then obj:set(props) end
 end
 
-local function setVisible(obj, vis)
+-- Deliberately no hide()/show(). Those were the other construct safe mode
+-- never exercises; an object that should not be seen is collapsed to a single
+-- pixel in the colour behind it instead.
+local function setHidden(obj, hidden, bgColor)
   if not obj then return end
-  local st = SHADOW[obj]
-  if not st then st = {}; SHADOW[obj] = st end
-  vis = vis and true or false
-  if st.visible == vis then return end
-  st.visible = vis
-  if vis then obj:show() else obj:hide() end
+  if hidden then
+    setp(obj, { h = 1, color = bgColor })
+  end
 end
 
 local function label(x, y, w, text, font, color, align)
@@ -83,19 +93,43 @@ local function label(x, y, w, text, font, color, align)
   return remember(lvgl.label(p), p)
 end
 
+-- A corner radius larger than half the shorter side is geometrically
+-- impossible, and asking a graphics library to draw one is a classic way to
+-- crash it natively. This code was doing exactly that: the battery gauge fill
+-- is created one pixel tall with a radius of 5, and the TX battery fill one
+-- pixel tall with a radius of 2. Both are clamped here rather than at every
+-- call site, because the offending sizes are runtime values - a gauge at 0%
+-- is one pixel tall no matter what radius the design asked for.
+local function safeRadius(w, h, rounded)
+  local r = rounded or 0
+  if r <= 0 then return 0 end
+  local limit = math.floor(math.min(w or 0, h or 0) / 2)
+  if limit < 0 then limit = 0 end
+  if r > limit then return limit end
+  return r
+end
+
 local function rectangle(x, y, w, h, color, filled, rounded, thickness)
   local p = { x=x, y=y, w=w, h=h, color=color,
-              filled=filled and 1 or 0, rounded=rounded or 0,
+              filled=filled and 1 or 0, rounded=safeRadius(w, h, rounded),
               thickness=thickness or 1 }
   return remember(lvgl.rectangle(p), p)
 end
 
--- A panel is a fill plus a separate border so the two can be recoloured
--- independently - the governor block changes both as its state changes.
+-- A panel is two FILLED rectangles, the outer one showing through a 1px inset
+-- to read as a border.
+--
+-- Hardware verdict: safe mode - filled rectangles and labels only - does not
+-- crash the radio, while the full dashboard does even with every image
+-- disabled. Unfilled rectangles were one of only two constructs the dashboard
+-- used that safe mode did not, so nothing draws with filled=0 any more.
+-- Keeping two objects preserves independent recolouring for the governor.
 local function panel(r, fill, border, rounded)
+  local rd = rounded or 5
   return {
-    fill   = rectangle(r.x, r.y, r.w, r.h, fill,   true,  rounded or 5, 1),
-    border = rectangle(r.x, r.y, r.w, r.h, border, false, rounded or 5, 1),
+    border = rectangle(r.x, r.y, r.w, r.h, border, true, rd, 0),
+    fill   = rectangle(r.x + 1, r.y + 1, r.w - 2, r.h - 2, fill, true,
+                       rd > 1 and rd - 1 or rd, 0),
   }
 end
 
@@ -253,8 +287,9 @@ local function buildLeftColumn()
                     F.small, Theme.peak, ALIGN_CENTER)
 
   -- Brand-green border: the gauge is the Zelion instrument on this screen.
-  rectangle(b.x, b.y, b.w, b.h, Theme.track, true,  7, 1)
-  rectangle(b.x, b.y, b.w, b.h, Theme.lime,  false, 7, 2)
+  -- Two filled rects rather than an outlined one, for the same reason as panel().
+  rectangle(b.x, b.y, b.w, b.h, Theme.lime, true, 7, 0)
+  rectangle(b.x + 2, b.y + 2, b.w - 4, b.h - 4, Theme.track, true, 5, 0)
   V.barFill = rectangle(b.x + 3, b.y + b.h - 4, b.w - 6, 1, Theme.lime, true, 5, 0)
   V.barGeom = { x=b.x + 3, y=b.y + 3, w=b.w - 6, h=b.h - 6 }
 end
@@ -529,12 +564,12 @@ local function updateTopBar()
     local fh = math.floor((V.txGeom.h - 4) * pct)
     setp(V.txFill, { y = V.txGeom.y + V.txGeom.h - 2 - fh,
                      h = math.max(1, fh),
-                     color = pct > 0.5 and Theme.lime
-                             or (pct > 0.25 and Theme.warn or Theme.crit) })
-    setVisible(V.txFill, fh > 0)
+                     color = fh <= 0 and Theme.track
+                             or (pct > 0.5 and Theme.lime
+                                 or (pct > 0.25 and Theme.warn or Theme.crit)) })
     setp(V.txText, { text = string.format("%.1f", tx) })
   else
-    setVisible(V.txFill, false)
+    setHidden(V.txFill, true, Theme.track)
     setp(V.txText, { text = "--" })
   end
 end
@@ -550,10 +585,9 @@ local function updateLeftColumn()
     local g = V.barGeom
     local fh = math.floor(g.h * math.max(0, math.min(100, pct)) / 100)
     setp(V.barFill, { y = g.y + g.h - fh, h = math.max(1, fh),
-                      color = Theme.batteryColor(pct) })
-    setVisible(V.barFill, fh > 0)
+                      color = fh <= 0 and Theme.track or Theme.batteryColor(pct) })
   else
-    setVisible(V.barFill, false)
+    setHidden(V.barFill, true, Theme.track)
   end
 end
 
