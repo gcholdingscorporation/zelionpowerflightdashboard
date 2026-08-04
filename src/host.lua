@@ -150,6 +150,36 @@ function Host.rssi()
 end
 
 --------------------------------------------------------------------------
+-- Text measurement
+--------------------------------------------------------------------------
+
+-- lcd.sizeText(text, flags) -> width, height. Pure: it calls getTextWidth and
+-- getFontHeight and touches no draw buffer, so unlike the rest of the lcd
+-- table it is safe to call while building a retained LVGL screen.
+--
+-- Colour lives in bits 16+ of a text flag and sizeText masks it off for the
+-- height but not the width, so only the font is passed in.
+--
+-- Falls back to an estimate when the call is missing. Digits are the only
+-- thing measured here and they are tabular in EdgeTX's faces, so a per-digit
+-- advance of 0.55 of the line height is close; it is used to place a unit
+-- glyph, where being a few pixels out is cosmetic.
+local FALLBACK_ADVANCE = 0.55
+
+function Host.textWidth(text, font, lineHeight)
+  text = tostring(text or "")
+  if text == "" then return 0 end
+  local sizeText = type(lcd) == "table" and lcd.sizeText
+  if type(sizeText) == "function" then
+    local ok, w = pcall(sizeText, text, font or 0)
+    if ok and tonumber(w) and tonumber(w) > 0 then return math.floor(tonumber(w)) end
+  end
+  return math.floor(#text * (tonumber(lineHeight) or 0) * FALLBACK_ADVANCE)
+end
+
+Host.hasTextMeasurement = type(lcd) == "table" and type(lcd.sizeText) == "function"
+
+--------------------------------------------------------------------------
 -- Telemetry sensor enumeration (used by unit-based auto-discovery)
 --------------------------------------------------------------------------
 

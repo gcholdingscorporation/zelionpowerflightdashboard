@@ -435,14 +435,30 @@ end)
 -- its header inside its own value and the standby diagnostics printed through
 -- the tagline. None of that is visible from a mock that does not draw - unless
 -- the real line heights are used to check for it, which is what this does.
+-- The span a label's glyphs actually occupy, not the box it was given. A
+-- label's width is a bound, and several are deliberately wider than their
+-- text: the hero numbers reserve room for their widest possible reading, and
+-- their unit sits inside that reservation. Comparing boxes flags those as
+-- collisions when nothing overlaps on screen.
 local function labelBoxes(ZD)
   local out = {}
   for _, o in ipairs(Mock.lv.objects) do
-    if o.kind == "label" and (o.props.text or "") ~= "" then
-      out[#out + 1] = { x = o.props.x, y = o.props.y,
-                        w = (o.props.w or 0) > 0 and o.props.w or 60,
-                        h = ZD.Theme.fontHeight(o.props.font),
-                        t = o.props.text }
+    local text = o.props.text
+    if o.kind == "label" and (text or "") ~= "" then
+      local h = ZD.Theme.fontHeight(o.props.font)
+      local box = (o.props.w or 0) > 0 and o.props.w or nil
+      local tw = ZD.Host.textWidth(text, o.props.font, h)
+      if box and tw > box then tw = box end
+      local align = (o.props.align or 0)
+      local x = o.props.x
+      if box then
+        if align % 8 >= 4 then          -- CENTER 0x04
+          x = x + math.floor((box - tw) / 2)
+        elseif align % 16 >= 8 then     -- RIGHT 0x08
+          x = x + box - tw
+        end
+      end
+      out[#out + 1] = { x = x, y = o.props.y, w = tw, h = h, t = text }
     end
   end
   return out
@@ -553,6 +569,57 @@ H.test("the standby diagnostics do not print through the tagline", function()
     Mock.noDefaultLogos = nil
     H.truthy(ZD.Dashboard.logoMissing, "the artwork was supposed to be absent")
     assertNoCollisions(ZD, h, string.format("%dx%d standby without artwork", w, h))
+  end
+end)
+
+H.test("a unit follows its number instead of waiting at a fixed offset", function()
+  -- "%" a third of a panel away from "68" was the visible symptom. The unit's
+  -- x is recomputed from the measured width of the reading, so it closes up on
+  -- a short value and steps out for a long one.
+  local function unitX(ZD, label)
+    for _, o in ipairs(Mock.lv.objects) do
+      if o.kind == "label" and o.props.text == label then return o.props.x end
+    end
+  end
+
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 800, 480)
+
+  Mock.setSensor("Bat%", 8)
+  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+  ZD.Dashboard.update()
+  local narrow = unitX(ZD, "%")
+
+  Mock.setSensor("Bat%", 100)
+  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+  ZD.Dashboard.update()
+  local wide = unitX(ZD, "%")
+
+  H.truthy(narrow and wide, "the % glyph must exist on the dashboard")
+  H.truthy(wide > narrow,
+           string.format("100%% should push the unit right of 8%% (%d vs %d)",
+                         wide, narrow))
+
+  -- And it has to stay beside the digits, not drift off with them.
+  local h = ZD.Theme.fontHeight(ZD.Theme.font.huge)
+  local gap = wide - (narrow + ZD.Host.textWidth("100", ZD.Theme.font.huge, h)
+                      - ZD.Host.textWidth("8", ZD.Theme.font.huge, h))
+  H.truthy(math.abs(gap) < 2, "the gap must be the same at both widths")
+end)
+
+H.test("a reading too wide for its tile cannot shove the unit off the edge", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(false, 800, 480)
+  local L = ZD.Layout.build(800, 480)
+  Mock.setSensor("Hspd", 99999)
+  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+  ZD.Dashboard.update()
+  assertNoCollisions(ZD, 480, "800x480 with an absurd headspeed")
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "label" and o.props.text == "RPM" then
+      H.truthy(o.props.x + o.props.w <= L.headspeed.x + L.headspeed.w,
+               "the unit stays inside its tile")
+    end
   end
 end)
 

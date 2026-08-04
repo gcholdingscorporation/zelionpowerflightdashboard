@@ -233,6 +233,17 @@ function Mock.install()
   -- prove the draw path runs without erroring and to assert on what was drawn.
   Mock.draws = {}
   _G.SOLID = 0
+  -- Same table src/theme.lua carries, indexed the way EdgeTX indexes fonts:
+  --   0 STD  1 BOLD  2 XXS  3 XS  4 L  5 XL  6 XXL
+  local HEIGHTS = {
+    lrg = { [0]=29, 29, 17, 23, 46, 58, 102 },
+    std = { [0]=21, 20, 12, 17, 29, 40,  69 },
+  }
+  function Mock.fontHeight(flags)
+    local idx = math.floor((tonumber(flags) or 0) / 256) % 16
+    local set = HEIGHTS[(Mock.state.lcdW or 0) >= 800 and "lrg" or "std"]
+    return set[idx] or set[0]
+  end
   -- The REAL EdgeTX values, not convenient distinct bits. Inventing
   -- independent bits here is what hid an emergency-mode crash for four rounds
   -- of hardware testing: on the radio the font occupies bits 8..11 as an
@@ -258,6 +269,14 @@ function Mock.install()
     end,
     drawLine = function(x1, y1, x2, y2)
       Mock.draws[#Mock.draws + 1] = { op = "line", x = x1, y = y1 }
+    end,
+    -- Pure on the real radio too: getTextWidth plus getFontHeight, no draw
+    -- buffer involved. Modelled here with the same line heights EdgeTX
+    -- compiles in, and a per-character advance in the right neighbourhood, so
+    -- a test that positions text against a measurement means something.
+    sizeText = function(text, flags)
+      local h = Mock.fontHeight(flags)
+      return math.floor(#tostring(text or "") * h * 0.55), h
     end,
   }
 end

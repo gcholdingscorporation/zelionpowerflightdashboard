@@ -327,11 +327,13 @@ end
 -- a rule, and a row of small footnotes on the floor of the tile. Only the
 -- header's right-hand item and the number's unit differ, so build it once.
 --
--- The number gets a share of the tile's width rather than all of it, and the
--- share is per tile: at XXLSIZE a digit is about 56px wide on a TX16S, so
--- "100" percent needs half the panel and "1850" rpm needs three quarters.
--- Sizing both the same either clips the headspeed or strands the % glyph out
--- in the middle of the battery tile.
+-- The number is left-aligned and its unit tracks it: the unit's x is recomputed
+-- from the measured width of the reading whenever that reading changes width,
+-- so "%" hugs "68" and "100" alike instead of sitting at a fixed offset with a
+-- gap that grows as the value shortens.
+--
+-- valShare is now only a clamp - the widest the number is allowed to grow
+-- before its unit would be pushed off the tile.
 local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local F = Theme.font
   local roomy = L.class == "roomy"
@@ -355,19 +357,20 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local valY = bandTop + math.max(0,
                  math.floor(((ruleY - bandTop) - fh(F.huge)) / 2))
   local valW = math.floor(inner * valShare)
-  -- Left-aligned, flush with the panel title above it. That fixes the number's
-  -- left edge instead of its right, so the unit beside it moves with the
-  -- reading's width - valShare is what stops a full-width value reaching it.
+  -- Left-aligned, flush with the panel title above it.
   local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
 
-  -- The unit sits on the number's right shoulder, on its baseline, rather than
-  -- pinned to the far edge of the tile. Both "%" and "RPM" belong to the
-  -- number they qualify; at the far edge they read as separate fields.
+  -- The unit sits on the number's right shoulder, on its baseline. Both "%"
+  -- and "RPM" belong to the number they qualify; at the tile's far edge they
+  -- read as separate fields.
+  local unit, unitGeom
   if unitText then
-    label(r.x + padX + valW + (roomy and 6 or 3),
-          valY + fh(F.huge) - fh(unitFont),
-          inner - valW - (roomy and 6 or 3),
-          unitText, unitFont, Theme.dim)
+    local gap = roomy and 8 or 4
+    unitGeom = { x0 = r.x + padX, gap = gap, font = F.huge,
+                 lineH = fh(F.huge), maxX = r.x + padX + valW + gap,
+                 width = inner - valW - gap }
+    unit = label(unitGeom.maxX, valY + fh(F.huge) - fh(unitFont),
+                 unitGeom.width, unitText, unitFont, Theme.dim)
   end
 
   lvgl.hline({ x=r.x + padX, y=ruleY, w=inner, h=1, color=Theme.rule })
@@ -380,7 +383,23 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
 
   -- Returned so the caller can put its own reading on the header's right.
   return value, foots, { x = r.x + padX + math.floor(inner / 2),
-                         y = headY, w = math.floor(inner / 2) }
+                         y = headY, w = math.floor(inner / 2) },
+         unit, unitGeom
+end
+
+-- Writes a hero reading and slides its unit up against it.
+--
+-- The measurement is the point: without it the unit has to sit at a fixed
+-- offset chosen for the widest possible reading, which strands it half a panel
+-- away from a two-digit value. lcd.sizeText is pure - it reads font metrics and
+-- touches no draw buffer - so it is safe to call here.
+local function setHeroValue(value, geom, unit, text)
+  setp(value, { text = text })
+  if not (unit and geom) then return end
+  local w = Host.textWidth(text, geom.font, geom.lineH)
+  local x = geom.x0 + w + geom.gap
+  if x > geom.maxX then x = geom.maxX end
+  setp(unit, { x = x, w = geom.width + (geom.maxX - x) })
 end
 
 local function buildHero()
@@ -392,7 +411,7 @@ local function buildHero()
   -- neighbour. Cell count was the one worth losing: it moves up beside the
   -- pack voltage, where it reads as the "12S" qualifying it.
   local packSlot
-  V.batValue, V.batFoot, packSlot =
+  V.batValue, V.batFoot, packSlot, V.batUnit, V.batUnitGeom =
     buildHeroTile(L.battery, "BATTERY", "%", F.mid, 3, L.c.batValShare)
   -- Total pack voltage shares the header line. It is the one reading with
   -- nowhere else to go once the percentage takes the whole value band, and it
@@ -402,7 +421,8 @@ local function buildHero()
 
   -- "RPM" is a word, not a glyph, so it takes the smaller unit font. At F.mid
   -- it would be wider than the space a four-digit headspeed leaves.
-  V.hsValue, V.hsFoot =
+  local _hsSlot
+  V.hsValue, V.hsFoot, _hsSlot, V.hsUnit, V.hsUnitGeom =
     buildHeroTile(L.headspeed, "HEADSPEED", "RPM", F.small, roomy and 3 or 2,
                   L.c.hsValShare)
 end
@@ -690,8 +710,9 @@ local function updateHero()
   local roomy = L.class == "roomy"
 
   local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
-  setp(V.batValue, { text = pct and string.format("%d", math.floor(pct + 0.5)) or "--",
-                     color = pct and Theme.ink or Theme.dim })
+  setHeroValue(V.batValue, V.batUnitGeom, V.batUnit,
+               pct and string.format("%d", math.floor(pct + 0.5)) or "--")
+  setp(V.batValue, { color = pct and Theme.ink or Theme.dim })
   -- Cell count qualifies the pack voltage, so it rides with it: "12S 47.3 V".
   local pack, packOk = State.get("packVoltage")
   local packText = packOk and string.format("%.1f V", pack) or "--"
@@ -712,8 +733,9 @@ local function updateHero()
   end
 
   local hs, hsOk = State.get("headspeed")
-  setp(V.hsValue, { text = hsOk and string.format("%d", math.floor(hs + 0.5)) or "--",
-                    color = hsOk and Theme.ink or Theme.dim })
+  setHeroValue(V.hsValue, V.hsUnitGeom, V.hsUnit,
+               hsOk and string.format("%d", math.floor(hs + 0.5)) or "--")
+  setp(V.hsValue, { color = hsOk and Theme.ink or Theme.dim })
   local hfoots = {
     fmtExtreme("MAX", State.max("headspeed"), "%d"),
     State.valid("tailSpeed") and string.format("TAIL %d", math.floor(State.num("tailSpeed")))
