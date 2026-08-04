@@ -27,7 +27,11 @@ local Roles = ZD.Roles
 local Config = {}
 ZD.Config = Config
 
-Config.PATH = "/WIDGETS/ZelionDash/sensors.cfg"
+-- Resolved lazily: the widget's folder is not known at module load, and is
+-- not necessarily named after the widget.
+function Config.path()
+  return Host.widgetDir() .. "sensors.cfg"
+end
 
 local function trim(s)
   return (string.gsub(tostring(s or ""), "^%s*(.-)%s*$", "%1"))
@@ -82,7 +86,7 @@ function Config.load()
   Config.sections = {}
   Config.problems = {}
   Config.loaded   = true
-  local text = Host.readFile(Config.PATH)
+  local text = Host.readFile(Config.path())
   if not text then
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.

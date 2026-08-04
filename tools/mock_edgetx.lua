@@ -77,6 +77,7 @@ function Mock.writeFile(path, contents)
 end
 
 function Mock.reset()
+  Mock.noDefaultLogos = false
   Mock.restoreConstants()
   Mock.removeLvgl()
   Mock.state.time = 0
@@ -383,6 +384,7 @@ end
 -- The widget loads its artwork from the SD card. Tests that expect the real
 -- image path need those files to exist in the virtual filesystem.
 function Mock.installLogos()
+  if Mock.noDefaultLogos then return end
   for _, f in ipairs({"logo_panel.png", "logo_small.png", "logo_standby.png"}) do
     Mock.state.files["/WIDGETS/ZelionDash/" .. f] = "PNG"
   end

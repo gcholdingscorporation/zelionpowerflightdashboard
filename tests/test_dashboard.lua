@@ -149,23 +149,26 @@ H.test("standby diagnoses failed artwork on screen", function()
   -- is visible on standby, so the diagnosis should be too.
   H.truthy(string.find(t, "control main.lua", 1, true),
            "control probe of a file that must exist")
-  H.truthy(string.find(t, "no folder loaded", 1, true), "reports the search failed")
+  H.truthy(string.find(t, "DIR (", 1, true), "reports which folder it settled on")
   H.truthy(string.find(t, "logo_standby.png", 1, true), "each file probed")
 end)
 
 H.test("finds the artwork in a differently named widget folder", function()
   -- EdgeTX names a widget from its Lua table, not its folder, so the folder
-  -- can legitimately be called something else on any given card.
-  local ZD = boot(800, 480, flying)
-  for _, f in ipairs({"logo_panel.png", "logo_standby.png", "logo_small.png"}) do
-    Mock.state.files["/WIDGETS/ZelionDash/" .. f] = nil
-    Mock.state.files["/WIDGETS/ZelionPower/" .. f] = "PNG"
-  end
+  -- can legitimately be called something else on any given card - the first
+  -- radio this ran on used "zelion".
+  local ZD = boot(800, 480, function()
+    flying()
+    Mock.noDefaultLogos = true
+    Mock.state.files["/WIDGETS/zelion/logo_panel.png"]   = "PNG"
+    Mock.state.files["/WIDGETS/zelion/logo_standby.png"] = "PNG"
+    Mock.state.files["/WIDGETS/zelion/logo_small.png"]   = "PNG"
+  end)
   ZD.Dashboard.build(false, 800, 480)
-  H.eq(ZD.Dashboard.assetDirResolved(), "/WIDGETS/ZelionPower/")
+  H.eq(ZD.Host.widgetDir(), "/WIDGETS/zelion/")
   H.falsy(ZD.Dashboard.logoMissing, "artwork found, so nothing to report")
   H.truthy(string.find(table.concat(Mock.lvglImages(), "|"),
-                       "/WIDGETS/ZelionPower/logo_panel.png", 1, true))
+                       "/WIDGETS/zelion/logo_panel.png", 1, true))
 end)
 
 H.group("dashboard: host constant lookup")

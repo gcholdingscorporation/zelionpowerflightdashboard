@@ -192,6 +192,69 @@ function Host.listSensors()
 end
 
 --------------------------------------------------------------------------
+-- Where this widget is installed
+--------------------------------------------------------------------------
+
+-- EdgeTX names a widget from the Lua table it returns, not from the folder it
+-- lives in, so the folder can be called anything at all - on the first radio
+-- this ran on it was "zelion". Assuming a name meant the artwork silently
+-- failed to load on a completely correct install.
+--
+-- Ask Lua where this chunk came from first, which is exact and needs no
+-- guessing. Only if that is unavailable fall back to probing known names.
+local WIDGET_DIR_CANDIDATES = {
+  "/WIDGETS/zelion/",     "/WIDGETS/Zelion/",     "/WIDGETS/ZELION/",
+  "/WIDGETS/ZelionDash/", "/WIDGETS/zeliondash/", "/WIDGETS/ZELIONDASH/",
+  "/WIDGETS/Zeliondash/", "/WIDGETS/ZelionPower/", "/WIDGETS/zelionpower/",
+}
+
+Host.WIDGET_PROBE_FILE = "logo_panel.png"
+Host.widgetDirSource = "unknown"
+
+local resolvedWidgetDir = nil
+
+-- "@/WIDGETS/zelion/main.lua" -> "/WIDGETS/zelion/"
+local function dirFromChunkSource()
+  local dbg = g("debug")
+  if type(dbg) ~= "table" or type(dbg.getinfo) ~= "function" then return nil end
+  local ok, info = pcall(dbg.getinfo, 1, "S")
+  if not ok or type(info) ~= "table" then return nil end
+  local src = tostring(info.source or "")
+  src = string.gsub(src, "^@", "")
+  local dir = string.match(src, "^(.*[/\\])[^/\\]*$")
+  if dir and dir ~= "" and string.find(dir, "WIDGETS") then return dir end
+  return nil
+end
+
+function Host.widgetDir()
+  if resolvedWidgetDir then return resolvedWidgetDir end
+
+  local fromChunk = dirFromChunkSource()
+  if fromChunk then
+    resolvedWidgetDir = fromChunk
+    Host.widgetDirSource = "chunk"
+    return resolvedWidgetDir
+  end
+
+  for _, d in ipairs(WIDGET_DIR_CANDIDATES) do
+    if Host.imageLoads(d .. Host.WIDGET_PROBE_FILE) then
+      resolvedWidgetDir = d
+      Host.widgetDirSource = "probe"
+      return d
+    end
+  end
+
+  -- Nothing loaded, so fall back to the canonical name. sensors.cfg is looked
+  -- up in this folder too, and a config file should not go missing just
+  -- because the artwork did.
+  resolvedWidgetDir = "/WIDGETS/ZelionDash/"
+  Host.widgetDirSource = "fallback"
+  return resolvedWidgetDir
+end
+
+function Host.widgetDirCandidates() return WIDGET_DIR_CANDIDATES end
+
+--------------------------------------------------------------------------
 -- Directory listing and image probing (diagnostics)
 --------------------------------------------------------------------------
 
@@ -656,7 +719,11 @@ local Roles = ZD.Roles
 local Config = {}
 ZD.Config = Config
 
-Config.PATH = "/WIDGETS/ZelionDash/sensors.cfg"
+-- Resolved lazily: the widget's folder is not known at module load, and is
+-- not necessarily named after the widget.
+function Config.path()
+  return Host.widgetDir() .. "sensors.cfg"
+end
 
 local function trim(s)
   return (string.gsub(tostring(s or ""), "^%s*(.-)%s*$", "%1"))
@@ -711,7 +778,7 @@ function Config.load()
   Config.sections = {}
   Config.problems = {}
   Config.loaded   = true
-  local text = Host.readFile(Config.PATH)
+  local text = Host.readFile(Config.path())
   if not text then
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.
@@ -1856,37 +1923,11 @@ local RF2    = ZD.RF2
 local Dashboard = {}
 ZD.Dashboard = Dashboard
 
--- EdgeTX names a widget from the Lua table it returns, NOT from the folder it
--- lives in, so the folder on any given card can be called anything. Hardcoding
--- one path meant the artwork silently failed on a perfectly good install.
--- Probe for it instead, and cache the answer.
-local ASSET_DIRS = {
-  "/WIDGETS/ZelionDash/",
-  "/WIDGETS/ZELIONDASH/",
-  "/WIDGETS/Zeliondash/",
-  "/WIDGETS/zeliondash/",
-  "/WIDGETS/ZelionPower/",
-  "/WIDGETS/Zelion/",
-  "/WIDGETS/ZelionDash/dist/WIDGETS/ZelionDash/",
-  "/IMAGES/",
-}
-local PROBE_FILE = "logo_panel.png"
-local resolvedDir = nil        -- nil = not tried, false = nothing found
-
-local function assetDir()
-  if resolvedDir ~= nil then return resolvedDir or ASSET_DIRS[1] end
-  for _, d in ipairs(ASSET_DIRS) do
-    if Host.imageLoads(d .. PROBE_FILE) then
-      resolvedDir = d
-      return d
-    end
-  end
-  resolvedDir = false
-  return ASSET_DIRS[1]
-end
+local function assetDir() return Host.widgetDir() end
 
 function Dashboard.assetDir() return assetDir() end
-function Dashboard.assetDirResolved() return resolvedDir end
+function Dashboard.assetDirResolved() return Host.widgetDirSource ~= "fallback"
+                                             and Host.widgetDir() or false end
 
 -- EdgeTX publishes its constants through a read-only global lookup table
 -- rather than as raw entries in _G, so rawget() alone returns nil for every
@@ -2214,21 +2255,16 @@ function Dashboard.assetDiagLines(maxLines)
   -- reads as missing then the probes are useless here and only a positive
   -- bitmap width means anything; if it reads fine, the folder is right and the
   -- PNGs specifically are the problem.
-  local control = Host.probeImage(ASSET_DIRS[1] .. "main.lua")
+  local control = Host.probeImage(assetDir() .. "main.lua")
   out[#out + 1] = string.format("control main.lua %s%s%s  (must exist)",
     control.fstat and "F" or "-", control.io and "I" or "-",
     control.bmp and "B" or "-")
 
-  if resolvedDir then
-    out[#out + 1] = "FOUND: " .. resolvedDir
-  else
-    out[#out + 1] = "no folder loaded " .. PROBE_FILE ..
-                    " (tried " .. #ASSET_DIRS .. ")"
-  end
+  out[#out + 1] = string.format("DIR (%s): %s",
+                                Host.widgetDirSource, assetDir())
 
   for _, f in ipairs(ASSET_FILES) do
-    local dir = resolvedDir or ASSET_DIRS[1]
-    local p = Host.probeImage(dir .. f)
+    local p = Host.probeImage(assetDir() .. f)
     out[#out + 1] = string.format("%s %s%s%s%s%s", f,
       p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-",
       p.size and (" " .. p.size .. "b") or "",

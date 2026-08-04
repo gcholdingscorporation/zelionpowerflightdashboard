@@ -181,6 +181,69 @@ function Host.listSensors()
 end
 
 --------------------------------------------------------------------------
+-- Where this widget is installed
+--------------------------------------------------------------------------
+
+-- EdgeTX names a widget from the Lua table it returns, not from the folder it
+-- lives in, so the folder can be called anything at all - on the first radio
+-- this ran on it was "zelion". Assuming a name meant the artwork silently
+-- failed to load on a completely correct install.
+--
+-- Ask Lua where this chunk came from first, which is exact and needs no
+-- guessing. Only if that is unavailable fall back to probing known names.
+local WIDGET_DIR_CANDIDATES = {
+  "/WIDGETS/zelion/",     "/WIDGETS/Zelion/",     "/WIDGETS/ZELION/",
+  "/WIDGETS/ZelionDash/", "/WIDGETS/zeliondash/", "/WIDGETS/ZELIONDASH/",
+  "/WIDGETS/Zeliondash/", "/WIDGETS/ZelionPower/", "/WIDGETS/zelionpower/",
+}
+
+Host.WIDGET_PROBE_FILE = "logo_panel.png"
+Host.widgetDirSource = "unknown"
+
+local resolvedWidgetDir = nil
+
+-- "@/WIDGETS/zelion/main.lua" -> "/WIDGETS/zelion/"
+local function dirFromChunkSource()
+  local dbg = g("debug")
+  if type(dbg) ~= "table" or type(dbg.getinfo) ~= "function" then return nil end
+  local ok, info = pcall(dbg.getinfo, 1, "S")
+  if not ok or type(info) ~= "table" then return nil end
+  local src = tostring(info.source or "")
+  src = string.gsub(src, "^@", "")
+  local dir = string.match(src, "^(.*[/\\])[^/\\]*$")
+  if dir and dir ~= "" and string.find(dir, "WIDGETS") then return dir end
+  return nil
+end
+
+function Host.widgetDir()
+  if resolvedWidgetDir then return resolvedWidgetDir end
+
+  local fromChunk = dirFromChunkSource()
+  if fromChunk then
+    resolvedWidgetDir = fromChunk
+    Host.widgetDirSource = "chunk"
+    return resolvedWidgetDir
+  end
+
+  for _, d in ipairs(WIDGET_DIR_CANDIDATES) do
+    if Host.imageLoads(d .. Host.WIDGET_PROBE_FILE) then
+      resolvedWidgetDir = d
+      Host.widgetDirSource = "probe"
+      return d
+    end
+  end
+
+  -- Nothing loaded, so fall back to the canonical name. sensors.cfg is looked
+  -- up in this folder too, and a config file should not go missing just
+  -- because the artwork did.
+  resolvedWidgetDir = "/WIDGETS/ZelionDash/"
+  Host.widgetDirSource = "fallback"
+  return resolvedWidgetDir
+end
+
+function Host.widgetDirCandidates() return WIDGET_DIR_CANDIDATES end
+
+--------------------------------------------------------------------------
 -- Directory listing and image probing (diagnostics)
 --------------------------------------------------------------------------
 
