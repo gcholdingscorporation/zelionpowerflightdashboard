@@ -131,12 +131,19 @@ function Theme.build()
   if type(lcd) ~= "table" or type(lcd.RGB) ~= "function" then return end
   local rgb = lcd.RGB
 
-  Theme.bg     = rgb(  6,   8,  11)
-  Theme.panel  = rgb( 16,  20,  26)
-  Theme.rule   = rgb( 35,  42,  51)
-  Theme.track  = rgb(  9,  12,  16)
+  -- Navy, not near-black. The three greys have to stay separable on a screen
+  -- being read in daylight: track is darker than bg so the empty part of the
+  -- gauge reads as a hole, and panel is lighter so a tile lifts off the page.
+  --
+  -- tools/make_logos.py flattens the artwork onto Theme.bg. Change this and
+  -- the PNGs have to be regenerated, or every logo carries a box of the old
+  -- background around it.
+  Theme.bg     = rgb( 10,  18,  42)
+  Theme.panel  = rgb( 18,  30,  62)
+  Theme.rule   = rgb( 42,  58, 100)
+  Theme.track  = rgb(  6,  11,  28)
   Theme.ink    = rgb(242, 245, 248)
-  Theme.dim    = rgb(118, 129, 143)
+  Theme.dim    = rgb(148, 163, 190)
 
   -- Brand
   Theme.lime     = rgb(139, 224,  74)
@@ -151,15 +158,21 @@ function Theme.build()
   -- reads as a live warning.
   Theme.peak = rgb(185, 154,  74)
 
+  -- Every panel is outlined in the brand green, matching the battery gauge.
+  -- That makes green decorative rather than a signal, which is fine as long as
+  -- amber and red keep their meaning - so the governor still overrides its
+  -- border when the state is one that needs attention.
+  Theme.panelBr = Theme.lime
+
   -- Governor panel backgrounds, keyed by the severity of the state.
-  Theme.govRunBg  = rgb( 21,  42,  12)
-  Theme.govRunBr  = rgb( 61, 107,  31)
-  Theme.govWarnBg = rgb( 42,  33,  10)
-  Theme.govWarnBr = rgb( 90,  67,  19)
-  Theme.govCritBg = rgb( 42,  13,  13)
-  Theme.govCritBr = rgb( 88,  27,  27)
+  Theme.govRunBg  = rgb( 21,  52,  22)
+  Theme.govRunBr  = Theme.lime
+  Theme.govWarnBg = rgb( 52,  40,  10)
+  Theme.govWarnBr = rgb(160, 118,  20)
+  Theme.govCritBg = rgb( 58,  16,  16)
+  Theme.govCritBr = rgb(170,  50,  50)
   Theme.govIdleBg = Theme.panel
-  Theme.govIdleBr = Theme.rule
+  Theme.govIdleBr = Theme.lime
 
   Theme.built = true
 end

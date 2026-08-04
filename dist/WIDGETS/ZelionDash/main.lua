@@ -1859,12 +1859,19 @@ function Theme.build()
   if type(lcd) ~= "table" or type(lcd.RGB) ~= "function" then return end
   local rgb = lcd.RGB
 
-  Theme.bg     = rgb(  6,   8,  11)
-  Theme.panel  = rgb( 16,  20,  26)
-  Theme.rule   = rgb( 35,  42,  51)
-  Theme.track  = rgb(  9,  12,  16)
+  -- Navy, not near-black. The three greys have to stay separable on a screen
+  -- being read in daylight: track is darker than bg so the empty part of the
+  -- gauge reads as a hole, and panel is lighter so a tile lifts off the page.
+  --
+  -- tools/make_logos.py flattens the artwork onto Theme.bg. Change this and
+  -- the PNGs have to be regenerated, or every logo carries a box of the old
+  -- background around it.
+  Theme.bg     = rgb( 10,  18,  42)
+  Theme.panel  = rgb( 18,  30,  62)
+  Theme.rule   = rgb( 42,  58, 100)
+  Theme.track  = rgb(  6,  11,  28)
   Theme.ink    = rgb(242, 245, 248)
-  Theme.dim    = rgb(118, 129, 143)
+  Theme.dim    = rgb(148, 163, 190)
 
   -- Brand
   Theme.lime     = rgb(139, 224,  74)
@@ -1879,15 +1886,21 @@ function Theme.build()
   -- reads as a live warning.
   Theme.peak = rgb(185, 154,  74)
 
+  -- Every panel is outlined in the brand green, matching the battery gauge.
+  -- That makes green decorative rather than a signal, which is fine as long as
+  -- amber and red keep their meaning - so the governor still overrides its
+  -- border when the state is one that needs attention.
+  Theme.panelBr = Theme.lime
+
   -- Governor panel backgrounds, keyed by the severity of the state.
-  Theme.govRunBg  = rgb( 21,  42,  12)
-  Theme.govRunBr  = rgb( 61, 107,  31)
-  Theme.govWarnBg = rgb( 42,  33,  10)
-  Theme.govWarnBr = rgb( 90,  67,  19)
-  Theme.govCritBg = rgb( 42,  13,  13)
-  Theme.govCritBr = rgb( 88,  27,  27)
+  Theme.govRunBg  = rgb( 21,  52,  22)
+  Theme.govRunBr  = Theme.lime
+  Theme.govWarnBg = rgb( 52,  40,  10)
+  Theme.govWarnBr = rgb(160, 118,  20)
+  Theme.govCritBg = rgb( 58,  16,  16)
+  Theme.govCritBr = rgb(170,  50,  50)
   Theme.govIdleBg = Theme.panel
-  Theme.govIdleBr = Theme.rule
+  Theme.govIdleBr = Theme.lime
 
   Theme.built = true
 end
@@ -2502,19 +2515,27 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local padX  = roomy and 14 or 8
   local inner = r.w - padX * 2
 
-  panel(r, Theme.panel, Theme.rule)
+  panel(r, Theme.panel, Theme.panelBr)
 
   local headY = r.y + (roomy and 6 or 4)
   local headH = math.max(fh(F.tiny), fh(F.small))
   label(r.x + padX, headY, math.floor(inner / 2), title, F.tiny, Theme.dim)
 
-  local valY  = headY + headH + (roomy and 3 or 2)
-  local valW  = math.floor(inner * valShare)
-  -- Right-aligned, so the number's right edge never moves. Left-aligned, "68"
-  -- and "100" end in different places and the unit beside them appeared to
-  -- drift as the reading changed. This is also why valShare only has to be
-  -- large enough for the widest reading - it no longer sets the gap.
-  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink, ALIGN_RIGHT)
+  local footH = fh(F.tiny)
+  local footY = r.y + r.h - footH - (roomy and 6 or 4)
+  local ruleY = footY - (roomy and 6 or 4)
+
+  -- The number sits centred in the band between the header and the rule rather
+  -- than tucked straight under the header, which left it riding high with all
+  -- the slack pooled beneath it.
+  local bandTop = headY + headH
+  local valY = bandTop + math.max(0,
+                 math.floor(((ruleY - bandTop) - fh(F.huge)) / 2))
+  local valW = math.floor(inner * valShare)
+  -- Left-aligned, flush with the panel title above it. That fixes the number's
+  -- left edge instead of its right, so the unit beside it moves with the
+  -- reading's width - valShare is what stops a full-width value reaching it.
+  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
 
   -- The unit sits on the number's right shoulder, on its baseline, rather than
   -- pinned to the far edge of the tile. Both "%" and "RPM" belong to the
@@ -2526,9 +2547,6 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
           unitText, unitFont, Theme.dim)
   end
 
-  local footH = fh(F.tiny)
-  local footY = r.y + r.h - footH - (roomy and 6 or 4)
-  local ruleY = footY - (roomy and 6 or 4)
   lvgl.hline({ x=r.x + padX, y=ruleY, w=inner, h=1, color=Theme.rule })
 
   local foots, slotW = {}, math.floor(inner / slotCount)
@@ -2590,7 +2608,7 @@ local function buildRightColumn()
   for i = 1, 3 do
     local t = L.tiles[i]
     local ty = t.y + (roomy and 6 or 4)
-    panel(t, Theme.panel, Theme.rule)
+    panel(t, Theme.panel, Theme.panelBr)
     label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
     V.tiles[i] = {
       value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",

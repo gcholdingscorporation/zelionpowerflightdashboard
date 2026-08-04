@@ -16,11 +16,12 @@ Two constraints, both learned on hardware:
     python3 tools/make_logos.py writes them.
 """
 import os
+import re
 from PIL import Image
 
 SRC = "assets/zelion_lockup.png"
 OUT = "dist/WIDGETS/ZelionDash"
-BG = (6, 8, 11)          # Theme.bg
+THEME = "src/theme.lua"
 BUDGET = 320 * 180       # verified good on a TX16S Mk3
 
 # name -> (width, height). Derived from src/layout.lua at each anchor size:
@@ -34,7 +35,24 @@ TARGETS = {
 }
 
 
+def background():
+    """Read Theme.bg out of src/theme.lua.
+
+    Hardcoding it here is how you get a logo carrying a box of the previous
+    background around it: the two only have to disagree once, and the artwork
+    is regenerated far less often than the palette is edited.
+    """
+    with open(THEME) as f:
+        m = re.search(r"Theme\.bg\s*=\s*rgb\(\s*(\d+),\s*(\d+),\s*(\d+)\s*\)",
+                      f.read())
+    if not m:
+        raise SystemExit("could not find Theme.bg in " + THEME)
+    return tuple(int(g) for g in m.groups())
+
+
 def main():
+    BG = background()
+    print("background %r from %s" % (BG, THEME))
     src = Image.open(SRC).convert("RGBA")
     os.makedirs(OUT, exist_ok=True)
     for name, (w, h) in TARGETS.items():

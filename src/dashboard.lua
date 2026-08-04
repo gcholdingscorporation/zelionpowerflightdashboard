@@ -338,19 +338,27 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
   local padX  = roomy and 14 or 8
   local inner = r.w - padX * 2
 
-  panel(r, Theme.panel, Theme.rule)
+  panel(r, Theme.panel, Theme.panelBr)
 
   local headY = r.y + (roomy and 6 or 4)
   local headH = math.max(fh(F.tiny), fh(F.small))
   label(r.x + padX, headY, math.floor(inner / 2), title, F.tiny, Theme.dim)
 
-  local valY  = headY + headH + (roomy and 3 or 2)
-  local valW  = math.floor(inner * valShare)
-  -- Right-aligned, so the number's right edge never moves. Left-aligned, "68"
-  -- and "100" end in different places and the unit beside them appeared to
-  -- drift as the reading changed. This is also why valShare only has to be
-  -- large enough for the widest reading - it no longer sets the gap.
-  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink, ALIGN_RIGHT)
+  local footH = fh(F.tiny)
+  local footY = r.y + r.h - footH - (roomy and 6 or 4)
+  local ruleY = footY - (roomy and 6 or 4)
+
+  -- The number sits centred in the band between the header and the rule rather
+  -- than tucked straight under the header, which left it riding high with all
+  -- the slack pooled beneath it.
+  local bandTop = headY + headH
+  local valY = bandTop + math.max(0,
+                 math.floor(((ruleY - bandTop) - fh(F.huge)) / 2))
+  local valW = math.floor(inner * valShare)
+  -- Left-aligned, flush with the panel title above it. That fixes the number's
+  -- left edge instead of its right, so the unit beside it moves with the
+  -- reading's width - valShare is what stops a full-width value reaching it.
+  local value = label(r.x + padX, valY, valW, "", F.huge, Theme.ink)
 
   -- The unit sits on the number's right shoulder, on its baseline, rather than
   -- pinned to the far edge of the tile. Both "%" and "RPM" belong to the
@@ -362,9 +370,6 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
           unitText, unitFont, Theme.dim)
   end
 
-  local footH = fh(F.tiny)
-  local footY = r.y + r.h - footH - (roomy and 6 or 4)
-  local ruleY = footY - (roomy and 6 or 4)
   lvgl.hline({ x=r.x + padX, y=ruleY, w=inner, h=1, color=Theme.rule })
 
   local foots, slotW = {}, math.floor(inner / slotCount)
@@ -426,7 +431,7 @@ local function buildRightColumn()
   for i = 1, 3 do
     local t = L.tiles[i]
     local ty = t.y + (roomy and 6 or 4)
-    panel(t, Theme.panel, Theme.rule)
+    panel(t, Theme.panel, Theme.panelBr)
     label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
     V.tiles[i] = {
       value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",

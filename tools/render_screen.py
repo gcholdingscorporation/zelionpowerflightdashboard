@@ -8,6 +8,7 @@ heights so the picture is the size the radio will actually produce.
     lua tools/dump_screen.lua 800 480 dash > /tmp/s.txt
     python3 tools/render_screen.py /tmp/s.txt out.png
 """
+import os
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
@@ -69,9 +70,21 @@ def main(src, dest):
         elif kindr in ("hline", "vline"):
             d.rectangle([x, y, x + max(rw, 1) - 1, y + max(rh, 1) - 1], fill=color)
         elif kindr == "image":
-            d.rectangle([x, y, x + rw - 1, y + rh - 1], outline=(60, 70, 80))
-            d.text((x + rw / 2, y + rh / 2), "[logo]", fill=(90, 100, 110),
-                   font=pil_font(2, metrics), anchor="mm")
+            # The real PNG, so the artwork's flattened background can be seen
+            # to match the screen's. A placeholder box hides exactly the
+            # mismatch this is worth checking for.
+            # The dump carries the radio's own SD-card path; the file lives
+            # under dist/ here.
+            path = os.path.join("dist", text.lstrip("/"))
+            if os.path.exists(path):
+                logo = Image.open(path).convert("RGB")
+                if logo.size != (rw, rh):
+                    logo = logo.resize((rw, rh), Image.LANCZOS)
+                im.paste(logo, (x, y))
+            else:
+                d.rectangle([x, y, x + rw - 1, y + rh - 1], outline=(60, 70, 80))
+                d.text((x + rw / 2, y + rh / 2), "[no logo]", fill=(90, 100, 110),
+                       font=pil_font(2, metrics), anchor="mm")
         elif kindr == "label" and text:
             idx = (font_flags // 256) % 16
             if idx >= len(LINE_HEIGHT[metrics]):
