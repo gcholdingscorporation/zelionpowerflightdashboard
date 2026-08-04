@@ -142,8 +142,11 @@ function Layout.buildStandby(w, h)
   -- Reserve room beneath the mark for the tagline and the status line.
   local reserve = (className == "roomy") and 96 or 62
   local boxH = avail - reserve
-  local lw, lh = 500, 281
-  if className ~= "roomy" then lw, lh = 300, 169 end
+  -- Matches the shipped asset. Deliberately modest: a radio has to decode the
+  -- image into RAM, and a 500x281 RGBA logo needed 549KB, which EdgeTX's Lua
+  -- sandbox could not allocate - the artwork silently failed to load.
+  local lw, lh = 320, 180
+  if className ~= "roomy" then lw, lh = 240, 135 end
   if lh > boxH then
     lw = round(lw * boxH / lh)
     lh = boxH

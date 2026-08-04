@@ -156,8 +156,8 @@ end)
 H.test("the standby logo keeps its aspect ratio", function()
   for _, s in ipairs({ {800,480}, {480,320} }) do
     local L = load(s[1], s[2]).Layout.buildStandby(s[1], s[2])
-    -- 500x281 master: distortion would be far more obvious than a small mark.
-    H.near(L.logo.w / L.logo.h, 500 / 281, 0.03,
+    -- 320x180 asset: distortion would be far more obvious than a small mark.
+    H.near(L.logo.w / L.logo.h, 320 / 180, 0.03,
            string.format("aspect drifted at %dx%d", s[1], s[2]))
   end
 end)

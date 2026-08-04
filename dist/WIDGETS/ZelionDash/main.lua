@@ -1753,8 +1753,11 @@ function Layout.buildStandby(w, h)
   -- Reserve room beneath the mark for the tagline and the status line.
   local reserve = (className == "roomy") and 96 or 62
   local boxH = avail - reserve
-  local lw, lh = 500, 281
-  if className ~= "roomy" then lw, lh = 300, 169 end
+  -- Matches the shipped asset. Deliberately modest: a radio has to decode the
+  -- image into RAM, and a 500x281 RGBA logo needed 549KB, which EdgeTX's Lua
+  -- sandbox could not allocate - the artwork silently failed to load.
+  local lw, lh = 320, 180
+  if className ~= "roomy" then lw, lh = 240, 135 end
   if lh > boxH then
     lw = round(lw * boxH / lh)
     lh = boxH
@@ -1962,18 +1965,26 @@ Dashboard.missingPath = nil
 
 function Dashboard.placeLogo(r, filename)
   local path = ASSETS .. filename
-  if Host.imageExists(path) then
-    lvgl.image({ x=r.x, y=r.y, w=r.w, h=r.h, fill=false, file=path })
-    return
+  local ok = Host.imageExists(path)
+
+  -- Draw the wordmark FIRST, then the image over it. A probe that says
+  -- "missing" is evidence, not proof: it was wrong on hardware once already.
+  -- Ordering it this way means a working image always wins, and the wordmark
+  -- is only ever seen when nothing loaded at all.
+  if not ok then
+    Dashboard.logoMissing = true
+    Dashboard.missingPath = path
+    -- One label, not two stacked: without a way to measure text there is no
+    -- safe gap between them, and a two-line version overlapped itself the
+    -- moment the fonts started resolving.
+    local F = Theme.font
+    label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
+          F.mid + F.bold, Theme.steel, ALIGN_CENTER)
   end
-  Dashboard.logoMissing = true
-  Dashboard.missingPath = path
-  -- One label, not two stacked: without a way to measure text there is no safe
-  -- gap to leave between them, and an earlier two-line version overlapped
-  -- itself the moment the fonts started resolving.
-  local F = Theme.font
-  label(r.x, r.y + math.floor(r.h / 2) - 12, r.w, "ZELION POWER",
-        F.mid + F.bold, Theme.steel, ALIGN_CENTER)
+
+  -- Attempted unconditionally: if LVGL can load it, it renders regardless of
+  -- what the probes concluded.
+  lvgl.image({ x=r.x, y=r.y, w=r.w, h=r.h, fill=false, file=path })
 end
 
 local function buildTopBar()
