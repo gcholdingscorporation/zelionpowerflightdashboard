@@ -89,29 +89,37 @@ H.test("repeated frames do not rebuild the screen", function()
   H.eq(Mock.lv.cleared, clears, "steady state must not tear down and rebuild")
 end)
 
-H.group("build: standby")
+H.group("build: before the heli is powered")
 
-H.test("no telemetry shows the brand, not a grid of dashes", function()
+H.test("the dashboard is up before any telemetry arrives", function()
+  -- There is no standby screen. A splash used to stand in until telemetry
+  -- appeared; showing the real layout says more, because you can see the
+  -- widget is alive and waiting on named values rather than just waiting.
   local def, widget = boot(800, 480)
   def.refresh(widget, 0, nil)
-  H.truthy(string.find(Mock.lvglText(), "WAITING FOR TELEMETRY", 1, true))
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "BATTERY", 1, true), "the real layout, immediately")
+  H.truthy(string.find(t, "HEADSPEED", 1, true))
+  H.truthy(string.find(t, "--", 1, true), "with honest blanks, not zeroes")
+  H.truthy(#Mock.lvglImages() > 0, "and the brand is on screen anyway")
 end)
 
-H.test("telemetry appearing switches to the dashboard", function()
+H.test("telemetry arriving fills the same screen in place", function()
   local def, widget = boot(800, 480)
   def.refresh(widget, 0, nil)
-  H.truthy(string.find(Mock.lvglText(), "WAITING", 1, true))
+  local built = Mock.lv.cleared
 
   -- Heli powered on after the radio. Unbound roles are re-probed on a one
-  -- second timer, so the switch is not instantaneous by design.
+  -- second timer, so the values are not instantaneous by design.
   flying()
   for _ = 1, 15 do
     Mock.advanceSeconds(0.15)
     def.refresh(widget, 0, nil)
   end
-  local t = Mock.lvglText()
-  H.truthy(string.find(t, "1850", 1, true), "dashboard took over")
-  H.falsy(string.find(t, "WAITING", 1, true), "standby is gone")
+  H.truthy(string.find(Mock.lvglText(), "1850", 1, true), "values arrived")
+  H.eq(Mock.lv.cleared, built,
+       "and nothing was torn down to show them - this transition is where the "
+       .. "emergency-mode reboot used to happen")
 end)
 
 H.group("build: FC integration")

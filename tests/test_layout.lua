@@ -164,25 +164,5 @@ H.test("a wider screen grows the hero column, not the side columns", function()
   H.truthy(b.battery.w > a.battery.w, "the hero column takes the slack")
 end)
 
-H.group("layout: standby")
-
-H.test("logo and text fit inside the screen at both sizes", function()
-  for _, s in ipairs({ {800,480}, {480,320} }) do
-    local L = load(s[1], s[2]).Layout.buildStandby(s[1], s[2])
-    local at = string.format(" at %dx%d", s[1], s[2])
-    H.truthy(within(L.logo, s[1], s[2]), "logo escaped" .. at)
-    H.truthy(L.logo.y + L.logo.h < L.divider.y, "logo clears the rule" .. at)
-    H.truthy(L.status.y + L.status.h <= L.stripRule, "status clears the strip" .. at)
-  end
-end)
-
-H.test("the standby logo keeps its aspect ratio", function()
-  for _, s in ipairs({ {800,480}, {480,320} }) do
-    local L = load(s[1], s[2]).Layout.buildStandby(s[1], s[2])
-    -- 320x180 asset: distortion would be far more obvious than a small mark.
-    H.near(L.logo.w / L.logo.h, 320 / 180, 0.03,
-           string.format("aspect drifted at %dx%d", s[1], s[2]))
-  end
-end)
 
 end

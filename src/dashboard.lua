@@ -193,28 +193,20 @@ local function govText()
 end
 
 --------------------------------------------------------------------------
--- Standby
---------------------------------------------------------------------------
-
--- Nothing truthful to draw: no link, and none of the values a dashboard
--- exists to show. Anything less strict would blank the screen mid-flight
--- during a telemetry dropout, which is precisely when it must not.
-function Dashboard.shouldStandby()
-  if State.linkConnected == true then return false end
-  if State.valid("headspeed") or State.valid("packVoltage")
-     or State.valid("batteryPercent") or State.valid("cellVoltage")
-     or State.valid("current") then
-    return false
-  end
-  return true
-end
-
---------------------------------------------------------------------------
 -- Build
 --------------------------------------------------------------------------
 
 local L
-local mode  -- "dash" | "standby"
+local mode  -- "dash" | "minimal" | "toosmall"
+
+-- There is one screen. A separate standby screen used to stand in until
+-- telemetry arrived, on the reasoning that a grid of dashes looks broken - but
+-- the dashboard already distinguishes "no sensor" from "reading zero" honestly,
+-- and showing the real layout immediately says more than a splash does: you can
+-- see the widget is alive, laid out, and waiting on named values. It also
+-- removes the screen-to-screen transition, which is where the emergency-mode
+-- reboot used to happen. The Zelion lockup is on the dashboard anyway, so the
+-- branding never leaves the screen.
 
 
 -- Artwork lives on the SD card, so it can simply be absent - a widget copied
@@ -472,81 +464,13 @@ local function buildStrip()
   local y = L.stripRule + (roomy and 10 or 7)
   V.flights = label(L.c.pad, y, 300, "", F.tiny, Theme.dim)
   if roomy then
-    label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER", F.tiny, Theme.dim,
-          ALIGN_CENTER)
-  end
-  V.link = label(L.w - L.c.pad - 240, y, 240, "", F.tiny, Theme.steel, ALIGN_RIGHT)
-end
-
--- Compact readout of what the radio itself finds in the widget folder.
--- Lives on standby because that is where a failed load is actually seen;
--- requiring the pilot to find a settings toggle to diagnose it was a mistake.
-local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
-
-function Dashboard.assetDiagLines(maxLines)
-  local out = {}
-  assetDir()
-
-  -- main.lua is definitely present - the widget is running from it. If it also
-  -- reads as missing then the probes are useless here and only a positive
-  -- bitmap width means anything; if it reads fine, the folder is right and the
-  -- PNGs specifically are the problem.
-  local control = Host.probeImage(assetDir() .. "main.lua")
-  out[#out + 1] = string.format("control main.lua %s%s%s  (must exist)",
-    control.fstat and "F" or "-", control.io and "I" or "-",
-    control.bmp and "B" or "-")
-
-  out[#out + 1] = string.format("DIR (%s): %s",
-                                Host.widgetDirSource, assetDir())
-
-  for _, f in ipairs(ASSET_FILES) do
-    local p = Host.probeImage(assetDir() .. f)
-    out[#out + 1] = string.format("%s %s%s%s%s%s", f,
-      p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-",
-      p.size and (" " .. p.size .. "b") or "",
-      p.w and (" w" .. p.w) or "")
-  end
-  while maxLines and #out > maxLines do table.remove(out) end
-  return out
-end
-
-local function buildStandby()
-  local F = Theme.font
-  local roomy = L.class == "roomy"
-  V.modelName = label(L.c.pad, L.top.y + (roomy and 5 or 4), 260, "",
-                      F.tiny, Theme.ink)
-  lvgl.hline({ x=0, y=L.topRule, w=L.w, h=1, color=Theme.rule })
-
-  Dashboard.placeLogo(L.logo, "logo_standby.png")
-  lvgl.hline({ x=L.divider.x, y=L.divider.y, w=L.divider.w, h=1, color=Theme.rule })
-  label(0, L.tagline.y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER",
-        F.tiny, Theme.dim, ALIGN_CENTER)
-  V.status = label(0, L.status.y, L.w, "WAITING FOR TELEMETRY",
-                   F.small, Theme.warn, ALIGN_CENTER)
-
-  -- Diagnostics run from below whatever is above them to the strip rule, one
-  -- measured line at a time. The old fixed 15px step was less than half the
-  -- height of the font it was stepping, so the lines wrote over each other.
-  local lineH = fh(F.tiny) + 2
-  -- Always below the status line. Starting them up in the logo box when the
-  -- artwork was missing reclaimed space the tagline and divider still occupy,
-  -- so the diagnosis printed straight through them.
-  local dy = L.status.y + fh(F.small) + 6
-  local room = math.floor((L.stripRule - dy) / lineH)
-  V.diag = {}
-  for i = 1, math.max(0, math.min(roomy and 6 or 3, room)) do
-    V.diag[i] = label(L.c.pad, dy + (i - 1) * lineH, L.w - L.c.pad * 2, "",
+    V.tagline = label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER",
                       F.tiny, Theme.dim, ALIGN_CENTER)
   end
-
-  lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
-  local sy = L.stripRule + (roomy and 10 or 7)
-  V.flights = label(L.c.pad, sy, 300, "", F.tiny, Theme.dim)
-  -- Standby is where a first run lands, so the missing-artwork notice belongs
-  -- here as well as on the dashboard. It lives in the strip rather than under
-  -- the status line, which is where it previously collided with it.
-  V.link = label(L.w - L.c.pad - 320, sy, 320, "", F.tiny,
-                 Theme.warn, ALIGN_RIGHT)
+  -- Wide enough for a full "NO IMAGE: <path>", which is the longest thing that
+  -- can land here and the whole reason the notice names a path at all.
+  V.link = label(L.c.pad, y, L.w - L.c.pad * 2, "", F.tiny, Theme.steel,
+                 ALIGN_RIGHT)
 end
 
 -- Smallest zone the tight layout can be drawn into honestly. Below this the
@@ -599,7 +523,7 @@ end
 -- w,h are the WIDGET ZONE, not the screen. LVGL objects are children of the
 -- widget, so anything drawn past the zone edge is silently clipped - laying
 -- out against LCD_W/LCD_H produces a dashboard with its right half missing.
-function Dashboard.build(standby, w, h)
+function Dashboard.build(w, h)
   if type(lvgl) ~= "table" then return end
   Theme.build()
   lvgl.clear()
@@ -620,21 +544,14 @@ function Dashboard.build(standby, w, h)
     return
   end
 
-  mode = standby and "standby" or "dash"
-
-  if standby then
-    L = Layout.buildStandby(w, h)
-    rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
-    buildStandby()
-  else
-    L = Layout.build(w, h)
-    rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
-    buildTopBar()
-    buildLeftColumn()
-    buildHero()
-    buildRightColumn()
-    buildStrip()
-  end
+  mode = "dash"
+  L = Layout.build(w, h)
+  rectangle(0, 0, L.w, L.h, Theme.bg, true, 0, 0)
+  buildTopBar()
+  buildLeftColumn()
+  buildHero()
+  buildRightColumn()
+  buildStrip()
   Dashboard.update()
 end
 
@@ -775,10 +692,14 @@ local function updateStrip()
   local text, color = "", Theme.steel
   if Dashboard.logoMissing then
     -- Name the exact path that failed: "missing" is not actionable, a path is.
+    -- It needs the whole strip, so the slogan stands down - an error outranks
+    -- a tagline, and the two were printing through each other.
+    setp(V.tagline, { text = "" })
     setp(V.link, { text = "NO IMAGE: " .. tostring(Dashboard.missingPath),
                    color = Theme.warn })
     return
   end
+  setp(V.tagline, { text = "NO HYPE / JUST VOLTAGE / REAL POWER" })
   if RF2.available() then
     if State.linkConnected == false then
       text, color = "RF2 DISCONNECTED", Theme.dim
@@ -805,21 +726,6 @@ function Dashboard.update()
     return
   end
   if not V.flights then return end
-  if mode == "standby" then
-    setp(V.modelName, { text = RF2.craftName or Host.modelName() })
-    setp(V.flights, { text = flightsText() })
-    setp(V.link, { text = Dashboard.logoMissing
-                          and ("NO IMAGE: " .. tostring(Dashboard.missingPath))
-                          or "" })
-    if V.diag then
-      local lines = Dashboard.logoMissing
-                    and Dashboard.assetDiagLines(#V.diag) or {}
-      for i = 1, #V.diag do
-        setp(V.diag[i], { text = lines[i] or "" })
-      end
-    end
-    return
-  end
   updateTopBar()
   updateLeftColumn()
   updateHero()

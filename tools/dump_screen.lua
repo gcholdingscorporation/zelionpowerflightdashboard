@@ -6,7 +6,7 @@
 -- EdgeTX's SMLSIZE is 23px on a TX16S, which is how every panel ended up with
 -- its header inside its own value.
 --
---   lua tools/dump_screen.lua <width> <height> [dash|standby|safe] > screen.txt
+--   lua tools/dump_screen.lua <width> <height> [dash|empty|safe] > screen.txt
 
 package.path = "./tools/?.lua;" .. package.path
 
@@ -22,7 +22,7 @@ Mock.removeRf2()
 Mock.state.lcdW, Mock.state.lcdH = w, h
 Mock.state.modelName = "GOBLIN 700"
 
-if kind ~= "standby" then
+if kind ~= "empty" then
   for _, s in ipairs({
     {"Hspd", 18, 1850}, {"Vcel", 1, 3.94}, {"Vbat", 1, 47.3},
     {"Bat%", 13, 68},   {"Curr", 2, 42},   {"Tesc", 11, 71},
@@ -53,7 +53,7 @@ Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
 if kind == "safe" then
   ZD.Dashboard.buildMinimal(w, h)
 else
-  ZD.Dashboard.build(kind == "standby", w, h)
+  ZD.Dashboard.build(w, h)
 end
 ZD.Dashboard.update()
 

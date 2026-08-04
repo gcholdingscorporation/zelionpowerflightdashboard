@@ -27,11 +27,9 @@ BUDGET = 320 * 180       # verified good on a TX16S Mk3
 # name -> (width, height). Derived from src/layout.lua at each anchor size:
 #   logo_panel   the right column's logo box on 800x480
 #   logo_small   the same box on 480x320
-#   logo_standby the standby screen, both classes scale from this
 TARGETS = {
     "logo_panel.png": (295, 166),
     "logo_small.png": (174, 98),
-    "logo_standby.png": (320, 180),
 }
 
 

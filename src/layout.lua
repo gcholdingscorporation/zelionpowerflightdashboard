@@ -141,56 +141,6 @@ function Layout.build(w, h)
   return L
 end
 
--- Standby layout: the mark and tagline, centred. Used when there is no
--- telemetry worth drawing.
-function Layout.buildStandby(w, h)
-  local className = Layout.classFor(w)
-  local C = CLASS[className]
-  local L = { class = className, w = w, h = h, c = C }
-
-  L.top       = rect(0, 0, w, C.topH)
-  L.topRule   = C.topH
-  L.stripRule = h - C.stripH
-  L.strip     = rect(0, L.stripRule + 1, w, C.stripH - 1)
-
-  local top = C.topH + C.contentGap
-  local avail = (L.stripRule - C.stripGap) - top
-
-  -- Reserve room beneath the mark for the tagline and the status line.
-  local reserve = (className == "roomy") and 96 or 62
-  local boxH = avail - reserve
-  -- Matches the shipped asset, and 320x180 is a hardware limit rather than a
-  -- design choice. Once the folder bug was fixed the artwork loaded, and a
-  -- 500x281 (140k pixel) version then rendered as corrupted scanlines - a
-  -- decode buffer overrun, not a failure to load. 320x180 (58k pixels) is
-  -- verified good on a TX16S Mk3; do not raise it without testing on hardware.
-  local lw, lh = 320, 180
-  if className ~= "roomy" then lw, lh = 240, 135 end
-  if lh > boxH then
-    lw = round(lw * boxH / lh)
-    lh = boxH
-  end
-  if lw > w - C.pad * 2 then
-    lh = round(lh * (w - C.pad * 2) / lw)
-    lw = w - C.pad * 2
-  end
-
-  -- Centre the whole block - mark, divider, tagline, status - in the space
-  -- between the two rules, rather than pinning it to the top and letting all
-  -- the slack collect underneath. Measured from the same offsets used below,
-  -- so the two stay in step.
-  local dividerGap, taglineGap = 14, 10
-  local statusGap = (className == "roomy") and 30 or 22
-  local blockH = lh + dividerGap + taglineGap + statusGap + 20
-  local logoY  = top + math.max(0, round((avail - blockH) / 2))
-
-  L.logo    = rect(round((w - lw) / 2), logoY, lw, lh)
-  L.divider = rect(round(w * 0.25), L.logo.y + lh + dividerGap, round(w * 0.5), 1)
-  L.tagline = rect(0, L.divider.y + taglineGap, w, 16)
-  L.status  = rect(0, L.tagline.y + statusGap, w, 20)
-  return L
-end
-
 return Layout
 
 end

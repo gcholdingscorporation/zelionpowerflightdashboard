@@ -37,7 +37,7 @@ local BOOL   = flag("BOOL", 2)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
 Widget.showSensors = false
-local built = nil          -- "dash" | "standby" | "sensors" | nil
+local built = nil          -- "dash" | "sensors" | nil
 local scroll = 0
 local zoneW, zoneH = nil, nil
 
@@ -82,7 +82,7 @@ end
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
 -- actually in the widget folder and what each probe makes of it - rather than
 -- inferring any of it from this side of the SD card.
-local ASSET_FILES = { "logo_panel.png", "logo_standby.png", "logo_small.png" }
+local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 
 local function assetRows()
   local dir = Host.widgetDir()
@@ -213,28 +213,29 @@ local function ensureScreen(widget)
     return
   end
 
-  local want = Dashboard.shouldStandby() and "standby" or "dash"
-  if built ~= want then
+  -- One screen. It is built once and then only ever updated, so there is no
+  -- longer a standby-to-dashboard transition to get wrong.
+  if built ~= "dash" then
     -- A widget must never be able to fault the transmitter. Lua raises on
     -- memory exhaustion, and an unhandled raise from a widget is what puts
     -- EdgeTX into emergency mode - so every build is caught, and each failure
     -- steps down to something cheaper rather than propagating.
-    local ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    local ok = pcall(Dashboard.build, zoneW, zoneH)
     if not ok and not Dashboard.noLogo then
       Dashboard.noLogo = true          -- retry without any bitmap
       Widget.degraded = "no-logo"
-      ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+      ok = pcall(Dashboard.build, zoneW, zoneH)
     end
     if not ok and not Dashboard.noRound then
       Dashboard.noRound = true         -- then without rounded corners
       Widget.degraded = "no-round"
-      ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+      ok = pcall(Dashboard.build, zoneW, zoneH)
     end
     if not ok then
       Widget.degraded = "safe-mode"
       pcall(Dashboard.buildMinimal, zoneW, zoneH)
     end
-    built = want
+    built = "dash"
   end
 end
 
