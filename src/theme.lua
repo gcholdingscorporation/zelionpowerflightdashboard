@@ -131,18 +131,17 @@ function Theme.build()
   if type(lcd) ~= "table" or type(lcd.RGB) ~= "function" then return end
   local rgb = lcd.RGB
 
-  -- Navy, not near-black. Tiles are the same navy as the screen behind them,
-  -- so a panel is defined entirely by its green outline - there is no fill
-  -- contrast doing any of that work. Only two darks remain distinct: track
-  -- sits below bg so the empty part of the gauge still reads as a hole.
+  -- One navy for everything: the screen, every tile, and the empty part of the
+  -- battery gauge. No fill contrast anywhere - a panel is its green outline,
+  -- and the gauge's level is read purely by where the lime stops.
   --
   -- tools/make_logos.py flattens the artwork onto Theme.bg. Change this and
   -- the PNGs have to be regenerated, or every logo carries a box of the old
   -- background around it.
-  Theme.bg     = rgb(  9,  16,  37)
+  Theme.bg     = rgb(  9,  15,  35)
   Theme.panel  = Theme.bg
-  Theme.rule   = rgb( 37,  51,  87)
-  Theme.track  = rgb(  6,   9,  25)
+  Theme.track  = Theme.bg
+  Theme.rule   = rgb( 35,  48,  83)
   Theme.ink    = rgb(242, 245, 248)
   Theme.dim    = rgb(148, 163, 190)
 
