@@ -212,7 +212,20 @@ local function ensureScreen(widget)
   end
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
-    Dashboard.build(want == "standby", zoneW, zoneH)
+    -- A widget must never be able to fault the transmitter. Lua raises on
+    -- memory exhaustion, and an unhandled raise from a widget is what puts
+    -- EdgeTX into emergency mode - so every build is caught, and each failure
+    -- steps down to something cheaper rather than propagating.
+    local ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    if not ok and not Dashboard.noLogo then
+      Dashboard.noLogo = true          -- retry without any bitmap
+      Widget.degraded = "no-logo"
+      ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    end
+    if not ok then
+      Widget.degraded = "safe-mode"
+      pcall(Dashboard.buildMinimal, zoneW, zoneH)
+    end
     built = want
   end
 end
@@ -230,29 +243,32 @@ function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
   Dashboard.noLogo = (options and options.NoLogo == 1) or false
+  Widget.degraded = nil
   Config.load()
   Sensors.reload(Host.modelName())
   built = nil
   ensureScreen(widget)
 end
 
+Widget.degraded = nil
+
 function Widget.refresh(widget, event, touchState)
-  State.service(Host.now(), serviceOpts(widget))
+  pcall(State.service, Host.now(), serviceOpts(widget))
   ensureScreen(widget)
 
   if Widget.showSensors then
     if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1
     elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1 end
-    drawSensorMap()
+    pcall(drawSensorMap)
   else
-    Dashboard.update()
+    pcall(Dashboard.update)
   end
 end
 
 -- Telemetry is serviced here too, so session peaks and flight time are
 -- recorded while another screen is in front.
 function Widget.background(widget)
-  State.service(Host.now(), serviceOpts(widget))
+  pcall(State.service, Host.now(), serviceOpts(widget))
 end
 
 Widget.options = {

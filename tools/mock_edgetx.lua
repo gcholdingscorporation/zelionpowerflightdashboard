@@ -356,7 +356,14 @@ end
 function Mock.installLvgl()
   Mock.lv = { objects = {}, cleared = 0, sets = 0 }
 
+  -- Lua raises when it runs out of memory. Being able to reproduce that is the
+  -- only way to prove the widget degrades instead of faulting the transmitter.
+  Mock.lvglFailAfter = nil
+
   local function make(kind, props)
+    if Mock.lvglFailAfter and #Mock.lv.objects >= Mock.lvglFailAfter then
+      error("not enough memory", 0)
+    end
     local o = { kind = kind, props = {}, visible = true, setCount = 0 }
     for k, v in pairs(props or {}) do o.props[k] = v end
     function o:set(p)

@@ -136,6 +136,53 @@ H.test("shows the flight controller's flight count", function()
   H.truthy(string.find(t, "Goblin 700", 1, true), "FC craft name used")
 end)
 
+H.group("build: never fault the radio")
+
+H.test("an out-of-memory build degrades instead of raising", function()
+  -- EdgeTX puts the transmitter into EMERGENCY MODE when a widget raises.
+  -- Running out of memory mid-build must never do that.
+  local def, widget = boot(800, 480, nil, flying)
+  def.refresh(widget, 0, nil)
+
+  Mock.lvglFailAfter = 20        -- dashboard needs ~65 objects
+  local ok = pcall(function()
+    for _ = 1, 5 do
+      Mock.advanceSeconds(0.2)
+      def.refresh(widget, 0, nil)
+    end
+  end)
+  Mock.lvglFailAfter = nil
+  H.truthy(ok, "refresh must not propagate the failure")
+end)
+
+H.test("safe mode still shows the values that matter", function()
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+  local ZD = Loader.load()
+  ZD.State.reloadModel()
+  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+
+  ZD.Dashboard.buildMinimal(800, 480)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "SAFE MODE", 1, true), "says it is degraded")
+  H.truthy(string.find(t, "68%", 1, true), "battery still shown")
+  H.truthy(string.find(t, "1850 RPM", 1, true), "headspeed still shown")
+  H.truthy(string.find(t, "3.94", 1, true), "cell voltage still shown")
+  H.eq(#Mock.lvglImages(), 0, "no bitmap in safe mode")
+end)
+
+H.test("safe mode is a fraction of the full dashboard", function()
+  local def, widget = boot(800, 480, nil, flying)
+  def.refresh(widget, 0, nil)
+  local full = #Mock.lv.objects
+  local ZD = Loader.load()
+  ZD.Dashboard.buildMinimal(800, 480)
+  H.truthy(#Mock.lv.objects < full / 3,
+           string.format("safe mode %d vs full %d", #Mock.lv.objects, full))
+end)
+
 H.group("build: sensor map")
 
 H.test("the option switches to the diagnostics screen", function()

@@ -2349,6 +2349,25 @@ end
 -- panels would overlap, so say so rather than render a mess.
 Dashboard.MIN_W, Dashboard.MIN_H = 440, 250
 
+-- Last resort. A dozen objects, no bitmap, no panels: if even this cannot be
+-- built the widget is not the problem. Reached only after a real build has
+-- already failed.
+function Dashboard.buildMinimal(w, h)
+  if type(lvgl) ~= "table" then return end
+  lvgl.clear()
+  V, SHADOW = {}, {}
+  Host.collect()
+  mode = "minimal"
+  local F = Theme.font
+  rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
+  V.modelName = label(8, 6, w - 16, "", F.small + F.bold, Theme.ink)
+  label(0, 30, w, "ZELIONDASH - SAFE MODE", F.small + F.bold, Theme.warn, ALIGN_CENTER)
+  V.minBat  = label(8,  math.floor(h * 0.30), w - 16, "", F.large + F.bold, Theme.ink, ALIGN_CENTER)
+  V.minHs   = label(8,  math.floor(h * 0.55), w - 16, "", F.large + F.bold, Theme.ink, ALIGN_CENTER)
+  V.minCell = label(8,  math.floor(h * 0.78), w - 16, "", F.mid, Theme.dim, ALIGN_CENTER)
+  Dashboard.update()
+end
+
 local function buildTooSmall(w, h)
   local F = Theme.font
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
@@ -2549,7 +2568,21 @@ local function updateStrip()
 end
 
 function Dashboard.update()
-  if type(lvgl) ~= "table" or mode == "toosmall" or not V.flights then return end
+  if type(lvgl) ~= "table" or mode == "toosmall" then return end
+  if mode == "minimal" then
+    setp(V.modelName, { text = RF2.craftName or Host.modelName() })
+    local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
+    setp(V.minBat, { text = pct and (string.format("%d", math.floor(pct + 0.5)) .. "%") or "--",
+                     color = pct and Theme.batteryColor(pct) or Theme.dim })
+    local hs, hsOk = State.get("headspeed")
+    setp(V.minHs, { text = hsOk and (string.format("%d", math.floor(hs + 0.5)) .. " RPM") or "-- RPM",
+                    color = hsOk and Theme.ink or Theme.dim })
+    local cv, cvOk = State.get("cellVoltage")
+    setp(V.minCell, { text = cvOk and (string.format("%.2f", cv) .. " V/cell") or "-- V/cell",
+                      color = cvOk and Theme.cellColor(cv) or Theme.dim })
+    return
+  end
+  if not V.flights then return end
   if mode == "standby" then
     setp(V.modelName, { text = RF2.craftName or Host.modelName() })
     setp(V.flights, { text = flightsText() })
@@ -2797,7 +2830,20 @@ local function ensureScreen(widget)
   end
   local want = Dashboard.shouldStandby() and "standby" or "dash"
   if built ~= want then
-    Dashboard.build(want == "standby", zoneW, zoneH)
+    -- A widget must never be able to fault the transmitter. Lua raises on
+    -- memory exhaustion, and an unhandled raise from a widget is what puts
+    -- EdgeTX into emergency mode - so every build is caught, and each failure
+    -- steps down to something cheaper rather than propagating.
+    local ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    if not ok and not Dashboard.noLogo then
+      Dashboard.noLogo = true          -- retry without any bitmap
+      Widget.degraded = "no-logo"
+      ok = pcall(Dashboard.build, want == "standby", zoneW, zoneH)
+    end
+    if not ok then
+      Widget.degraded = "safe-mode"
+      pcall(Dashboard.buildMinimal, zoneW, zoneH)
+    end
     built = want
   end
 end
@@ -2815,29 +2861,32 @@ function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
   Dashboard.noLogo = (options and options.NoLogo == 1) or false
+  Widget.degraded = nil
   Config.load()
   Sensors.reload(Host.modelName())
   built = nil
   ensureScreen(widget)
 end
 
+Widget.degraded = nil
+
 function Widget.refresh(widget, event, touchState)
-  State.service(Host.now(), serviceOpts(widget))
+  pcall(State.service, Host.now(), serviceOpts(widget))
   ensureScreen(widget)
 
   if Widget.showSensors then
     if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1
     elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1 end
-    drawSensorMap()
+    pcall(drawSensorMap)
   else
-    Dashboard.update()
+    pcall(Dashboard.update)
   end
 end
 
 -- Telemetry is serviced here too, so session peaks and flight time are
 -- recorded while another screen is in front.
 function Widget.background(widget)
-  State.service(Host.now(), serviceOpts(widget))
+  pcall(State.service, Host.now(), serviceOpts(widget))
 end
 
 Widget.options = {
