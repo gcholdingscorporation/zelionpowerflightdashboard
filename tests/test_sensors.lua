@@ -99,6 +99,84 @@ H.test("does not steal a sensor already claimed by name", function()
   H.nilv(ZD.Sensors.boundTo("mcuTemperature"))
 end)
 
+H.group("sensors: switching a role off")
+
+-- The percent sensors an ExpressLRS radio actually publishes. Every one of
+-- them matters to the outcome: Bat% and RQly get claimed by name, which is
+-- what leaves TQly as the single unclaimed percent sensor for the unit pass
+-- to hand to throttle. Drop any one and the guess does not happen.
+local function elrs()
+  Mock.addSensor("Bat%", 13, 99)
+  Mock.addSensor("RQly", 13, 100)
+  Mock.addSensor("TQly", 13, 100)
+end
+
+-- The unit pass is a guess, and a guess a pilot cannot overrule is worse than
+-- no guess. On an ExpressLRS radio there is no Thr sensor, so throttle fell
+-- through to the unit pass and matched TQly - the transmitter link quality -
+-- producing a confident, permanent THR 100%.
+
+H.test("off leaves a role unbound instead of guessing", function()
+  local ZD = fresh(function()
+    elrs()
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+      "[*]\nthrottle = off\n")
+  end)
+  H.nilv(ZD.Sensors.boundTo("throttle"))
+  H.eq(ZD.State.status("throttle"), "unbound")
+end)
+
+H.test("without it, the guess is exactly the one being complained about", function()
+  -- Pins the behaviour the option exists to defeat. If the resolver stops
+  -- doing this, the option is dead weight and should go.
+  local ZD = fresh(function()
+    elrs()
+  end)
+  H.eq(ZD.Sensors.boundTo("throttle"), "TQly")
+  H.eq(ZD.Sensors.howBound("throttle"), "unit")
+end)
+
+H.test("a role switched off is not reported as unresolved", function()
+  -- It is a decision, not a gap. Counting it would inflate the number the
+  -- sensor map footer shows and send the pilot looking for a missing sensor.
+  local ZD = fresh(function()
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", "[*]\nthrottle = off\n")
+  end)
+  for _, role in ipairs(ZD.Sensors.unresolved) do
+    H.truthy(role ~= "throttle", "throttle must not be in the unresolved list")
+  end
+end)
+
+H.test("the sensor map says off rather than showing a blank", function()
+  local ZD = fresh(function()
+    elrs()
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", "[*]\nthrottle = off\n")
+  end)
+  local byRole = {}
+  for _, r in ipairs(ZD.Sensors.report()) do byRole[r.role] = r end
+  H.truthy(byRole.throttle.off, "flagged as a deliberate choice")
+end)
+
+H.test("switching a role off releases a binding it already had", function()
+  local ZD = fresh(function()
+    elrs()
+  end)
+  H.eq(ZD.Sensors.boundTo("throttle"), "TQly", "bound before")
+  Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", "[*]\nthrottle = off\n")
+  ZD.Config.load()
+  ZD.Sensors.reload("Test Heli")
+  H.nilv(ZD.Sensors.boundTo("throttle"), "and released after")
+end)
+
+H.test("one model can switch a role off without affecting the others", function()
+  local ZD = fresh(function()
+    elrs()
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+      "[Other Heli]\nthrottle = off\n")
+  end)
+  H.eq(ZD.Sensors.boundTo("throttle"), "TQly", "this model was not the one")
+end)
+
 H.group("sensors: missing vs zero")
 
 H.test("a genuine zero reads as valid", function()

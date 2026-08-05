@@ -1047,7 +1047,17 @@ local REPROBE_INTERVAL = Host.seconds(1)
 Sensors.bindings   = {}
 Sensors.unresolved = {}
 Sensors.overrides  = {}
+Sensors.disabled   = {}
 Sensors.modelName  = nil
+
+-- "off" in sensors.cfg means the role stays unbound, and pass 3 must not fill
+-- it in either. Until this existed there was no way to reject a wrong guess:
+-- an ExpressLRS setup publishes no Thr sensor, so throttle fell through to the
+-- unit pass, which matched the first spare percent sensor on the radio - TQly,
+-- the transmitter link quality - and showed a confident, permanent THR 100%.
+-- Naming a different sensor could not help, because a name the firmware does
+-- not know falls through to the same guess.
+local OFF_VALUES = { off = true, none = true, no = true, ["-"] = true }
 
 local lastProbe = -1e9
 
@@ -1128,9 +1138,17 @@ function Sensors.resolve(force)
   end
 
   local pending = {}
+  Sensors.disabled = {}
   for i = 1, #Roles.order do
     local role = Roles.order[i]
-    if not Sensors.bindings[role] then pending[#pending + 1] = role end
+    if OFF_VALUES[lower(Sensors.overrides[role])] then
+      -- Cleared rather than skipped: the role may already hold a binding from
+      -- before the pilot switched it off.
+      Sensors.bindings[role] = nil
+      Sensors.disabled[role] = true
+    elseif not Sensors.bindings[role] then
+      pending[#pending + 1] = role
+    end
   end
   if #pending == 0 then
     Sensors.unresolved = {}
@@ -1251,6 +1269,9 @@ function Sensors.report()
       how       = b and b.how or nil,
       value     = value,
       status    = status,
+      -- Switched off in sensors.cfg reads differently from never found: one
+      -- is a decision, the other is a gap worth chasing.
+      off       = Sensors.disabled[role] == true,
       important = Roles.important[role] == true,
     }
   end
@@ -3891,7 +3912,7 @@ local function sensorMapRows()
   } }
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
-      label = r.label, sensor = r.sensor, status = r.status,
+      label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
       important = r.important, how = r.how and HOW[r.how] or nil,
       value = formatValue(r),
     }

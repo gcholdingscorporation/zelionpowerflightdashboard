@@ -64,12 +64,18 @@ happened:
 | `cfg` | You named it explicitly in `sensors.cfg` |
 | `auto` | Matched a known sensor name |
 | `guess` | Inferred from the sensor's unit — **worth checking** |
+| `off` | You switched it off in `sensors.cfg` |
 | Value | Live reading, or why there isn't one |
 
 Roles the dashboard considers important are shown in bold, and turn amber when
 unbound. Use the scroll wheel to page through the list on the smaller screen.
 
 This is the first place to look when a panel reads `--`.
+
+A `guess` that picked the wrong sensor is corrected in `sensors.cfg`, either by
+naming the right one or with `role = off` when there is no right one. Naming a
+sensor the radio does not have will not do it — an unknown name falls through
+to the same guess.
 
 ## Alerts
 

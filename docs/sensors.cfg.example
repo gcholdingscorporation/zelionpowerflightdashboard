@@ -1,6 +1,6 @@
 # ZelionDash sensor overrides
 #
-# Copy to /WIDGETS/ZelionDash/sensors.cfg on the radio's SD card.
+# Copy to /WIDGETS/ZelionDash/sensors.cfg on the radio's storage.
 # Everything here is OPTIONAL - sensor discovery is automatic. Use this file
 # only when your model publishes a sensor under a name the widget does not
 # recognise, or when auto-detection picked the wrong one.
@@ -12,6 +12,21 @@
 #
 # A line naming a role that does not exist is reported on the diagnostics
 # screen rather than ignored, so typos are visible.
+#
+# The right-hand side may also be "off", which leaves the role unbound and
+# stops the widget guessing at it:
+#
+#   throttle = off
+#
+# That is the answer to a wrong (guess) on the sensor map. Naming a different
+# sensor does NOT work when the sensor you want does not exist - a name the
+# firmware does not know falls through to the same guess that was wrong. On
+# ExpressLRS there is no Thr sensor, so throttle matches the first spare
+# percent sensor on the radio, which is usually TQly - the transmitter link
+# quality - and reads a confident, permanent THR 100%.
+#
+# Switching a role off is a decision, not a gap: the sensor map shows it as
+# "off" and it is not counted among the unresolved sensors.
 
 [*]
 # --- rotor ---
@@ -38,7 +53,7 @@
 # --- flight controller ---
 # governor         = Gov
 # armFlags         = ARM
-# throttle         = Thr
+# throttle         = Thr      (or "off" - see above, ExpressLRS has no Thr)
 # flightMode       = FM
 
 # --- radio link ---

@@ -170,7 +170,7 @@ local function sensorMapRows()
   } }
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
-      label = r.label, sensor = r.sensor, status = r.status,
+      label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
       important = r.important, how = r.how and HOW[r.how] or nil,
       value = formatValue(r),
     }
