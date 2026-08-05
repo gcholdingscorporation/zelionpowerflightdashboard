@@ -262,6 +262,56 @@ H.test("the real error is reported, not a generic one", function()
            "and names what happened")
 end)
 
+H.group("flightlog: a folder that is not there yet")
+
+-- /LOGS/ exists only if the radio has already logged telemetry. On a radio
+-- where it did not, a real 27-second flight was lost and the status line still
+-- read "no flight yet" - indistinguishable from never having taken off.
+
+H.test("the folder is created before anything opens a file in it", function()
+  local ZD = fresh(function()
+    loaded()
+    Mock.state.missingDirs["/LOGS/"] = true
+  end)
+  flight(ZD, 40)
+  H.falsy(ZD.FlightLog.lastError, "no error: " .. tostring(ZD.FlightLog.lastError))
+  H.eq(#lines(), 2, "header plus the flight")
+  H.eq(ZD.FlightLog.written, 1)
+end)
+
+H.test("a flight that fails to write never reads as one that never happened", function()
+  -- The whole point of the status line. "no flight yet" and "the write threw"
+  -- are opposite problems and looked identical.
+  local ZD = fresh(loaded)
+  ZD.FlightLog.append = function() error("io: no such directory") end
+  flight(ZD, 40)
+  local _, verdict = ZD.FlightLog.status()
+  H.eq(verdict, "FAILED")
+  H.truthy(string.find(tostring(ZD.FlightLog.lastError), "no such directory",
+                       1, true), "and it names the reason")
+end)
+
+H.test("an unenumerated failure still shows up", function()
+  -- Neither record nor append raising, but nothing written either. Whatever
+  -- that is, it must not present as a quiet success.
+  local ZD = fresh(loaded)
+  ZD.FlightLog.append = function() return false end
+  flight(ZD, 40)
+  local _, verdict = ZD.FlightLog.status()
+  H.eq(verdict, "FAILED", "not 'no flight yet'")
+end)
+
+H.test("a flight recorded after a failed one clears the error", function()
+  local ZD = fresh(loaded)
+  Mock.state.readOnly = true
+  flight(ZD, 40)
+  H.truthy(ZD.FlightLog.lastError, "the first one failed")
+  Mock.state.readOnly = nil
+  flight(ZD, 40)
+  H.falsy(ZD.FlightLog.lastError, "and the second one says so")
+  H.eq(ZD.FlightLog.written, 1)
+end)
+
 H.test("no clock set is obvious rather than plausible", function()
   local ZD = fresh(function()
     loaded()

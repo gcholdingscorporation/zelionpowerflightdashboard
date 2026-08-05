@@ -417,13 +417,24 @@ end
 local READ_CHUNK     = 1024
 local READ_MAX_BYTES = 64 * 1024
 
+-- io.open does not merely return nil for a path it cannot use. Ask it for a
+-- file inside a folder that is not there and the firmware raises, and that
+-- throw travels: it took out a whole flight record, from inside a pcall that
+-- discarded the message. Nothing in this file may call io.open directly.
+local function openFile(path, mode)
+  if type(ioTbl) ~= "table" or type(ioTbl.open) ~= "function" then return nil end
+  local ok, f = pcall(ioTbl.open, path, mode)
+  if not ok then return nil end
+  return f
+end
+
 function Host.exists(path)
   if fstatFn then
     local ok, info = pcall(fstatFn, path)
     if ok and info ~= nil then return true end
   end
   if type(ioTbl) == "table" then
-    local f = ioTbl.open(path, "r")
+    local f = openFile(path, "r")
     if f then
       pcall(ioTbl.close, f)
       return true
@@ -482,7 +493,7 @@ end
 
 function Host.readFile(path)
   if type(ioTbl) ~= "table" then return nil end
-  local f = ioTbl.open(path, "r")
+  local f = openFile(path, "r")
   if not f then return nil end
   local parts, total = {}, 0
   local ok = pcall(function()
@@ -504,7 +515,7 @@ end
 -- necessarily raising, so pcall success alone does not prove the bytes landed.
 local function writeDirect(path, content)
   if type(ioTbl) ~= "table" then return false end
-  local f = ioTbl.open(path, "w")
+  local f = openFile(path, "w")
   if not f then return false end
   local called, result = pcall(ioTbl.write, f, content)
   local closed = pcall(ioTbl.close, f)
@@ -1511,6 +1522,12 @@ State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
 
+-- The rotor-arming latch. Declared up here rather than beside the arm code
+-- below because resetSession clears it: a `local` further down the file is not
+-- in scope at that point, so the assignment silently created a global instead
+-- and the latch survived a model change.
+local spunUp, belowSince = false, nil
+
 local function blank()
   return { value = nil, valid = false, status = "unbound",
            min = nil, max = nil, hasExtremes = false }
@@ -1643,8 +1660,6 @@ State.armSwitch = nil
 State.SPIN_UP        = 250     -- rpm: the head is turning, call it a flight
 State.SPIN_DOWN      = 100     -- rpm: below this, start counting down
 State.LANDED_SECONDS = 5
-
-local spunUp, belowSince = false, nil
 
 local function armedFromRotor(now)
   local hs, ok = State.get("headspeed")
@@ -2326,12 +2341,18 @@ function FlightLog.read()
 end
 
 function FlightLog.append(line)
+  -- The folder first, before anything opens a file inside it. /LOGS/ is only
+  -- there if the radio has logged telemetry before, and reading a path inside
+  -- a folder that does not exist is not a quiet nil on this firmware - it
+  -- raises. Doing the mkdir between the read and the write, which is where it
+  -- used to sit, meant the read went first and took the flight with it.
+  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
+
   local records = FlightLog.read()
   records[#records + 1] = line
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
 
-  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
   local ok = Host.writeFile(FlightLog.path(), body)
   if not ok and not FlightLog.FALLBACK then
     fallBack()
@@ -2376,6 +2397,13 @@ function FlightLog.service()
     return false
   end
 
+  -- Marked before the attempt, cleared on success. Every silent failure so far
+  -- has been a throw from somewhere nobody had enumerated, and the status line
+  -- read "no flight yet" - the same thing it says when the heli never left the
+  -- ground. Claiming the failure up front means an unknown one still shows up:
+  -- whatever goes wrong from here, it cannot go wrong quietly.
+  FlightLog.lastError = "interrupted before the write"
+
   local ok, line = pcall(FlightLog.record)
   if not ok then
     -- Carry the real message. "could not format the record" cost a round trip
@@ -2384,9 +2412,17 @@ function FlightLog.service()
     FlightLog.lastError = "fmt: " .. tostring(line)
     return false
   end
+
   local wrote
   ok, wrote = pcall(FlightLog.append, line)
-  return ok and wrote == true
+  if not ok then
+    -- append raising was the one path that reported nothing at all. It is how
+    -- a real 27-second flight vanished with the log still saying "no flight
+    -- yet", and it is the reason for the marker above.
+    FlightLog.lastError = "write: " .. tostring(wrote)
+    return false
+  end
+  return wrote == true
 end
 
 function FlightLog.reset()

@@ -26,6 +26,11 @@ Mock.state = {
   writes    = 0,          -- successful file writes, so a test can prove the
                           -- card is touched once per flight and not per frame
   readOnly  = false,      -- a card that refuses every write
+  -- Folders that do not exist. EdgeTX's io.open raises rather than returning
+  -- nil for a path inside one, which is a different failure from a card that
+  -- refuses the write - and it is the one that silently cost a real flight.
+  -- mkdir clears the entry, so a test can prove the folder is created first.
+  missingDirs = {},
 }
 
 local byName = {}
@@ -96,6 +101,7 @@ function Mock.reset()
                           hour = 0, min = 0, sec = 0 }
   Mock.state.writes = 0
   Mock.state.readOnly = false
+  Mock.state.missingDirs = {}
   Mock.played = {}
   reindex()
 end
@@ -165,9 +171,23 @@ function Mock.install()
   -- Virtual filesystem. Handles are tables so io.read/io.write can carry a
   -- cursor without touching the real disk.
   local realIo = io
+
+  -- A path inside a folder that is not there does not open and does not
+  -- return nil either - the firmware raises. Modelled because every io.open
+  -- in the host was unprotected, and the throw travelled far enough to lose a
+  -- flight record with no error reported anywhere.
+  local function guardOpen(path)
+    for dir in pairs(Mock.state.missingDirs or {}) do
+      if string.sub(tostring(path), 1, #dir) == dir then
+        error("no such directory: " .. dir, 0)
+      end
+    end
+  end
+
   _G.io = {
     open = function(path, mode)
       mode = mode or "r"
+      guardOpen(path)
       if mode == "r" then
         local content = Mock.state.files[path]
         if not content then return nil end
@@ -240,7 +260,21 @@ function Mock.install()
   end
   _G.os = { time = realOs.time, clock = realOs.clock,
             date = realOs.date, exit = realOs.exit }
-  _G.mkdir = function() return true end
+  -- Returns a FatFs result the way EdgeTX's etxdir.mkdir does: 0 is OK, 8 is
+  -- "already exists". Not a boolean - reading it as one is what made
+  -- Host.mkdir report success for a folder it had never created.
+  _G.mkdir = function(path)
+    path = tostring(path or "")
+    if path == "" then return 6 end                    -- FR_INVALID_NAME
+    local existed = false
+    for dir in pairs(Mock.state.missingDirs or {}) do
+      if dir == path or dir == path .. "/" then
+        Mock.state.missingDirs[dir] = nil
+        existed = true
+      end
+    end
+    return existed and 0 or 8
+  end
 
   -- Drawing stub. It records calls rather than rendering, which is enough to
   -- prove the draw path runs without erroring and to assert on what was drawn.

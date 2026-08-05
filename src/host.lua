@@ -406,13 +406,24 @@ end
 local READ_CHUNK     = 1024
 local READ_MAX_BYTES = 64 * 1024
 
+-- io.open does not merely return nil for a path it cannot use. Ask it for a
+-- file inside a folder that is not there and the firmware raises, and that
+-- throw travels: it took out a whole flight record, from inside a pcall that
+-- discarded the message. Nothing in this file may call io.open directly.
+local function openFile(path, mode)
+  if type(ioTbl) ~= "table" or type(ioTbl.open) ~= "function" then return nil end
+  local ok, f = pcall(ioTbl.open, path, mode)
+  if not ok then return nil end
+  return f
+end
+
 function Host.exists(path)
   if fstatFn then
     local ok, info = pcall(fstatFn, path)
     if ok and info ~= nil then return true end
   end
   if type(ioTbl) == "table" then
-    local f = ioTbl.open(path, "r")
+    local f = openFile(path, "r")
     if f then
       pcall(ioTbl.close, f)
       return true
@@ -471,7 +482,7 @@ end
 
 function Host.readFile(path)
   if type(ioTbl) ~= "table" then return nil end
-  local f = ioTbl.open(path, "r")
+  local f = openFile(path, "r")
   if not f then return nil end
   local parts, total = {}, 0
   local ok = pcall(function()
@@ -493,7 +504,7 @@ end
 -- necessarily raising, so pcall success alone does not prove the bytes landed.
 local function writeDirect(path, content)
   if type(ioTbl) ~= "table" then return false end
-  local f = ioTbl.open(path, "w")
+  local f = openFile(path, "w")
   if not f then return false end
   local called, result = pcall(ioTbl.write, f, content)
   local closed = pcall(ioTbl.close, f)

@@ -195,12 +195,18 @@ function FlightLog.read()
 end
 
 function FlightLog.append(line)
+  -- The folder first, before anything opens a file inside it. /LOGS/ is only
+  -- there if the radio has logged telemetry before, and reading a path inside
+  -- a folder that does not exist is not a quiet nil on this firmware - it
+  -- raises. Doing the mkdir between the read and the write, which is where it
+  -- used to sit, meant the read went first and took the flight with it.
+  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
+
   local records = FlightLog.read()
   records[#records + 1] = line
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
 
-  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
   local ok = Host.writeFile(FlightLog.path(), body)
   if not ok and not FlightLog.FALLBACK then
     fallBack()
@@ -245,6 +251,13 @@ function FlightLog.service()
     return false
   end
 
+  -- Marked before the attempt, cleared on success. Every silent failure so far
+  -- has been a throw from somewhere nobody had enumerated, and the status line
+  -- read "no flight yet" - the same thing it says when the heli never left the
+  -- ground. Claiming the failure up front means an unknown one still shows up:
+  -- whatever goes wrong from here, it cannot go wrong quietly.
+  FlightLog.lastError = "interrupted before the write"
+
   local ok, line = pcall(FlightLog.record)
   if not ok then
     -- Carry the real message. "could not format the record" cost a round trip
@@ -253,9 +266,17 @@ function FlightLog.service()
     FlightLog.lastError = "fmt: " .. tostring(line)
     return false
   end
+
   local wrote
   ok, wrote = pcall(FlightLog.append, line)
-  return ok and wrote == true
+  if not ok then
+    -- append raising was the one path that reported nothing at all. It is how
+    -- a real 27-second flight vanished with the log still saying "no flight
+    -- yet", and it is the reason for the marker above.
+    FlightLog.lastError = "write: " .. tostring(wrote)
+    return false
+  end
+  return wrote == true
 end
 
 function FlightLog.reset()

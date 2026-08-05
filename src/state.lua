@@ -47,6 +47,12 @@ State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
 
+-- The rotor-arming latch. Declared up here rather than beside the arm code
+-- below because resetSession clears it: a `local` further down the file is not
+-- in scope at that point, so the assignment silently created a global instead
+-- and the latch survived a model change.
+local spunUp, belowSince = false, nil
+
 local function blank()
   return { value = nil, valid = false, status = "unbound",
            min = nil, max = nil, hasExtremes = false }
@@ -179,8 +185,6 @@ State.armSwitch = nil
 State.SPIN_UP        = 250     -- rpm: the head is turning, call it a flight
 State.SPIN_DOWN      = 100     -- rpm: below this, start counting down
 State.LANDED_SECONDS = 5
-
-local spunUp, belowSince = false, nil
 
 local function armedFromRotor(now)
   local hs, ok = State.get("headspeed")

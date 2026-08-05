@@ -96,6 +96,22 @@ H.test("a telemetry dropout is not a landing", function()
   H.truthy(ZD.State.armed, "losing the sensor says nothing about the rotor")
 end)
 
+H.test("the rotor latch does not follow you to the next model", function()
+  -- resetSession clears it, but the `local` it was clearing was declared
+  -- further down the file and so was not in scope: the assignment made a
+  -- global and the latch survived. A model selected while the previous one was
+  -- spinning then started out flying.
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1800) end)
+  run(ZD, 1)
+  H.truthy(ZD.State.armed)
+
+  Mock.state.modelName = "A DIFFERENT HELI"
+  Mock.removeSensor("Hspd")           -- the new model has no headspeed at all
+  run(ZD, 0.3)
+  H.falsy(ZD.State.armed, "a freshly selected model is not in the air")
+  H.eq(ZD.State.armSource, "none")
+end)
+
 H.group("state: session extremes")
 
 H.test("tracks a maximum across the session", function()
