@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Draw what tools/dump_screen.lua dumped, at true resolution.
 
-This renders the BUILT screen, not the intended one. tools/render_layout.py is
-the design; this is the code's answer to it, drawn with EdgeTX's own font line
-heights so the picture is the size the radio will actually produce.
+Drawn with EdgeTX's own font line heights and the real artwork, so the picture
+is the size and shape the radio will actually produce. There was once a
+separate script that drew the intended layout from a mock-up; it was deleted
+once it had drifted far enough from the code to mislead rather than inform.
 
     lua tools/dump_screen.lua 800 480 dash > /tmp/s.txt
     python3 tools/render_screen.py /tmp/s.txt out.png

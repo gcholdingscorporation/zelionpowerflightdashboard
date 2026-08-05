@@ -2313,9 +2313,10 @@ do
 -- to the point, EdgeTX has a fixed ladder of font sizes, so text cannot shrink
 -- continuously - panels have to rearrange instead of scaling.
 --
--- The geometry below reproduces tools/render_layout.py at both anchor sizes.
 -- Other resolutions in the same class keep the class's fonts and paddings and
--- distribute the leftover height proportionally.
+-- distribute the leftover height proportionally. tools/dump_screen.lua plus
+-- tools/render_screen.py draw whatever this produces, at true resolution and
+-- with EdgeTX's own font metrics.
 
 return function(ZD)
 

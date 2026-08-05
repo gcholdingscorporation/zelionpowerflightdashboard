@@ -1,10 +1,9 @@
 -- Dumps what the widget actually builds, as a flat list a renderer can draw.
 --
--- Not a design tool: tools/render_layout.py draws the intended layout, this
--- draws the built one. They are different questions, and the gap between them
--- is where the bugs live - the design's "small" was a 9pt mock-up font while
--- EdgeTX's SMLSIZE is 23px on a TX16S, which is how every panel ended up with
--- its header inside its own value.
+-- Dumps what the code built, not what a design says it should have. That gap
+-- is where the bugs lived: the mock-up's "small" was a 9pt font while EdgeTX's
+-- SMLSIZE is 23px on a TX16S, which is how every panel ended up with its
+-- header inside its own value.
 --
 --   lua tools/dump_screen.lua <width> <height> [dash|empty|safe] > screen.txt
 

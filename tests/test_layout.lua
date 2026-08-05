@@ -1,8 +1,8 @@
 -- Layout engine: geometry only, no drawing.
 --
--- The design is fixed at two anchor sizes, so most of these assertions are
--- against the numbers in tools/render_layout.py. The rest check that an
--- off-anchor screen still produces a sane, non-overlapping layout.
+-- The design is fixed at two anchor sizes, so most of these assertions pin the
+-- numbers at those sizes. The rest check that an off-anchor screen still
+-- produces a sane, non-overlapping layout.
 
 return function(H, Mock, Loader)
 
