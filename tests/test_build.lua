@@ -376,6 +376,30 @@ H.test("scrolling does not rebuild the screen", function()
   H.eq(#Mock.lv.objects, objects)
 end)
 
+H.test("the flight log reports itself, since it is otherwise silent", function()
+  -- It writes once, at landing, and says nothing. Without this line there is
+  -- no way to tell it is working short of pulling the card.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "FLIGHT LOG", 1, true))
+  H.truthy(string.find(t, "flights.csv", 1, true), "and where it writes")
+  H.truthy(string.find(t, "flying, from rotor", 1, true),
+           "and how it decided the heli is flying")
+end)
+
+H.test("a failed write says so on the sensor map", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  Mock.state.readOnly = true
+  Mock.setSensor("Hspd", 1850)
+  for _ = 1, 300 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+  Mock.setSensor("Hspd", 0)
+  for _ = 1, 100 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+  Mock.state.readOnly = false
+  H.truthy(string.find(Mock.lvglText(), "FAILED", 1, true),
+           "a card that will not take the write must not fail quietly")
+end)
+
 H.test("the roles come first, with artwork summarised above them", function()
   -- The full artwork block used to lead, from when a missing PNG was the open
   -- problem. Seven rows of it pushed the governor - the row actually being

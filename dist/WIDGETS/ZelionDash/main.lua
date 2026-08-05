@@ -3703,10 +3703,30 @@ local function sensorMapRows()
   local sensorRows, bound = Sensors.report(), 0
   for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
 
-  -- Roles first: they are what the screen is consulted for. One artwork line
-  -- above them, the rest of it below.
+  -- Roles first: they are what the screen is consulted for. Two status lines
+  -- above them, the artwork detail below.
+  --
+  -- The flight log is silent by design - it writes once, at landing, and says
+  -- nothing. That leaves no way to tell it is working without pulling the card,
+  -- so it reports itself here: how it decided the heli was flying, how long,
+  -- and whether the last write landed.
   local summary, detail = assetRows()
-  local rows = { summary }
+  local rows = { summary, {
+    label = "-- FLIGHT LOG --",
+    sensor = FlightLog.lastError
+             or (FlightLog.enabled and FlightLog.path() or "off"),
+    value = FlightLog.lastError and "FAILED"
+            or string.format("%d this session", FlightLog.written),
+    status = FlightLog.lastError and "insane" or "ok",
+    important = true,
+  }, {
+    label = "  flight",
+    sensor = State.armed and ("flying, from " .. State.armSource)
+             or ("idle, arm source " .. State.armSource),
+    value = string.format("%d:%02d", math.floor(State.flightSeconds / 60),
+                          math.floor(State.flightSeconds % 60)),
+    status = State.armed and "ok" or "unbound",
+  } }
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
       label = r.label, sensor = r.sensor, status = r.status,
