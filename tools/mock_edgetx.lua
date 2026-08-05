@@ -20,6 +20,12 @@ Mock.state = {
   timers    = { [0] = { value = 0, start = 0 } },
   hasSourceValue = true,
   hasGetSensor   = true,
+  -- The radio's RTC. Set to nil to simulate a firmware without getDateTime,
+  -- which is what an unset clock looks like from Lua.
+  dateTime  = { year = 2026, mon = 1, day = 1, hour = 0, min = 0, sec = 0 },
+  writes    = 0,          -- successful file writes, so a test can prove the
+                          -- card is touched once per flight and not per frame
+  readOnly  = false,      -- a card that refuses every write
 }
 
 local byName = {}
@@ -86,6 +92,11 @@ function Mock.reset()
   Mock.state.modelName = "Test Heli"
   Mock.state.hasSourceValue = true
   Mock.state.hasGetSensor = true
+  Mock.state.dateTime = { year = 2026, mon = 1, day = 1,
+                          hour = 0, min = 0, sec = 0 }
+  Mock.state.writes = 0
+  Mock.state.readOnly = false
+  Mock.played = {}
   reindex()
 end
 
@@ -162,6 +173,7 @@ function Mock.install()
         if not content then return nil end
         return { path = path, mode = "r", pos = 1, content = content }
       end
+      if Mock.state.readOnly then return nil end
       return { path = path, mode = "w", parts = {} }
     end,
     read = function(f, n)
@@ -179,6 +191,7 @@ function Mock.install()
     close = function(f)
       if f and f.mode == "w" then
         Mock.state.files[f.path] = table.concat(f.parts)
+        Mock.state.writes = (Mock.state.writes or 0) + 1
       end
       return true
     end,
@@ -259,6 +272,12 @@ function Mock.install()
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
   _G.SOURCE, _G.BOOL = 1, 2
   _G.PREC1, _G.PREC2 = 0x10, 0x20
+  _G.getDateTime = function()
+    local t = Mock.state.dateTime
+    if not t then return nil end
+    return { year = t.year, mon = t.mon, day = t.day,
+             hour = t.hour, min = t.min, sec = t.sec }
+  end
   _G.PLAY_NOW = 1
 
   -- Audio and haptic. Recorded rather than played, so a test can assert what

@@ -115,6 +115,7 @@ end
 
 function State.resetSession()
   State.resetExtremes()
+  spunUp, belowSince = false, nil
   State.flightSeconds  = 0
   State.sessionStarted = false
   lastSecondTick = nil
@@ -166,7 +167,41 @@ end
 -- what the pilot asked for, telemetry says what the aircraft did.
 State.armSwitch = nil
 
-local function readArmed()
+-- Last resort: the rotor itself. A flight controller that publishes no ARM
+-- flags and a pilot who has not nominated a switch would otherwise never
+-- record a flight, never reset their peaks and never run the flight timer -
+-- which is the case on every non-Rotorflight stack tried so far.
+--
+-- Spinning is not quite flying, but it is the honest signal available, and it
+-- is the one a flight log wants anyway: the interesting numbers all happen
+-- while the head is turning. Hysteresis keeps a spool-down from ending the
+-- flight, and the landing delay keeps a momentary dropout from doing so.
+State.SPIN_UP        = 250     -- rpm: the head is turning, call it a flight
+State.SPIN_DOWN      = 100     -- rpm: below this, start counting down
+State.LANDED_SECONDS = 5
+
+local spunUp, belowSince = false, nil
+
+local function armedFromRotor(now)
+  local hs, ok = State.get("headspeed")
+  if not ok then
+    -- No headspeed at all is not a landing; it is a dropout. Hold the state.
+    return spunUp
+  end
+  if hs >= State.SPIN_UP then
+    spunUp, belowSince = true, nil
+  elseif spunUp and hs < State.SPIN_DOWN then
+    if belowSince == nil then belowSince = now end
+    if (now - belowSince) >= Host.seconds(State.LANDED_SECONDS) then
+      spunUp, belowSince = false, nil
+    end
+  else
+    belowSince = nil
+  end
+  return spunUp
+end
+
+local function readArmed(now)
   local flags, status = Sensors.read("armFlags")
   if status == "ok" then
     local a = armedFromFlags(flags)
@@ -175,6 +210,9 @@ local function readArmed()
   if State.armSwitch and State.armSwitch ~= 0 then
     local v = Host.read(State.armSwitch)
     if v ~= nil then return v > 0, "switch" end
+  end
+  if State.valid("headspeed") or spunUp then
+    return armedFromRotor(now or Host.now()), "rotor"
   end
   return false, "none"
 end
@@ -341,8 +379,15 @@ function State.service(now, opts)
   RF2.service(now)
   State.linkConnected = RF2.connected
 
+  for i = 1, #Roles.order do
+    sampleRole(Roles.order[i])
+  end
+  deriveFuel()
+  derivePower()
+
+  -- After sampling, because the rotor fallback reads headspeed.
   local wasArmed = State.armed
-  local armed, source = readArmed()
+  local armed, source = readArmed(now)
   State.armed = armed
   State.armSource = source
 
@@ -358,12 +403,6 @@ function State.service(now, opts)
     -- deferred or retried.
     State.disarmPending = true
   end
-
-  for i = 1, #Roles.order do
-    sampleRole(Roles.order[i])
-  end
-  deriveFuel()
-  derivePower()
 
   updateFlightTimer(now)
   return true

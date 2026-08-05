@@ -71,6 +71,61 @@ unbound. Use the scroll wheel to page through the list on the smaller screen.
 
 This is the first place to look when a panel reads `--`.
 
+## Alerts
+
+**Audio + Vibe Alerts** is on by default. Four conditions fire:
+
+| | Fires at | Clears at | Says |
+|---|---|---|---|
+| Cell voltage | 3.40 V | 3.50 V | speaks the reading |
+| ESC temperature | 110 °C | 102 °C | speaks the reading |
+| Governor fault | THR-OFF, LOST-HS, AUTOROT | recovery | buzz only |
+| Link | lost, or quality 30 | 45 | buzz only |
+
+Readings are spoken through the radio's own number vocabulary, so there is no
+sound file to install and you hear them in whatever language the radio is set
+to. A sounding alert also names itself in the bottom strip, since the radio
+may be muted.
+
+Alerts clear at a different value from the one that triggers them, repeat on a
+timer rather than on every frame, and stay silent for the first four seconds
+of telemetry. Those three rules are what stop a cell sagging across the line
+under load from alarming on every rotor beat.
+
+They sound while another screen is in front, and the **Hold Switch** silences
+them.
+
+**Test Alert** sounds one on demand — that is the pre-flight check that the
+volume is up and the haptic is on. It speaks the live cell voltage, so it also
+confirms the right sensor is bound.
+
+Thresholds are configurable; see `docs/sensors.cfg.example`.
+
+## Flight log
+
+**Log Flights to SD** is on by default. One CSV line per flight, written once,
+when the flight ends:
+
+```
+date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct
+2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22
+```
+
+It lands in the widget folder as `flights.csv`, opens in any spreadsheet, and
+keeps the most recent 200 flights. A missing reading is left blank rather than
+written as zero, because a column of zeroes that were really "no sensor"
+averages into a lie.
+
+Anything under 20 seconds is not logged — that is a spool-up test, not a
+flight.
+
+A flight starts and ends from the flight controller's ARM flags where they
+exist. Where they do not, ZelionDash falls back to the **Arm Switch** option
+if you have set one, and failing that to the rotor itself: above 250 rpm is a
+flight, and it ends five seconds after the head drops below 100. That last
+fallback is what makes the log, the flight timer and the session peaks work on
+a non-Rotorflight stack.
+
 ## Rotorflight RF Tool integration (optional)
 
 If Rotorflight's **RF Tool** widget is installed, ZelionDash uses it for two

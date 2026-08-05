@@ -149,6 +149,23 @@ function Host.rssi()
   return tonumber(v)
 end
 
+-- The radio's RTC. A flight log with no date is a list of numbers in an
+-- unknown order, so fall back to something obviously wrong rather than
+-- something plausibly wrong: 1970 in a spreadsheet reads as "the clock was
+-- not set", which is exactly what happened.
+function Host.dateTime()
+  local fn = g("getDateTime")
+  if type(fn) == "function" then
+    local ok, t = pcall(fn)
+    if ok and type(t) == "table" and tonumber(t.year) then
+      return { year = tonumber(t.year) or 1970, mon = tonumber(t.mon) or 1,
+               day = tonumber(t.day) or 1, hour = tonumber(t.hour) or 0,
+               min = tonumber(t.min) or 0, sec = tonumber(t.sec) or 0 }
+    end
+  end
+  return { year = 1970, mon = 1, day = 1, hour = 0, min = 0, sec = 0 }
+end
+
 --------------------------------------------------------------------------
 -- Audio and haptic
 --------------------------------------------------------------------------

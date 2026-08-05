@@ -16,6 +16,7 @@ local Sensors = ZD.Sensors
 local RF2     = ZD.RF2
 local State   = ZD.State
 local Alerts  = ZD.Alerts
+local FlightLog = ZD.FlightLog
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
 
@@ -240,6 +241,7 @@ function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
   Alerts.enabled = not (options and options.Alerts == 0)
+  FlightLog.enabled = not (options and options.FlightLog == 0)
 
   -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
   -- and on again sounds another. update() is only called when the options
@@ -270,6 +272,7 @@ function Widget.refresh(widget, event, touchState)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  pcall(FlightLog.service)
   ensureScreen(widget)
 
   if Widget.showSensors then
@@ -293,6 +296,9 @@ function Widget.background(widget)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  -- Logged from here too: a flight can end while the pilot is on another
+  -- screen, and an unwritten flight is lost the moment the model changes.
+  pcall(FlightLog.service)
 end
 
 Widget.options = {
@@ -301,6 +307,7 @@ Widget.options = {
   { "SensorMap",  BOOL,   0 },
   { "Alerts",     BOOL,   1 },
   { "TestAlert",  BOOL,   0 },
+  { "FlightLog",  BOOL,   1 },
 }
 
 Widget.OPTION_LABELS = {
@@ -309,6 +316,7 @@ Widget.OPTION_LABELS = {
   SensorMap  = "Show Sensor Map",
   Alerts     = "Audio + Vibe Alerts",
   TestAlert  = "Test Alert (toggle)",
+  FlightLog  = "Log Flights to SD",
 }
 
 function Widget.translate(name)

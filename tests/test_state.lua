@@ -41,11 +41,59 @@ H.test("odd ARM values are armed, even are not", function()
   H.falsy(ZD.State.armed, "4 does not have bit 0 set")
 end)
 
-H.test("no ARM telemetry leaves the widget disarmed", function()
-  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1800) end)
+H.test("nothing at all leaves the widget disarmed", function()
+  local ZD = fresh()
   run(ZD, 0.3)
   H.falsy(ZD.State.armed)
   H.eq(ZD.State.armSource, "none")
+end)
+
+H.group("state: arming from the rotor")
+
+-- Without this, a flight controller that publishes no ARM flags never records
+-- a flight, never resets its peaks and never runs the flight timer - which is
+-- every non-Rotorflight stack tried so far.
+
+H.test("a turning head counts as a flight when nothing better exists", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1800) end)
+  run(ZD, 0.3)
+  H.truthy(ZD.State.armed)
+  H.eq(ZD.State.armSource, "rotor")
+end)
+
+H.test("a stationary rotor does not", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  run(ZD, 2)
+  H.falsy(ZD.State.armed, "a powered heli on the bench is not flying")
+end)
+
+H.test("ARM telemetry always wins over the rotor", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Hspd", 18, 1800)
+    Mock.addSensor("ARM", nil, 0)
+  end)
+  run(ZD, 0.3)
+  H.falsy(ZD.State.armed, "the flight controller said no")
+  H.eq(ZD.State.armSource, "telemetry")
+end)
+
+H.test("spooling down does not end the flight until it stays down", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1800) end)
+  run(ZD, 1)
+  H.truthy(ZD.State.armed)
+  Mock.setSensor("Hspd", 60)          -- autorotation, or a bounced landing
+  run(ZD, 3)
+  H.truthy(ZD.State.armed, "still counting")
+  run(ZD, 4)
+  H.falsy(ZD.State.armed, "and then it is over")
+end)
+
+H.test("a telemetry dropout is not a landing", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 1800) end)
+  run(ZD, 1)
+  Mock.removeSensor("Hspd")
+  run(ZD, 20)
+  H.truthy(ZD.State.armed, "losing the sensor says nothing about the rotor")
 end)
 
 H.group("state: session extremes")

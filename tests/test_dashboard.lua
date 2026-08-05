@@ -98,6 +98,10 @@ end)
 
 H.test("sag is the drop from the flight's best cell voltage", function()
   local ZD = boot(800, 480, flying)      -- starts at 3.94
+  -- The rotor is turning in this fixture, so the first service pass arms and
+  -- resets the extremes. Sag is measured from the best voltage seen *during*
+  -- the flight, so let one pass land after that.
+  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
   Mock.setSensor("Vcel", 3.62)
   Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
   ZD.Dashboard.build()
