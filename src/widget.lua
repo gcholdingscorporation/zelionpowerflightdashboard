@@ -336,7 +336,7 @@ Widget.OPTION_LABELS = {
   SensorMap  = "Show Sensor Map",
   Alerts     = "Audio + Vibe Alerts",
   TestAlert  = "Test Alert (toggle)",
-  FlightLog  = "Log Flights to SD",
+  FlightLog  = "Log Flights",
 }
 
 function Widget.translate(name)

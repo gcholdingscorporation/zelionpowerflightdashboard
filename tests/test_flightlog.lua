@@ -6,7 +6,7 @@
 
 return function(H, Mock, Loader)
 
-local PATH = "/WIDGETS/ZelionDash/flights.csv"
+local PATH = "/LOGS/zeliondash.csv"
 
 local function fresh(setup)
   Mock.reset()

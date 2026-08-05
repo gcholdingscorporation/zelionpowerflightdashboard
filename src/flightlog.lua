@@ -24,13 +24,23 @@ local State = ZD.State
 local FlightLog = {}
 ZD.FlightLog = FlightLog
 
-FlightLog.FILE = "flights.csv"
+-- /LOGS/ is where EdgeTX keeps its own telemetry CSVs, so it is where a pilot
+-- already looks and where a file manager already points. It also survives
+-- reinstalling the widget, which the widget's own folder does not - copying a
+-- new build over the top would take the flight history with it.
+--
+-- "SD card" is the wrong word for this and has been all along: EdgeTX presents
+-- one path namespace whether the storage is a card or internal flash, and Lua
+-- cannot tell the difference. It is just the radio's storage.
+FlightLog.DIR      = "/LOGS/"
+FlightLog.FILE     = "zeliondash.csv"
+FlightLog.FALLBACK = nil       -- set if /LOGS/ turns out not to be writable
 
 -- Below this a "flight" is a spool-up test, a bench run, or a bounced start.
 -- Logging those buries the real ones.
 FlightLog.MIN_SECONDS = 20
 
--- An SD card is not infinite and nobody reads the five-hundredth flight back.
+-- Storage is not infinite and nobody reads the five-hundredth flight back.
 -- Oldest records fall off the top; the header always survives.
 FlightLog.MAX_RECORDS = 200
 
@@ -44,7 +54,17 @@ FlightLog.written    = 0      -- records written this session
 FlightLog.skipped    = 0      -- flights too short to bother with
 
 function FlightLog.path()
-  return Host.widgetDir() .. FlightLog.FILE
+  if FlightLog.FALLBACK then return FlightLog.FALLBACK end
+  return FlightLog.DIR .. FlightLog.FILE
+end
+
+-- If /LOGS/ cannot be written - a radio whose firmware lays things out
+-- differently, or a folder that simply is not there - fall back to the widget's
+-- own folder rather than losing the flight. Tried once, then remembered, so a
+-- failing write is not retried on every landing.
+local function fallBack()
+  if FlightLog.FALLBACK then return end
+  FlightLog.FALLBACK = Host.widgetDir() .. FlightLog.FILE
 end
 
 --------------------------------------------------------------------------
@@ -120,7 +140,19 @@ function FlightLog.append(line)
   records[#records + 1] = line
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
+
+  Host.mkdir(FlightLog.DIR)      -- no-op when it already exists
   local ok = Host.writeFile(FlightLog.path(), body)
+  if not ok and not FlightLog.FALLBACK then
+    fallBack()
+    -- Re-read: the fallback location may already hold a history of its own.
+    records = FlightLog.read()
+    records[#records + 1] = line
+    while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
+    body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
+    ok = Host.writeFile(FlightLog.path(), body)
+  end
+
   if ok then
     FlightLog.lastWrite = line
     FlightLog.written = FlightLog.written + 1
@@ -167,6 +199,7 @@ end
 function FlightLog.reset()
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
+  FlightLog.FALLBACK = nil
 end
 
 return FlightLog

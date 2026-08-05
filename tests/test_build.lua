@@ -383,7 +383,7 @@ H.test("the flight log reports itself, since it is otherwise silent", function()
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
   H.truthy(string.find(t, "FLIGHT LOG", 1, true))
-  H.truthy(string.find(t, "flights.csv", 1, true), "and where it writes")
+  H.truthy(string.find(t, "zeliondash.csv", 1, true), "and where it writes")
   H.truthy(string.find(t, "flying, from rotor", 1, true),
            "and how it decided the heli is flying")
 end)

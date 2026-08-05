@@ -30,7 +30,7 @@ size still lands in the nearest sensible density class.
 
 ## Installing
 
-Copy the built widget onto the radio's SD card:
+Copy the built widget onto the radio's storage:
 
 ```
 /WIDGETS/ZelionDash/main.lua
@@ -103,16 +103,26 @@ Thresholds are configurable; see `docs/sensors.cfg.example`.
 
 ## Flight log
 
-**Log Flights to SD** is on by default. One CSV line per flight, written once,
-when the flight ends:
+**Log Flights** is on by default. One CSV line per flight, written once, when
+the flight ends:
 
 ```
 date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct
 2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22
 ```
 
-It lands in the widget folder as `flights.csv`, opens in any spreadsheet, and
-keeps the most recent 200 flights. A missing reading is left blank rather than
+It lands at **`/LOGS/zeliondash.csv`**, next to EdgeTX's own telemetry logs,
+opens in any spreadsheet, and keeps the most recent 200 flights. That location
+survives reinstalling the widget, which the widget's own folder does not.
+
+If `/LOGS/` cannot be written it falls back to the widget folder rather than
+losing the flight. Either way the sensor map's `-- FLIGHT LOG --` line shows
+the path actually in use.
+
+Note that "SD card" is the wrong word for any of this: EdgeTX presents one path
+namespace whether the radio's storage is a card or internal flash, and a Lua
+script cannot tell the difference. To get the file off, put the radio into USB
+storage mode, or browse to it on the radio itself. A missing reading is left blank rather than
 written as zero, because a column of zeroes that were really "no sensor"
 averages into a lie.
 
@@ -185,7 +195,7 @@ lua5.4 tests/run.lua      # run the test suite
 src/       widget sources, one file per layer
 tools/     build script, desktop EdgeTX mock, module loader
 tests/     test suite (runs against both src/ and the built artifact)
-dist/      the deployable widget — copy this to the SD card
+dist/      the deployable widget — copy this to the radio
 docs/      configuration reference
 ```
 
