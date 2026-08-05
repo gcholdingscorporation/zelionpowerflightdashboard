@@ -2599,18 +2599,21 @@ local function buildRightColumn()
   -- on the wide screen too: "CURRENT A" is 88px of tile and TINSIZE is 17px
   -- tall, so it ran off its own panel.
   local defs = { "CURR A", "ESC °C", "BEC V" }
+  -- Centred, like the governor above them: three narrow tiles of one reading
+  -- each read as a row, and a left-aligned value drifts away from its own
+  -- label as the reading changes width.
   local tileFont = roomy and F.large or F.mid
   V.tiles = {}
   for i = 1, 3 do
     local t = L.tiles[i]
     local ty = t.y + (roomy and 6 or 4)
     panel(t, Theme.panel, Theme.panelBr)
-    label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim)
+    label(t.x + 6, ty, t.w - 12, defs[i], F.tiny, Theme.dim, ALIGN_CENTER)
     V.tiles[i] = {
       value = label(t.x + 6, ty + fh(F.tiny) + (roomy and 4 or 2), t.w - 12, "",
-                    tileFont, Theme.ink),
+                    tileFont, Theme.ink, ALIGN_CENTER),
       foot  = label(t.x + 6, t.y + t.h - fh(F.tiny) - (roomy and 6 or 4),
-                    t.w - 12, "", F.tiny, Theme.peak),
+                    t.w - 12, "", F.tiny, Theme.peak, ALIGN_CENTER),
     }
   end
 
