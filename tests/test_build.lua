@@ -275,6 +275,24 @@ H.test("alerts sound while another screen is in front", function()
   H.truthy(#Mock.played > 0, "still audible off-screen")
 end)
 
+H.test("the test option sounds one alert per toggle, not a siren", function()
+  local def, widget = boot(800, 480, nil, flying)
+  def.refresh(widget, 0, nil)
+  Mock.played = {}
+
+  def.update(widget, { TestAlert = 1 })
+  local afterOn = #Mock.played
+  H.truthy(afterOn > 0, "switching it on sounds one")
+
+  -- update() firing again with the option unchanged must not re-sound it.
+  def.update(widget, { TestAlert = 1 })
+  H.eq(#Mock.played, afterOn, "and only one")
+
+  def.update(widget, { TestAlert = 0 })
+  def.update(widget, { TestAlert = 1 })
+  H.truthy(#Mock.played > afterOn, "off and on again sounds another")
+end)
+
 H.test("the option switches them off", function()
   local def, widget = boot(800, 480, { Alerts = 0 }, flying)
   Mock.setSensor("Vcel", 3.10)

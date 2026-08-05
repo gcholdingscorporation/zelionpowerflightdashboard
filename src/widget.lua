@@ -240,6 +240,14 @@ function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
   Alerts.enabled = not (options and options.Alerts == 0)
+
+  -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
+  -- and on again sounds another. update() is only called when the options
+  -- change, but guarding on the transition costs nothing and means a firmware
+  -- that calls it more often cannot turn this into a siren.
+  local test = (options and options.TestAlert == 1) or false
+  if test and not Widget.lastTestOption then pcall(Alerts.selfTest) end
+  Widget.lastTestOption = test
   -- There used to be a Level option here, stepping the renderer down one
   -- construct at a time. It existed only to bisect the emergency-mode reboot
   -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
@@ -292,6 +300,7 @@ Widget.options = {
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
   { "Alerts",     BOOL,   1 },
+  { "TestAlert",  BOOL,   0 },
 }
 
 Widget.OPTION_LABELS = {
@@ -299,6 +308,7 @@ Widget.OPTION_LABELS = {
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
   Alerts     = "Audio + Vibe Alerts",
+  TestAlert  = "Test Alert (toggle)",
 }
 
 function Widget.translate(name)

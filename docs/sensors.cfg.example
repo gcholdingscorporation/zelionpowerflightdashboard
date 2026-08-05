@@ -97,7 +97,9 @@
 #
 # alertEsc works the same way, clearing 8 degrees below the trigger.
 #
-# Alerts can be switched off entirely in the widget settings.
+# Alerts can be switched off entirely in the widget settings, and "Test Alert"
+# there sounds one on demand - so checking that the buzzer and the voice work
+# does not mean editing a threshold here and editing it back afterwards.
 #
 # [battery]
 # alertCell = 3.40

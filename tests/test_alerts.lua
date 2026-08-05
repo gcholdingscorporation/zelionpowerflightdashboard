@@ -206,6 +206,42 @@ H.test("a radio with no haptic or speaker does not fault", function()
   H.truthy(ok, "an alert that cannot be heard must not raise")
 end)
 
+H.group("alerts: self test")
+
+H.test("sounds one alert on demand, without a flat pack", function()
+  -- The alternative was editing a threshold on the SD card and editing it
+  -- back afterwards, to answer "does the buzzer work".
+  local ZD = fresh(function() flying(3.90) end)
+  run(ZD, 10)
+  H.eq(#Mock.played, 0, "nothing is actually wrong")
+  ZD.Alerts.selfTest()
+  H.truthy(haptics() > 0, "felt")
+  H.eq(Mock.spokenCount(), 1, "and heard")
+end)
+
+H.test("speaks the live reading, so it proves the binding too", function()
+  local ZD = fresh(function() flying(3.77) end)
+  run(ZD, 6)
+  ZD.Alerts.selfTest()
+  H.eq(Mock.spokenValues()[1], 3.77)
+end)
+
+H.test("works on a bench with no telemetry at all", function()
+  local ZD = fresh()
+  ZD.Alerts.selfTest()
+  H.truthy(#Mock.played > 0, "a pre-flight check cannot require a heli")
+  H.eq(Mock.spokenValues()[1], 3.40, "falls back to the configured threshold")
+end)
+
+H.test("does not disturb the real alerts", function()
+  local ZD = fresh(function() flying(3.90) end)
+  run(ZD, 6)
+  ZD.Alerts.selfTest()
+  Mock.played = {}
+  run(ZD, 30)
+  H.eq(#Mock.played, 0, "still nothing wrong")
+end)
+
 H.test("reports what is currently sounding", function()
   local ZD = fresh(function()
     flying(3.90)

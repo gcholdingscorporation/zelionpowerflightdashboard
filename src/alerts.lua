@@ -136,6 +136,26 @@ local function fire(def)
   Alerts.count = Alerts.count + 1
 end
 
+-- Fires one alert on demand, so "are the alerts working" can be answered
+-- without waiting for a flat pack or editing a threshold on the SD card and
+-- editing it back afterwards. Also the honest pre-flight check: it proves the
+-- volume is up and the haptic is on, which are radio settings this widget has
+-- no way to see.
+--
+-- Speaks the live cell voltage when there is one, so the answer includes
+-- "and it is reading the right sensor".
+function Alerts.selfTest()
+  local def = DEFS[1]
+  local h = def.haptic
+  for _ = 1, (h[3] or 1) do Host.playHaptic(h[1], h[2], Host.PLAY_NOW) end
+  local v = State.valid("cellVoltage")
+            and State.num("cellVoltage") or cellLow()
+  Host.playNumber(math.floor(v * 100 + 0.5), Host.UNIT_VOLTS, Host.PREC2)
+  Alerts.lastSpoken = "test"
+  Alerts.count = Alerts.count + 1
+  return true
+end
+
 function Alerts.reset()
   state = {}
   liveSince = nil
