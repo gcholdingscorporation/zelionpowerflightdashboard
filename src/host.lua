@@ -584,7 +584,11 @@ Host.MKDIR_OK, Host.MKDIR_EXISTS = 0, 8
 
 function Host.mkdir(path)
   if type(mkdirFn) ~= "function" then return false end
-  path = tostring(path or ""):gsub("/+$", "")
+  -- string.gsub(s, ...) rather than s:gsub(...). EdgeTX registers `string` as
+  -- a plain table without the metatable that makes method syntax work, so
+  -- indexing a string raises on the radio and nowhere else. This one line is
+  -- what "attempt to index a string value" was, and it took a flight with it.
+  path = string.gsub(tostring(path or ""), "/+$", "")
   if path == "" then return false end
   local ok, res = pcall(mkdirFn, path)
   if not ok then return false end

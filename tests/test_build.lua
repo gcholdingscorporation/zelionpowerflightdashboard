@@ -41,6 +41,50 @@ local function flying()
   Mock.addSensor("Gov",  nil, 4)
 end
 
+H.group("build: things the radio cannot do")
+
+-- EdgeTX registers `string` as a plain table and never calls luaopen_string,
+-- so strings have no metatable and `s:gsub(...)` raises "attempt to index a
+-- string value". Desktop Lua sets that metatable, so nothing here or in the
+-- mock can catch it by running the code - it works everywhere except the one
+-- place it matters. A scan of the shipped file is the only honest test.
+--
+-- Cost of learning this the other way: a flight lost to Host.mkdir doing
+-- tostring(path):gsub("/+$", "") on the first line that touched the card.
+
+H.test("no string method syntax survives into the build", function()
+  -- Mock.realIo, not io: by now the mock has swapped _G.io for its virtual
+  -- filesystem and the built file is on the actual disk.
+  local realIo = Mock.realIo or io
+  local f = realIo.open(DIST, "r")
+  H.truthy(f, "built file is readable")
+  local src = f:read("*a")
+  f:close()
+
+  local methods = "gsub gmatch find sub lower upper format rep len byte match reverse"
+  local offenders = {}
+
+  -- Line by line, with comments stripped: the prose explaining why this rule
+  -- exists is full of the very syntax it bans, and a checker that flags its
+  -- own rationale gets switched off.
+  local n = 0
+  for line in string.gmatch(src, "[^\n]*") do
+    n = n + 1
+    local code = string.gsub(line, "%-%-.*$", "")
+    local pos = 1
+    while true do
+      local s, e, name = string.find(code, "[%w_%)\"'%]]:(%a+)%(", pos)
+      if not s then break end
+      if string.find(methods, name, 1, true) then
+        offenders[#offenders + 1] = string.format("line %d: :%s(", n, name)
+      end
+      pos = e
+    end
+  end
+  H.eq(#offenders, 0,
+       "use string." .. "fn(s, ...) instead -- " .. table.concat(offenders, ", "))
+end)
+
 H.group("build: artifact")
 
 H.test("exports the EdgeTX widget interface", function()

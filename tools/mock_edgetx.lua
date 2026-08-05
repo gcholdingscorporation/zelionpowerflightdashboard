@@ -8,6 +8,12 @@ local Mock = {}
 
 local realOs = os
 
+-- Captured at load, before any install. Taking it inside install() meant the
+-- second install captured the first one's virtual filesystem, and a test that
+-- wanted a file off the actual disk got nil.
+local realIo = io
+Mock.realIo = realIo
+
 Mock.state = {
   time      = 0,          -- 10ms ticks
   modelName = "Test Heli",
@@ -170,7 +176,6 @@ function Mock.install()
 
   -- Virtual filesystem. Handles are tables so io.read/io.write can carry a
   -- cursor without touching the real disk.
-  local realIo = io
 
   -- A path inside a folder that is not there does not open and does not
   -- return nil either - the firmware raises. Modelled because every io.open

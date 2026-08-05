@@ -126,8 +126,10 @@ end
 -- Commas and quotes in a model name would otherwise shift every column after
 -- it. Quoting is the CSV answer; doubling the quote is how CSV escapes one.
 local function field(s)
-  s = tostring(s or ""):gsub('"', '""')
-  if s:find('[,"\n]') then return '"' .. s .. '"' end
+  -- Function form throughout: EdgeTX has no string metatable, so s:gsub()
+  -- raises on the radio. See Host.mkdir.
+  s = string.gsub(tostring(s or ""), '"', '""')
+  if string.find(s, '[,"\n]') then return '"' .. s .. '"' end
   return s
 end
 
@@ -174,7 +176,7 @@ end
 
 local function splitLines(text)
   local out = {}
-  for line in tostring(text or ""):gmatch("[^\r\n]+") do
+  for line in string.gmatch(tostring(text or ""), "[^\r\n]+") do
     if line ~= "" then out[#out + 1] = line end
   end
   return out

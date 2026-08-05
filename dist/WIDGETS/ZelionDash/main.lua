@@ -595,7 +595,11 @@ Host.MKDIR_OK, Host.MKDIR_EXISTS = 0, 8
 
 function Host.mkdir(path)
   if type(mkdirFn) ~= "function" then return false end
-  path = tostring(path or ""):gsub("/+$", "")
+  -- string.gsub(s, ...) rather than s:gsub(...). EdgeTX registers `string` as
+  -- a plain table without the metatable that makes method syntax work, so
+  -- indexing a string raises on the radio and nowhere else. This one line is
+  -- what "attempt to index a string value" was, and it took a flight with it.
+  path = string.gsub(tostring(path or ""), "/+$", "")
   if path == "" then return false end
   local ok, res = pcall(mkdirFn, path)
   if not ok then return false end
@@ -2272,8 +2276,10 @@ end
 -- Commas and quotes in a model name would otherwise shift every column after
 -- it. Quoting is the CSV answer; doubling the quote is how CSV escapes one.
 local function field(s)
-  s = tostring(s or ""):gsub('"', '""')
-  if s:find('[,"\n]') then return '"' .. s .. '"' end
+  -- Function form throughout: EdgeTX has no string metatable, so s:gsub()
+  -- raises on the radio. See Host.mkdir.
+  s = string.gsub(tostring(s or ""), '"', '""')
+  if string.find(s, '[,"\n]') then return '"' .. s .. '"' end
   return s
 end
 
@@ -2320,7 +2326,7 @@ end
 
 local function splitLines(text)
   local out = {}
-  for line in tostring(text or ""):gmatch("[^\r\n]+") do
+  for line in string.gmatch(tostring(text or ""), "[^\r\n]+") do
     if line ~= "" then out[#out + 1] = line end
   end
   return out
