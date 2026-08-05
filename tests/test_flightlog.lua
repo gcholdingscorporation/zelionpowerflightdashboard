@@ -198,6 +198,70 @@ H.test("a card that will not take the write does not raise", function()
   H.truthy(ZD.FlightLog.lastError, "but it should say so")
 end)
 
+H.group("flightlog: one bad field must not cost the flight")
+
+-- A record is written once, at landing, and there is no second chance at it.
+-- On hardware the whole record failed to format and took the flight with it,
+-- which is the failure this group exists to make impossible.
+
+H.test("a value with no integer representation blanks its column only", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Tesc", math.huge)      -- a glitched sensor
+  run(ZD, 2)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  local l = lines()
+  H.eq(#l, 2, "the flight was still written")
+  H.truthy(string.find(l[2], "1850", 1, true), "and the good columns survived")
+end)
+
+H.test("a clock that returns nonsense still dates the row", function()
+  local ZD = fresh(function()
+    loaded()
+    Mock.state.dateTime = { year = "not a year", mon = nil, day = 1 / 0 }
+  end)
+  flight(ZD, 40)
+  local l = lines()
+  H.eq(#l, 2, "written anyway")
+  H.truthy(string.find(l[2], "1970-01-01", 1, true), "with the honest fallback")
+end)
+
+H.test("a clock that raises does not lose the flight", function()
+  local ZD = fresh(loaded)
+  _G.getDateTime = function() error("no RTC on this radio") end
+  local ok = pcall(flight, ZD, 40)
+  H.truthy(ok)
+  H.eq(#lines(), 2, "the flight is what matters, not the timestamp")
+end)
+
+H.test("switching model mid-flight abandons the flight", function()
+  -- Not a bug: a flight that spans two models is not a flight, and the peaks
+  -- belong to whichever aircraft produced them. Pinned because it is
+  -- surprising, and because it looks identical to a lost record.
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.state.modelName = "SOMETHING ELSE"
+  run(ZD, 1)
+  H.truthy(ZD.State.flightSeconds < 5, "the session started over")
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#lines(), 0, "and nothing was written for the abandoned one")
+end)
+
+H.test("the real error is reported, not a generic one", function()
+  -- "could not format the record" cost a round trip to hardware and said
+  -- nothing about what had gone wrong.
+  local ZD = fresh(loaded)
+  ZD.FlightLog.record = function() error("something specific broke") end
+  flight(ZD, 40)
+  H.truthy(ZD.FlightLog.lastError, "reported")
+  H.truthy(string.find(ZD.FlightLog.lastError, "something specific", 1, true),
+           "and names what happened")
+end)
+
 H.test("no clock set is obvious rather than plausible", function()
   local ZD = fresh(function()
     loaded()

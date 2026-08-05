@@ -2228,9 +2228,30 @@ end
 -- battery percentage comes off a sigmoid, so it is 96.37 rather than 96, and
 -- the whole record was failing to format because of it.
 local function num(v, fmt)
+  v = tonumber(v)
   if v == nil then return "" end
-  if fmt == "%d" then return string.format("%d", math.floor(v + 0.5)) end
-  return string.format(fmt, v)
+  if fmt == "%d" then
+    -- math.floor can still hand back a float for a value with no integer
+    -- representation - an infinity, or something enormous off a glitched
+    -- sensor - and Lua 5.3's "%d" refuses those. Better a blank column than a
+    -- lost flight.
+    local n = math.floor(v + 0.5)
+    if n ~= n or n == math.huge or n == -math.huge then return "" end
+    local ok, s = pcall(string.format, "%d", n)
+    return ok and s or ""
+  end
+  local ok, s = pcall(string.format, fmt, v)
+  return ok and s or ""
+end
+
+-- Each field is built independently. A record is written once, at landing, and
+-- there is no second chance at it: one column that will not format must cost
+-- that column and nothing else. The whole record failing to format is exactly
+-- what happened on hardware, and it took the flight with it.
+local function safe(fn)
+  local ok, v = pcall(fn)
+  if not ok or v == nil then return "" end
+  return tostring(v)
 end
 
 -- Commas and quotes in a model name would otherwise shift every column after
@@ -2241,20 +2262,40 @@ local function field(s)
   return s
 end
 
+-- Date parts are coerced individually. getDateTime is the radio's RTC and its
+-- fields have to survive being absent, floating point, or something a
+-- particular firmware decided to return instead.
+local function clockPart(t, key, fallback)
+  local v = math.floor(tonumber(t and t[key]) or fallback)
+  if v ~= v or v == math.huge or v == -math.huge then return fallback end
+  return v
+end
+
 function FlightLog.record()
-  local t = Host.dateTime()
+  local ok, dt = pcall(Host.dateTime)
+  local t = (ok and type(dt) == "table") and dt or {}
+
   return table.concat({
-    string.format("%04d-%02d-%02d", t.year, t.mon, t.day),
-    string.format("%02d:%02d:%02d", t.hour, t.min, t.sec),
-    field(State.modelName or Host.modelName()),
-    num(State.flightSeconds, "%d"),
-    num(State.max("headspeed"), "%d"),
-    num(State.min("cellVoltage"), "%.2f"),
-    num(State.min("packVoltage"), "%.2f"),
-    num(State.max("current"), "%.1f"),
-    num(State.max("escTemperature"), "%d"),
-    num(State.max("capacity"), "%d"),
-    num(State.valid("batteryPercent") and State.num("batteryPercent") or nil, "%d"),
+    safe(function()
+      return string.format("%04d-%02d-%02d", clockPart(t, "year", 1970),
+                           clockPart(t, "mon", 1), clockPart(t, "day", 1))
+    end),
+    safe(function()
+      return string.format("%02d:%02d:%02d", clockPart(t, "hour", 0),
+                           clockPart(t, "min", 0), clockPart(t, "sec", 0))
+    end),
+    safe(function() return field(State.modelName or Host.modelName()) end),
+    safe(function() return num(State.flightSeconds, "%d") end),
+    safe(function() return num(State.max("headspeed"), "%d") end),
+    safe(function() return num(State.min("cellVoltage"), "%.2f") end),
+    safe(function() return num(State.min("packVoltage"), "%.2f") end),
+    safe(function() return num(State.max("current"), "%.1f") end),
+    safe(function() return num(State.max("escTemperature"), "%d") end),
+    safe(function() return num(State.max("capacity"), "%d") end),
+    safe(function()
+      if not State.valid("batteryPercent") then return "" end
+      return num(State.num("batteryPercent"), "%d")
+    end),
   }, ",")
 end
 
@@ -2337,7 +2378,10 @@ function FlightLog.service()
 
   local ok, line = pcall(FlightLog.record)
   if not ok then
-    FlightLog.lastError = "could not format the record"
+    -- Carry the real message. "could not format the record" cost a round trip
+    -- to hardware and said nothing: the whole point of showing an error on the
+    -- radio is that it names what went wrong.
+    FlightLog.lastError = "fmt: " .. tostring(line)
     return false
   end
   local wrote
