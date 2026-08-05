@@ -558,10 +558,30 @@ function Host.writeFile(path, content)
   return false
 end
 
+-- EdgeTX's mkdir returns a FatFs result code rather than raising: 0 is
+-- created, 8 is "already there" - both of which mean the directory now exists.
+-- Trusting pcall's success instead reports victory on every failure, which is
+-- the same mistake that made an atomic file write silently do nothing.
+--
+-- A trailing slash is FR_INVALID_NAME to f_mkdir, so strip it. Callers keep
+-- their paths in "/LOGS/" form because that is what concatenates with a
+-- filename, and would otherwise all have to remember this.
+--
+-- mkdir arrived in EdgeTX 2.11. Older firmware returns false here, which is
+-- why anything that needs a directory also needs a fallback.
+Host.MKDIR_OK, Host.MKDIR_EXISTS = 0, 8
+
 function Host.mkdir(path)
   if type(mkdirFn) ~= "function" then return false end
-  local ok = pcall(mkdirFn, path)
-  return ok
+  path = tostring(path or ""):gsub("/+$", "")
+  if path == "" then return false end
+  local ok, res = pcall(mkdirFn, path)
+  if not ok then return false end
+  res = tonumber(res)
+  -- A firmware that returns nothing at all gets the benefit of the doubt: the
+  -- write that follows is the real test either way.
+  if res == nil then return true end
+  return res == Host.MKDIR_OK or res == Host.MKDIR_EXISTS
 end
 
 return Host

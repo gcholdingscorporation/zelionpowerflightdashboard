@@ -569,10 +569,30 @@ function Host.writeFile(path, content)
   return false
 end
 
+-- EdgeTX's mkdir returns a FatFs result code rather than raising: 0 is
+-- created, 8 is "already there" - both of which mean the directory now exists.
+-- Trusting pcall's success instead reports victory on every failure, which is
+-- the same mistake that made an atomic file write silently do nothing.
+--
+-- A trailing slash is FR_INVALID_NAME to f_mkdir, so strip it. Callers keep
+-- their paths in "/LOGS/" form because that is what concatenates with a
+-- filename, and would otherwise all have to remember this.
+--
+-- mkdir arrived in EdgeTX 2.11. Older firmware returns false here, which is
+-- why anything that needs a directory also needs a fallback.
+Host.MKDIR_OK, Host.MKDIR_EXISTS = 0, 8
+
 function Host.mkdir(path)
   if type(mkdirFn) ~= "function" then return false end
-  local ok = pcall(mkdirFn, path)
-  return ok
+  path = tostring(path or ""):gsub("/+$", "")
+  if path == "" then return false end
+  local ok, res = pcall(mkdirFn, path)
+  if not ok then return false end
+  res = tonumber(res)
+  -- A firmware that returns nothing at all gets the benefit of the doubt: the
+  -- write that follows is the real test either way.
+  if res == nil then return true end
+  return res == Host.MKDIR_OK or res == Host.MKDIR_EXISTS
 end
 
 return Host
@@ -2163,6 +2183,24 @@ FlightLog.lastError  = nil
 FlightLog.lastWrite  = nil    -- the CSV line most recently written
 FlightLog.written    = 0      -- records written this session
 FlightLog.skipped    = 0      -- flights too short to bother with
+FlightLog.madeDir    = nil    -- whether mkdir reported the folder usable
+
+-- Why nothing has been written, in the pilot's terms. "No file appeared" has
+-- three completely different causes and they were indistinguishable: the log
+-- is off, no flight has ended yet, or the write failed. Only the last is a
+-- fault, and only the last is worth chasing.
+function FlightLog.status()
+  if not FlightLog.enabled then return "off", "off" end
+  if FlightLog.lastError then return FlightLog.lastError, "FAILED" end
+  if FlightLog.written > 0 then
+    return FlightLog.path(), string.format("%d written", FlightLog.written)
+  end
+  if FlightLog.skipped > 0 then
+    return FlightLog.path(),
+           string.format("%d too short", FlightLog.skipped)
+  end
+  return FlightLog.path(), "no flight yet"
+end
 
 function FlightLog.path()
   if FlightLog.FALLBACK then return FlightLog.FALLBACK end
@@ -2252,7 +2290,7 @@ function FlightLog.append(line)
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
 
-  Host.mkdir(FlightLog.DIR)      -- no-op when it already exists
+  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
   local ok = Host.writeFile(FlightLog.path(), body)
   if not ok and not FlightLog.FALLBACK then
     fallBack()
@@ -3744,20 +3782,25 @@ local function sensorMapRows()
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
   local summary, detail = assetRows()
+  local where, verdict = FlightLog.status()
   local rows = { summary, {
     label = "-- FLIGHT LOG --",
-    sensor = FlightLog.lastError
-             or (FlightLog.enabled and FlightLog.path() or "off"),
-    value = FlightLog.lastError and "FAILED"
-            or string.format("%d this session", FlightLog.written),
-    status = FlightLog.lastError and "insane" or "ok",
+    sensor = where,
+    value = verdict,
+    status = FlightLog.lastError and "insane"
+             or (FlightLog.written > 0 and "ok" or "unbound"),
     important = true,
   }, {
+    -- The line that says whether a flight is even being detected. Without a
+    -- flight there is nothing to write, and "no file appeared" reads exactly
+    -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("flying, from " .. State.armSource)
+    sensor = State.armed and ("FLYING, from " .. State.armSource)
              or ("idle, arm source " .. State.armSource),
-    value = string.format("%d:%02d", math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60)),
+    value = string.format("%d:%02d  min %ds",
+                          math.floor(State.flightSeconds / 60),
+                          math.floor(State.flightSeconds % 60),
+                          FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
   for _, r in ipairs(sensorRows) do

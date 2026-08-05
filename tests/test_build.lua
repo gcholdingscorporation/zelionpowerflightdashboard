@@ -384,8 +384,10 @@ H.test("the flight log reports itself, since it is otherwise silent", function()
   local t = Mock.lvglText()
   H.truthy(string.find(t, "FLIGHT LOG", 1, true))
   H.truthy(string.find(t, "zeliondash.csv", 1, true), "and where it writes")
-  H.truthy(string.find(t, "flying, from rotor", 1, true),
+  H.truthy(string.find(t, "FLYING, from rotor", 1, true),
            "and how it decided the heli is flying")
+  H.truthy(string.find(t, "no flight yet", 1, true),
+           "an empty log says why, rather than looking like a failure")
 end)
 
 H.test("a failed write says so on the sensor map", function()

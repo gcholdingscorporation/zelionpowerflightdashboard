@@ -52,6 +52,24 @@ FlightLog.lastError  = nil
 FlightLog.lastWrite  = nil    -- the CSV line most recently written
 FlightLog.written    = 0      -- records written this session
 FlightLog.skipped    = 0      -- flights too short to bother with
+FlightLog.madeDir    = nil    -- whether mkdir reported the folder usable
+
+-- Why nothing has been written, in the pilot's terms. "No file appeared" has
+-- three completely different causes and they were indistinguishable: the log
+-- is off, no flight has ended yet, or the write failed. Only the last is a
+-- fault, and only the last is worth chasing.
+function FlightLog.status()
+  if not FlightLog.enabled then return "off", "off" end
+  if FlightLog.lastError then return FlightLog.lastError, "FAILED" end
+  if FlightLog.written > 0 then
+    return FlightLog.path(), string.format("%d written", FlightLog.written)
+  end
+  if FlightLog.skipped > 0 then
+    return FlightLog.path(),
+           string.format("%d too short", FlightLog.skipped)
+  end
+  return FlightLog.path(), "no flight yet"
+end
 
 function FlightLog.path()
   if FlightLog.FALLBACK then return FlightLog.FALLBACK end
@@ -141,7 +159,7 @@ function FlightLog.append(line)
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
 
-  Host.mkdir(FlightLog.DIR)      -- no-op when it already exists
+  FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
   local ok = Host.writeFile(FlightLog.path(), body)
   if not ok and not FlightLog.FALLBACK then
     fallBack()

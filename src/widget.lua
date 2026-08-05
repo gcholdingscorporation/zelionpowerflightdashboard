@@ -147,20 +147,25 @@ local function sensorMapRows()
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
   local summary, detail = assetRows()
+  local where, verdict = FlightLog.status()
   local rows = { summary, {
     label = "-- FLIGHT LOG --",
-    sensor = FlightLog.lastError
-             or (FlightLog.enabled and FlightLog.path() or "off"),
-    value = FlightLog.lastError and "FAILED"
-            or string.format("%d this session", FlightLog.written),
-    status = FlightLog.lastError and "insane" or "ok",
+    sensor = where,
+    value = verdict,
+    status = FlightLog.lastError and "insane"
+             or (FlightLog.written > 0 and "ok" or "unbound"),
     important = true,
   }, {
+    -- The line that says whether a flight is even being detected. Without a
+    -- flight there is nothing to write, and "no file appeared" reads exactly
+    -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("flying, from " .. State.armSource)
+    sensor = State.armed and ("FLYING, from " .. State.armSource)
              or ("idle, arm source " .. State.armSource),
-    value = string.format("%d:%02d", math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60)),
+    value = string.format("%d:%02d  min %ds",
+                          math.floor(State.flightSeconds / 60),
+                          math.floor(State.flightSeconds % 60),
+                          FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
   for _, r in ipairs(sensorRows) do
