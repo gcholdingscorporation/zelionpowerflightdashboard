@@ -561,6 +561,120 @@ end
 Dashboard.mode = function() return mode end
 
 --------------------------------------------------------------------------
+-- Sensor map
+--------------------------------------------------------------------------
+--
+-- Retained LVGL, like everything else on screen, because a widget that
+-- declares useLvgl gets NO immediate-mode drawing at all. LuaWidget's
+-- checkEvents calls refresh(nullptr) on the LVGL path, which leaves
+-- luaLcdBuffer null, and every lcd.draw* guards on
+-- `if (!luaLcdAllowed || !luaLcdBuffer) return 0`. This screen was written
+-- with lcd.drawText and so drew precisely nothing - the widget looked like it
+-- had vanished until the option was switched back off.
+--
+-- Rows are built once for however many fit on screen and then only have their
+-- text rewritten, so scrolling costs nothing and the object count is bounded
+-- by the screen rather than by the number of roles.
+
+local SM = { rows = {}, visible = 0 }
+
+Dashboard.sensorRows = 0
+
+function Dashboard.buildSensorMap(w, h)
+  if type(lvgl) ~= "table" then return end
+  Theme.build()
+  lvgl.clear()
+  V, SHADOW = {}, {}
+  Host.collect()
+  w = w or Host.lcdW
+  h = h or Host.lcdH
+  Theme.useMetricsFor(Host.lcdW or w)
+  mode = "sensors"
+
+  local F = Theme.font
+  local compact = w < 700
+  local pad = compact and 6 or 12
+  rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
+
+  local headerH = fh(F.small) + (compact and 4 or 8)
+  label(pad, compact and 2 or 4, math.floor(w * 0.6),
+        compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
+        F.small, Theme.steel)
+  V.smCount = label(w - pad - 160, compact and 4 or 7, 160, "",
+                    F.tiny, Theme.dim, ALIGN_RIGHT)
+  lvgl.hline({ x = 0, y = headerH, w = w, h = 1, color = Theme.rule })
+
+  local rowH    = fh(F.tiny) + (compact and 3 or 4)
+  local footerH = fh(F.tiny) + (compact and 4 or 8)
+  local listTop = headerH + (compact and 3 or 6)
+  SM.visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
+
+  -- Three columns, not four. "how" is folded into the sensor cell as a
+  -- suffix: it is worth knowing whether a binding came from the config file,
+  -- a name match or a unit guess, but not worth a column of its own once
+  -- every row costs a retained object.
+  local colRole   = pad
+  local colSensor = math.floor(w * 0.36)
+  local sensorW   = math.floor(w * 0.34)
+  local colValue  = w - pad
+
+  SM.rows = {}
+  for i = 1, SM.visible do
+    local y = listTop + (i - 1) * rowH
+    SM.rows[i] = {
+      role   = label(colRole, y, colSensor - colRole - 4, "", F.tiny, Theme.ink),
+      sensor = label(colSensor, y, sensorW, "", F.tiny, Theme.dim),
+      value  = label(colValue - 120, y, 120, "", F.tiny, Theme.dim, ALIGN_RIGHT),
+    }
+  end
+
+  local fy = h - footerH + (compact and 1 or 3)
+  V.smNote = label(pad, fy, w - pad * 2 - 90, "", F.tiny, Theme.dim)
+  V.smPage = label(w - pad - 90, fy, 90, "", F.tiny, Theme.dim, ALIGN_RIGHT)
+end
+
+-- rows: { { label, sensor, how, value, status, important }, ... }
+function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
+  if mode ~= "sensors" then return end
+  rows = rows or {}
+  Dashboard.sensorRows = #rows
+  local n = SM.visible
+  if scroll > #rows - n then scroll = math.max(0, #rows - n) end
+  if scroll < 0 then scroll = 0 end
+
+  setp(V.smCount, { text = string.format("%d bound", bound or 0) })
+  setp(V.smNote, { text = note or "", color = noteBad and Theme.crit or Theme.dim })
+  setp(V.smPage, { text = (#rows > n)
+                          and string.format("%d-%d/%d", scroll + 1,
+                                            math.min(#rows, scroll + n), #rows)
+                          or "" })
+
+  for i = 1, n do
+    local r = SM.rows[i]
+    local row = rows[i + scroll]
+    if not row then
+      setp(r.role, { text = "" }); setp(r.sensor, { text = "" })
+      setp(r.value, { text = "" })
+    else
+      local color = Theme.dim
+      if row.status == "ok" or row.status == "derived" then color = Theme.lime
+      elseif row.status == "insane" then color = Theme.crit
+      elseif row.important then color = Theme.warn end
+
+      local sensor = row.sensor or "-"
+      if row.how then sensor = sensor .. " (" .. row.how .. ")" end
+      setp(r.role,   { text = row.label or "",
+                       color = row.important and Theme.steel or Theme.ink })
+      setp(r.sensor, { text = sensor, color = color })
+      setp(r.value,  { text = row.value or "", color = color })
+    end
+  end
+  return scroll
+end
+
+function Dashboard.sensorMapVisible() return SM.visible end
+
+--------------------------------------------------------------------------
 -- Update
 --------------------------------------------------------------------------
 

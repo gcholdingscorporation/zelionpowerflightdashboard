@@ -258,18 +258,36 @@ function Mock.install()
   _G.MIDSIZE,  _G.DBLSIZE,  _G.XXLSIZE         = 0x0400, 0x0500, 0x0600
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
   _G.SOURCE, _G.BOOL = 1, 2
+  -- A widget that declares useLvgl gets NO immediate-mode drawing. EdgeTX's
+  -- LuaWidget::checkEvents calls refresh(nullptr) on that path, so luaLcdBuffer
+  -- is null, and every lcd.draw* opens with
+  --   if (!luaLcdAllowed || !luaLcdBuffer) return 0;
+  -- Letting these record while lvgl is installed is what hid a sensor map that
+  -- drew nothing at all on hardware for its entire existence: the tests
+  -- asserted on calls the radio was throwing away. So they no-op here too, and
+  -- count the attempts so a test can say so out loud.
+  Mock.immediateDrawAttempts = 0
+  local function immediate(record)
+    return function(...)
+      if Mock.lv then
+        Mock.immediateDrawAttempts = Mock.immediateDrawAttempts + 1
+        return
+      end
+      record(...)
+    end
+  end
   _G.lcd = {
     RGB = function(r, g, b) return (r or 0) * 65536 + (g or 0) * 256 + (b or 0) end,
-    drawText = function(x, y, text, flags)
+    drawText = immediate(function(x, y, text, flags)
       Mock.draws[#Mock.draws + 1] = { op = "text", x = x, y = y,
                                       text = tostring(text), flags = flags }
-    end,
-    drawFilledRectangle = function(x, y, w, h, c)
+    end),
+    drawFilledRectangle = immediate(function(x, y, w, h, c)
       Mock.draws[#Mock.draws + 1] = { op = "rect", x = x, y = y, w = w, h = h }
-    end,
-    drawLine = function(x1, y1, x2, y2)
+    end),
+    drawLine = immediate(function(x1, y1, x2, y2)
       Mock.draws[#Mock.draws + 1] = { op = "line", x = x1, y = y1 }
-    end,
+    end),
     -- Pure on the real radio too: getTextWidth plus getFontHeight, no draw
     -- buffer involved. Modelled here with the same line heights EdgeTX
     -- compiles in, and a per-character advance in the right neighbourhood, so

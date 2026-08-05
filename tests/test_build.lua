@@ -239,32 +239,81 @@ end)
 
 H.group("build: sensor map")
 
+-- These assert on LVGL objects, not on lcd.draw* calls. The screen was written
+-- in immediate mode and drew literally nothing on hardware for its entire
+-- existence - a widget that declares useLvgl gets refresh(nullptr), so every
+-- lcd.draw* returns on the null buffer. The tests passed anyway, because the
+-- mock recorded calls the radio was discarding.
+
+H.test("nothing anywhere tries to draw in immediate mode", function()
+  -- The guard against that whole class of bug returning.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  Mock.immediateDrawAttempts = 0
+  def.refresh(widget, 0, nil)
+  def.refresh(widget, 0, nil)
+  H.eq(Mock.immediateDrawAttempts, 0,
+       "lcd.draw* is a no-op on an LVGL widget - use lvgl objects")
+
+  local def2, w2 = boot(800, 480, nil, flying)
+  Mock.immediateDrawAttempts = 0
+  def2.refresh(w2, 0, nil)
+  H.eq(Mock.immediateDrawAttempts, 0, "and on the dashboard too")
+end)
+
 H.test("the option switches to the diagnostics screen", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
-  Mock.draws = {}
   def.refresh(widget, 0, nil)
-  local t = Mock.drawnText()
-  H.truthy(string.find(t, "sensor map", 1, true), "diagnostics header")
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "SENSOR MAP", 1, true), "diagnostics header")
   H.truthy(string.find(t, "Hspd", 1, true), "bound sensor listed")
+  H.truthy(string.find(t, "Headspeed", 1, true), "under its role name")
+end)
+
+H.test("switching back rebuilds the dashboard", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "SENSOR MAP", 1, true))
+
+  def.update(widget, { SensorMap = 0 })
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.falsy(string.find(t, "SENSOR MAP", 1, true), "diagnostics gone")
+  H.truthy(string.find(t, "1850", 1, true), "dashboard is back")
 end)
 
 H.test("the diagnostics list scrolls on the small screen", function()
   local def, widget = boot(480, 320, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
-  Mock.draws = {}
-  def.refresh(widget, 0, nil)
-  local first = Mock.drawnText()
-
-  Mock.draws = {}
+  local first = Mock.lvglText()
   for _ = 1, 8 do def.refresh(widget, 100, nil) end
-  H.truthy(first ~= Mock.drawnText(), "roles past the fold must be reachable")
+  H.truthy(first ~= Mock.lvglText(), "roles past the fold must be reachable")
+end)
+
+H.test("scrolling cannot run off either end of the list", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local top = Mock.lvglText()
+  for _ = 1, 40 do def.refresh(widget, 101, nil) end   -- PREV, past the start
+  H.eq(Mock.lvglText(), top, "held at the top")
+  for _ = 1, 200 do def.refresh(widget, 100, nil) end  -- NEXT, past the end
+  local bottom = Mock.lvglText()
+  for _ = 1, 20 do def.refresh(widget, 100, nil) end
+  H.eq(Mock.lvglText(), bottom, "and at the bottom")
+end)
+
+H.test("scrolling does not rebuild the screen", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local built, objects = Mock.lv.cleared, #Mock.lv.objects
+  for _ = 1, 30 do def.refresh(widget, 100, nil) end
+  H.eq(Mock.lv.cleared, built, "rows are rewritten, not recreated")
+  H.eq(#Mock.lv.objects, objects)
 end)
 
 H.test("lists the widget folder so the radio reports its own assets", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
-  Mock.draws = {}
   def.refresh(widget, 0, nil)
-  local t = Mock.drawnText()
+  local t = Mock.lvglText()
   -- "the PNGs are in the folder" and "the widget cannot load them" were
   -- indistinguishable for three rounds. The radio can just say which.
   H.truthy(string.find(t, "ASSETS", 1, true), "assets section present")
@@ -274,9 +323,8 @@ end)
 
 H.test("survives a model with no telemetry at all", function()
   local def, widget = boot(800, 480, { SensorMap = 1 })
-  Mock.draws = {}
   def.refresh(widget, 0, nil)
-  H.truthy(string.find(Mock.drawnText(), "0 bound", 1, true),
+  H.truthy(string.find(Mock.lvglText(), "0 bound", 1, true),
            "reports nothing bound rather than erroring")
 end)
 

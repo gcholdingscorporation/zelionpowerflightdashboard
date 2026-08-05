@@ -2722,6 +2722,120 @@ end
 Dashboard.mode = function() return mode end
 
 --------------------------------------------------------------------------
+-- Sensor map
+--------------------------------------------------------------------------
+--
+-- Retained LVGL, like everything else on screen, because a widget that
+-- declares useLvgl gets NO immediate-mode drawing at all. LuaWidget's
+-- checkEvents calls refresh(nullptr) on the LVGL path, which leaves
+-- luaLcdBuffer null, and every lcd.draw* guards on
+-- `if (!luaLcdAllowed || !luaLcdBuffer) return 0`. This screen was written
+-- with lcd.drawText and so drew precisely nothing - the widget looked like it
+-- had vanished until the option was switched back off.
+--
+-- Rows are built once for however many fit on screen and then only have their
+-- text rewritten, so scrolling costs nothing and the object count is bounded
+-- by the screen rather than by the number of roles.
+
+local SM = { rows = {}, visible = 0 }
+
+Dashboard.sensorRows = 0
+
+function Dashboard.buildSensorMap(w, h)
+  if type(lvgl) ~= "table" then return end
+  Theme.build()
+  lvgl.clear()
+  V, SHADOW = {}, {}
+  Host.collect()
+  w = w or Host.lcdW
+  h = h or Host.lcdH
+  Theme.useMetricsFor(Host.lcdW or w)
+  mode = "sensors"
+
+  local F = Theme.font
+  local compact = w < 700
+  local pad = compact and 6 or 12
+  rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
+
+  local headerH = fh(F.small) + (compact and 4 or 8)
+  label(pad, compact and 2 or 4, math.floor(w * 0.6),
+        compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
+        F.small, Theme.steel)
+  V.smCount = label(w - pad - 160, compact and 4 or 7, 160, "",
+                    F.tiny, Theme.dim, ALIGN_RIGHT)
+  lvgl.hline({ x = 0, y = headerH, w = w, h = 1, color = Theme.rule })
+
+  local rowH    = fh(F.tiny) + (compact and 3 or 4)
+  local footerH = fh(F.tiny) + (compact and 4 or 8)
+  local listTop = headerH + (compact and 3 or 6)
+  SM.visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
+
+  -- Three columns, not four. "how" is folded into the sensor cell as a
+  -- suffix: it is worth knowing whether a binding came from the config file,
+  -- a name match or a unit guess, but not worth a column of its own once
+  -- every row costs a retained object.
+  local colRole   = pad
+  local colSensor = math.floor(w * 0.36)
+  local sensorW   = math.floor(w * 0.34)
+  local colValue  = w - pad
+
+  SM.rows = {}
+  for i = 1, SM.visible do
+    local y = listTop + (i - 1) * rowH
+    SM.rows[i] = {
+      role   = label(colRole, y, colSensor - colRole - 4, "", F.tiny, Theme.ink),
+      sensor = label(colSensor, y, sensorW, "", F.tiny, Theme.dim),
+      value  = label(colValue - 120, y, 120, "", F.tiny, Theme.dim, ALIGN_RIGHT),
+    }
+  end
+
+  local fy = h - footerH + (compact and 1 or 3)
+  V.smNote = label(pad, fy, w - pad * 2 - 90, "", F.tiny, Theme.dim)
+  V.smPage = label(w - pad - 90, fy, 90, "", F.tiny, Theme.dim, ALIGN_RIGHT)
+end
+
+-- rows: { { label, sensor, how, value, status, important }, ... }
+function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
+  if mode ~= "sensors" then return end
+  rows = rows or {}
+  Dashboard.sensorRows = #rows
+  local n = SM.visible
+  if scroll > #rows - n then scroll = math.max(0, #rows - n) end
+  if scroll < 0 then scroll = 0 end
+
+  setp(V.smCount, { text = string.format("%d bound", bound or 0) })
+  setp(V.smNote, { text = note or "", color = noteBad and Theme.crit or Theme.dim })
+  setp(V.smPage, { text = (#rows > n)
+                          and string.format("%d-%d/%d", scroll + 1,
+                                            math.min(#rows, scroll + n), #rows)
+                          or "" })
+
+  for i = 1, n do
+    local r = SM.rows[i]
+    local row = rows[i + scroll]
+    if not row then
+      setp(r.role, { text = "" }); setp(r.sensor, { text = "" })
+      setp(r.value, { text = "" })
+    else
+      local color = Theme.dim
+      if row.status == "ok" or row.status == "derived" then color = Theme.lime
+      elseif row.status == "insane" then color = Theme.crit
+      elseif row.important then color = Theme.warn end
+
+      local sensor = row.sensor or "-"
+      if row.how then sensor = sensor .. " (" .. row.how .. ")" end
+      setp(r.role,   { text = row.label or "",
+                       color = row.important and Theme.steel or Theme.ink })
+      setp(r.sensor, { text = sensor, color = color })
+      setp(r.value,  { text = row.value or "", color = color })
+    end
+  end
+  return scroll
+end
+
+function Dashboard.sensorMapVisible() return SM.visible end
+
+--------------------------------------------------------------------------
 -- Update
 --------------------------------------------------------------------------
 
@@ -2965,17 +3079,15 @@ local function readZone(widget)
 end
 
 --------------------------------------------------------------------------
--- Diagnostics screen (immediate mode - it is a tool, not the product)
+-- Diagnostics screen
 --------------------------------------------------------------------------
+--
+-- Builds the row data only. The drawing lives in Dashboard, because a widget
+-- that declares useLvgl gets no immediate-mode drawing at all: EdgeTX calls
+-- refresh(nullptr) on that path and every lcd.draw* bails on the null buffer.
+-- This screen used lcd.drawText and therefore rendered nothing whatsoever.
 
 local HOW = { override = "cfg", name = "auto", unit = "guess" }
-
-local function statusColor(row)
-  if row.status == "ok" or row.status == "derived" then return Theme.lime end
-  if row.status == "insane" then return Theme.crit end
-  if row.important then return Theme.warn end
-  return Theme.dim
-end
 
 local function formatValue(row)
   if row.status == "unbound" then return "--" end
@@ -3027,68 +3139,32 @@ local function assetRows()
   return rows
 end
 
-local function drawSensorMap()
-  local w, h = zoneW or Host.lcdW, zoneH or Host.lcdH
-  local compact = w < 700
-  lcd.drawFilledRectangle(0, 0, w, h, Theme.bg)
-
-  local pad     = compact and 6 or 12
-  local headerH = compact and 20 or 28
-  local rowH    = compact and 14 or 20
-
+local function sensorMapRows()
   local sensorRows, bound = Sensors.report(), 0
   for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
   -- Assets lead the list: they are what a first run needs to check, they are
   -- only a handful of lines, and burying them past the fold is what made the
   -- artwork problem take several rounds to pin down.
   local rows = assetRows()
-  for _, r in ipairs(sensorRows) do rows[#rows + 1] = r end
-
-  lcd.drawText(pad, compact and 2 or 5,
-               compact and "Sensors" or "ZelionDash - sensor map", BOLD + Theme.steel)
-  lcd.drawText(w - pad, compact and 2 or 5,
-               string.format("%d bound", bound), RIGHT + SMLSIZE + Theme.dim)
-  lcd.drawLine(0, headerH, w, headerH, SOLID, Theme.rule)
-
-  local colRole, colSensor = pad, math.floor(w * 0.34)
-  local colHow, colValue   = math.floor(w * 0.56), w - pad
-  local footerH = compact and 16 or 22
-  local listTop = headerH + (compact and 3 or 6)
-  local visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
-
-  if scroll > #rows - visible then scroll = math.max(0, #rows - visible) end
-  if scroll < 0 then scroll = 0 end
-
-  for i = 1, visible do
-    local row = rows[i + scroll]
-    if row then
-      local y, color = listTop + (i - 1) * rowH, statusColor(row)
-      -- One font, not a size plus a modifier: BOLD is font index 1, so
-      -- SMLSIZE + BOLD selects MIDSIZE rather than a bold small.
-      lcd.drawText(colRole, y, row.label,
-                   (row.important and BOLD or SMLSIZE) + Theme.ink)
-      lcd.drawText(colSensor, y, row.sensor or "-", SMLSIZE + color)
-      lcd.drawText(colHow, y, row.how and HOW[row.how] or "", SMLSIZE + Theme.dim)
-      lcd.drawText(colValue, y, formatValue(row), RIGHT + SMLSIZE + color)
-    end
+  for _, r in ipairs(sensorRows) do
+    rows[#rows + 1] = {
+      label = r.label, sensor = r.sensor, status = r.status,
+      important = r.important, how = r.how and HOW[r.how] or nil,
+      value = formatValue(r),
+    }
   end
 
-  local fy = h - footerH + (compact and 1 or 3)
+  local note, bad = nil, false
   if #Config.problems > 0 then
-    lcd.drawText(pad, fy, "cfg: " .. Config.problems[1], SMLSIZE + Theme.crit)
+    note, bad = "cfg: " .. Config.problems[1], true
   else
-    local note = (State.armed and "ARMED" or "disarmed") .. "  " ..
-                 (RF2.craftName or Host.modelName())
+    note = (State.armed and "ARMED" or "disarmed") .. "  " ..
+           (RF2.craftName or Host.modelName())
     if #Sensors.unresolved > 0 then
       note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
     end
-    lcd.drawText(pad, fy, note, SMLSIZE + Theme.dim)
   end
-  if #rows > visible then
-    lcd.drawText(w - pad, fy,
-                 string.format("%d-%d", scroll + 1, math.min(#rows, scroll + visible)),
-                 RIGHT + SMLSIZE + Theme.dim)
-  end
+  return rows, bound, note, bad
 end
 
 --------------------------------------------------------------------------
@@ -3117,8 +3193,11 @@ local function ensureScreen(widget)
   end
   if Widget.showSensors then
     if built ~= "sensors" then
-      if type(lvgl) == "table" then lvgl.clear() end
+      -- It used to clear the screen and draw nothing, which is exactly what a
+      -- widget looks like when it has disappeared.
+      pcall(Dashboard.buildSensorMap, zoneW, zoneH)
       built = "sensors"
+      scroll = 0
     end
     return
   end
@@ -3187,7 +3266,11 @@ function Widget.refresh(widget, event, touchState)
   if Widget.showSensors then
     if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1
     elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1 end
-    pcall(drawSensorMap)
+    local ok, rows, bound, note, bad = pcall(sensorMapRows)
+    if ok then
+      local clamped = Dashboard.updateSensorMap(rows, scroll, bound, note, bad)
+      if clamped then scroll = clamped end
+    end
   else
     pcall(Dashboard.update)
   end
