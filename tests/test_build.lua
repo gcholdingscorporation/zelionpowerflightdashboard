@@ -310,15 +310,46 @@ H.test("scrolling does not rebuild the screen", function()
   H.eq(#Mock.lv.objects, objects)
 end)
 
-H.test("lists the widget folder so the radio reports its own assets", function()
+H.test("the roles come first, with artwork summarised above them", function()
+  -- The full artwork block used to lead, from when a missing PNG was the open
+  -- problem. Seven rows of it pushed the governor - the row actually being
+  -- looked for - off the bottom of the screen.
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
+  local artwork = string.find(t, "ARTWORK", 1, true)
+  H.truthy(artwork, "one summary line, so a failed load still announces itself")
+  H.truthy(string.find(t, "2 ok", 1, true), "and says whether they loaded")
+  H.truthy(string.find(t, "Governor", 1, true), "the roles fit on one screen now")
+  H.truthy(string.find(t, "Headspeed", 1, true) > artwork, "roles below the summary")
+end)
+
+H.test("the artwork detail is still reachable, at the bottom", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.falsy(string.find(Mock.lvglText(), "FIB", 1, true), "not on the first page")
   -- "the PNGs are in the folder" and "the widget cannot load them" were
-  -- indistinguishable for three rounds. The radio can just say which.
-  H.truthy(string.find(t, "ASSETS", 1, true), "assets section present")
+  -- indistinguishable for three rounds. The radio can still say which.
+  for _ = 1, 30 do def.refresh(widget, 100, nil) end
+  local t = Mock.lvglText()
   H.truthy(string.find(t, "logo_panel.png", 1, true), "each expected file probed")
   H.truthy(string.find(t, "FIB", 1, true), "per-probe result shown")
+end)
+
+H.test("a missing PNG is called out on the summary line", function()
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.noDefaultLogos = true
+  Mock.install(); Mock.installLvgl()
+  local def = loadDist()
+  local opts = { SensorMap = 1 }
+  local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
+  def.update(widget, opts)
+  def.refresh(widget, 0, nil)
+  Mock.noDefaultLogos = nil
+  H.truthy(string.find(Mock.lvglText(), "MISSING", 1, true),
+           "without having to scroll for it")
 end)
 
 H.test("survives a model with no telemetry at all", function()

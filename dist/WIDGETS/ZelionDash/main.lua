@@ -3106,46 +3106,65 @@ end
 -- inferring any of it from this side of the SD card.
 local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 
+-- Returns a one-line summary and the full detail block separately. The detail
+-- used to lead the list, from when a missing PNG was the open problem - but it
+-- is seven rows, and it pushed the roles a pilot actually consults down past
+-- the fold. The summary carries the only bit worth seeing every time: whether
+-- the artwork loaded. Detail goes to the bottom, where it is still one scroll
+-- away when something breaks.
 local function assetRows()
   local dir = Host.widgetDir()
-  local rows = {}
-  rows[#rows + 1] = { label = "-- ASSETS --",
-                      sensor = dir .. " (" .. Host.widgetDirSource .. ")",
-                      status = "ok", important = true }
+  local detail, bad = {}, 0
 
   local listing = Host.listDir(dir)
   if listing == nil then
-    rows[#rows + 1] = { label = "dir()", sensor = "unavailable", status = "unbound" }
+    detail[#detail + 1] = { label = "  dir()", sensor = "unavailable",
+                            status = "unbound" }
   elseif #listing == 0 then
-    rows[#rows + 1] = { label = "dir()", sensor = "EMPTY", status = "insane" }
+    detail[#detail + 1] = { label = "  dir()", sensor = "EMPTY", status = "insane" }
+    bad = bad + 1
   else
     for _, name in ipairs(listing) do
-      rows[#rows + 1] = { label = "  " .. name, sensor = "", status = "ok" }
+      detail[#detail + 1] = { label = "  " .. name, sensor = "", status = "ok" }
     end
   end
 
   for _, f in ipairs(ASSET_FILES) do
     local p = Host.probeImage(dir .. f)
-    local flags = string.format("%s%s%s",
-      p.fstat and "F" or "-", p.io and "I" or "-", p.bmp and "B" or "-")
-    local detail = flags
-    if p.size then detail = detail .. " " .. tostring(p.size) .. "b" end
-    if p.w then detail = detail .. " w" .. tostring(p.w) end
-    rows[#rows + 1] = {
-      label = f, sensor = detail,
-      status = (p.bmp and p.w and p.w > 0) and "ok" or "insane",
-    }
+    local ok = p.bmp and p.w and p.w > 0
+    if not ok then bad = bad + 1 end
+    local s = string.format("%s%s%s", p.fstat and "F" or "-",
+                            p.io and "I" or "-", p.bmp and "B" or "-")
+    if p.size then s = s .. " " .. tostring(p.size) .. "b" end
+    if p.w then s = s .. " w" .. tostring(p.w) end
+    detail[#detail + 1] = { label = "  " .. f, sensor = s,
+                            status = ok and "ok" or "insane" }
   end
-  return rows
+
+  local summary = {
+    label = "-- ARTWORK --",
+    sensor = dir,
+    value = (bad == 0) and string.format("%d ok", #ASSET_FILES)
+            or string.format("%d MISSING", bad),
+    status = (bad == 0) and "ok" or "insane",
+    important = true,
+  }
+  detail[#detail + 1] = { label = "-- ARTWORK DETAIL --",
+                          sensor = Host.widgetDirSource, status = "ok",
+                          important = true }
+  -- The header belongs above the block it heads.
+  table.insert(detail, 1, table.remove(detail))
+  return summary, detail
 end
 
 local function sensorMapRows()
   local sensorRows, bound = Sensors.report(), 0
   for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
-  -- Assets lead the list: they are what a first run needs to check, they are
-  -- only a handful of lines, and burying them past the fold is what made the
-  -- artwork problem take several rounds to pin down.
-  local rows = assetRows()
+
+  -- Roles first: they are what the screen is consulted for. One artwork line
+  -- above them, the rest of it below.
+  local summary, detail = assetRows()
+  local rows = { summary }
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
       label = r.label, sensor = r.sensor, status = r.status,
@@ -3153,6 +3172,7 @@ local function sensorMapRows()
       value = formatValue(r),
     }
   end
+  for _, r in ipairs(detail) do rows[#rows + 1] = r end
 
   local note, bad = nil, false
   if #Config.problems > 0 then
