@@ -85,3 +85,20 @@
 # [battery]
 # cellFull = 4.00
 # cellMin  = 3.30
+#
+# --- alert thresholds ---
+#
+# alertCell is the voltage you want to HEAR about, not the voltage the pack
+# dies at. It fires once when a cell reaches it, repeats every 15 seconds while
+# it stays there, and re-arms only once the pack recovers 0.10V above it - so a
+# cell sagging across the line under load does not announce itself on every
+# rotor beat. The reading is spoken through the radio's own voice, so there is
+# no sound file to install.
+#
+# alertEsc works the same way, clearing 8 degrees below the trigger.
+#
+# Alerts can be switched off entirely in the widget settings.
+#
+# [battery]
+# alertCell = 3.40
+# alertEsc  = 110

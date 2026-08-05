@@ -129,6 +129,27 @@ function State.reloadModel()
 end
 
 --------------------------------------------------------------------------
+-- Governor
+--------------------------------------------------------------------------
+
+-- Rotorflight's governor state codes. Both the dashboard and the alert engine
+-- ask for this, so it lives here rather than in either of them.
+local GOV_STATES = {
+  [0]="OFF", [1]="IDLE", [2]="SPOOLUP", [3]="RECOVERY", [4]="ACTIVE",
+  [5]="THR-OFF", [6]="LOST-HS", [7]="AUTOROT", [8]="BAILOUT", [9]="BYPASS",
+}
+
+State.GOV_STATES = GOV_STATES
+
+-- Returns "--" when unbound, so a caller that just wants something to print
+-- can use it directly; callers that care must check State.valid("governor").
+function State.governorText()
+  local g, ok = State.get("governor")
+  if not ok then return "--" end
+  return GOV_STATES[math.floor(g)] or "UNKNOWN"
+end
+
+--------------------------------------------------------------------------
 -- Arm detection
 --------------------------------------------------------------------------
 

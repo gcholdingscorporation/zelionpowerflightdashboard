@@ -237,6 +237,54 @@ H.test("a build that keeps failing still lands on something drawable", function(
   H.truthy(ok, "a failing build must never propagate out of refresh")
 end)
 
+H.group("build: alerts")
+
+H.test("a sounding alert names itself on the strip", function()
+  -- The radio may be muted, and a buzz pattern is not self-explanatory.
+  local def, widget = boot(800, 480, nil, flying)
+  for _ = 1, 80 do
+    Mock.advanceSeconds(0.1)
+    def.refresh(widget, 0, nil)
+  end
+  H.falsy(string.find(Mock.lvglText(), "ALERT", 1, true), "quiet so far")
+
+  Mock.setSensor("Vcel", 3.20)
+  for _ = 1, 20 do
+    Mock.advanceSeconds(0.1)
+    def.refresh(widget, 0, nil)
+  end
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "ALERT: CELL", 1, true), "and says which")
+  H.falsy(string.find(t, "NO HYPE", 1, true), "the slogan stands down")
+end)
+
+H.test("alerts sound while another screen is in front", function()
+  -- background() runs when the widget is not the visible one. A low cell does
+  -- not stop mattering because the pilot opened the model setup page.
+  local def, widget = boot(800, 480, nil, flying)
+  for _ = 1, 80 do
+    Mock.advanceSeconds(0.1)
+    def.background(widget)
+  end
+  Mock.played = {}
+  Mock.setSensor("Vcel", 3.10)
+  for _ = 1, 20 do
+    Mock.advanceSeconds(0.1)
+    def.background(widget)
+  end
+  H.truthy(#Mock.played > 0, "still audible off-screen")
+end)
+
+H.test("the option switches them off", function()
+  local def, widget = boot(800, 480, { Alerts = 0 }, flying)
+  Mock.setSensor("Vcel", 3.10)
+  for _ = 1, 150 do
+    Mock.advanceSeconds(0.1)
+    def.refresh(widget, 0, nil)
+  end
+  H.eq(#Mock.played, 0)
+end)
+
 H.group("build: sensor map")
 
 -- These assert on LVGL objects, not on lcd.draw* calls. The screen was written

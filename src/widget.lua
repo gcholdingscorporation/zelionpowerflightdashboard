@@ -15,6 +15,7 @@ local Config  = ZD.Config
 local Sensors = ZD.Sensors
 local RF2     = ZD.RF2
 local State   = ZD.State
+local Alerts  = ZD.Alerts
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
 
@@ -238,6 +239,7 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
+  Alerts.enabled = not (options and options.Alerts == 0)
   -- There used to be a Level option here, stepping the renderer down one
   -- construct at a time. It existed only to bisect the emergency-mode reboot
   -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
@@ -249,6 +251,7 @@ function Widget.update(widget, options)
   Widget.degraded = nil
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName())
+  pcall(Alerts.reset)
   built = nil
   ensureScreen(widget)
 end
@@ -256,7 +259,9 @@ end
 Widget.degraded = nil
 
 function Widget.refresh(widget, event, touchState)
-  pcall(State.service, Host.now(), serviceOpts(widget))
+  local now = Host.now()
+  pcall(State.service, now, serviceOpts(widget))
+  pcall(Alerts.service, now)
   ensureScreen(widget)
 
   if Widget.showSensors then
@@ -273,21 +278,27 @@ function Widget.refresh(widget, event, touchState)
 end
 
 -- Telemetry is serviced here too, so session peaks and flight time are
--- recorded while another screen is in front.
+-- recorded while another screen is in front - and, more to the point, so the
+-- alerts still sound. A low cell does not stop mattering because the pilot
+-- happened to be looking at the model setup page.
 function Widget.background(widget)
-  pcall(State.service, Host.now(), serviceOpts(widget))
+  local now = Host.now()
+  pcall(State.service, now, serviceOpts(widget))
+  pcall(Alerts.service, now)
 end
 
 Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
+  { "Alerts",     BOOL,   1 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
+  Alerts     = "Audio + Vibe Alerts",
 }
 
 function Widget.translate(name)

@@ -161,6 +161,41 @@ function Host.rssi()
 end
 
 --------------------------------------------------------------------------
+-- Audio and haptic
+--------------------------------------------------------------------------
+
+-- Every one of these is optional: a radio may be built without haptic, and a
+-- firmware may not expose the call at all. An alert that cannot be heard must
+-- never be an alert that raises.
+--
+-- playNumber speaks a value through the radio's own number vocabulary, which
+-- is why nothing here ships a .wav. The pilot hears the reading in whatever
+-- language the radio is set to, and there is no asset to install or lose.
+local PREC1 = g("PREC1") or 0x10
+local PREC2 = g("PREC2") or 0x20
+
+Host.PREC1, Host.PREC2 = PREC1, PREC2
+Host.UNIT_VOLTS   = tonumber(g("UNIT_VOLTS"))   or 1
+Host.UNIT_CELSIUS = tonumber(g("UNIT_CELSIUS")) or 11
+Host.UNIT_RPMS    = tonumber(g("UNIT_RPMS"))    or 18
+Host.UNIT_PERCENT = tonumber(g("UNIT_PERCENT")) or 13
+Host.PLAY_NOW     = tonumber(g("PLAY_NOW"))     or 1
+
+local function optional(name)
+  return function(...)
+    local fn = g(name)
+    if type(fn) ~= "function" then return false end
+    local ok = pcall(fn, ...)
+    return ok
+  end
+end
+
+Host.playNumber = optional("playNumber")
+Host.playTone   = optional("playTone")
+Host.playHaptic = optional("playHaptic")
+Host.playFile   = optional("playFile")
+
+--------------------------------------------------------------------------
 -- Text measurement
 --------------------------------------------------------------------------
 
@@ -796,6 +831,10 @@ Config.SETTINGS_SECTION = "battery"
 local SETTINGS = {
   cellFull = { default = 4.00, min = 3.00, max = 4.50 },
   cellMin  = { default = 3.30, min = 2.50, max = 4.00 },
+  -- Alert thresholds. alertCell is the one a pilot actually tunes: it is the
+  -- voltage you want to hear about, not the voltage the pack dies at.
+  alertCell = { default = 3.40, min = 2.80, max = 4.10 },
+  alertEsc  = { default = 110,  min = 40,   max = 200 },
 }
 
 -- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus
@@ -1517,6 +1556,27 @@ function State.reloadModel()
 end
 
 --------------------------------------------------------------------------
+-- Governor
+--------------------------------------------------------------------------
+
+-- Rotorflight's governor state codes. Both the dashboard and the alert engine
+-- ask for this, so it lives here rather than in either of them.
+local GOV_STATES = {
+  [0]="OFF", [1]="IDLE", [2]="SPOOLUP", [3]="RECOVERY", [4]="ACTIVE",
+  [5]="THR-OFF", [6]="LOST-HS", [7]="AUTOROT", [8]="BAILOUT", [9]="BYPASS",
+}
+
+State.GOV_STATES = GOV_STATES
+
+-- Returns "--" when unbound, so a caller that just wants something to print
+-- can use it directly; callers that care must check State.valid("governor").
+function State.governorText()
+  local g, ok = State.get("governor")
+  if not ok then return "--" end
+  return GOV_STATES[math.floor(g)] or "UNKNOWN"
+end
+
+--------------------------------------------------------------------------
 -- Arm detection
 --------------------------------------------------------------------------
 
@@ -1746,6 +1806,223 @@ function State.consumeDisarm()
 end
 
 return State
+
+end
+
+  end)()
+  factory(ZD)
+end
+
+-- ======== src/alerts.lua ========
+do
+  local factory = (function()
+-- Layer 5c: Alert engine.
+--
+-- The dashboard shows you a problem. This tells you about one - which is the
+-- part that matters, because for most of a flight you are looking at the
+-- helicopter and not at the screen.
+--
+-- Reads State, drives Host's audio and haptic. Owns no telemetry logic and
+-- draws nothing, so the whole thing is testable off-radio.
+--
+-- Three rules keep it from becoming noise, which is the only way an alert
+-- system fails in practice:
+--
+--   Hysteresis. Every alert clears at a different value from the one that
+--   triggers it. A cell sagging across 3.40V under load would otherwise
+--   announce itself on every rotor beat.
+--
+--   Repeat, don't chatter. While a condition holds, it repeats on a timer
+--   rather than every service pass, and the timer is long enough to be
+--   ignorable and short enough to not be forgotten.
+--
+--   Settle first. Nothing fires until telemetry has been live for a few
+--   seconds. A pack reads 0.00V for the instant before the ESC reports, and
+--   an alarm on power-up teaches the pilot to ignore alarms.
+
+return function(ZD)
+
+local Host   = ZD.Host
+local State  = ZD.State
+local Config = ZD.Config
+
+local Alerts = {}
+ZD.Alerts = Alerts
+
+Alerts.enabled = true
+
+-- Telemetry has to be live this long before anything can fire.
+Alerts.SETTLE = Host.seconds(4)
+
+Alerts.fired = {}          -- id -> true while the condition is held
+Alerts.lastSpoken = nil    -- id of the most recent alert, for the UI
+Alerts.count = 0           -- total fires this session, for tests and diagnostics
+
+local liveSince = nil
+local state = {}           -- id -> { active, nextAt }
+
+--------------------------------------------------------------------------
+-- Definitions
+--------------------------------------------------------------------------
+
+-- trigger/clear are deliberately asymmetric. speak() is called on every fire,
+-- after the haptic, and may say nothing at all - a governor fault has no
+-- number worth reading out.
+local function cellLow()  return Config.setting("alertCell") end
+local function escHigh()  return Config.setting("alertEsc") end
+
+local GOV_FAULT = { ["THR-OFF"] = true, ["LOST-HS"] = true, AUTOROT = true }
+
+local DEFS = {
+  {
+    id = "cell",
+    -- The one the pilot actually flies to. A margin of 0.10V on the way back
+    -- up: a pack that has hit its floor does not recover quietly.
+    test  = function() return State.valid("cellVoltage")
+                          and State.num("cellVoltage") <= cellLow() end,
+    clear = function() return not State.valid("cellVoltage")
+                          or State.num("cellVoltage") >= cellLow() + 0.10 end,
+    repeatAfter = 15,
+    haptic = { 60, 80, 2 },
+    speak = function()
+      Host.playNumber(math.floor(State.num("cellVoltage") * 100 + 0.5),
+                      Host.UNIT_VOLTS, Host.PREC2)
+    end,
+  },
+  {
+    id = "esc",
+    test  = function() return State.valid("escTemperature")
+                          and State.num("escTemperature") >= escHigh() end,
+    clear = function() return not State.valid("escTemperature")
+                          or State.num("escTemperature") <= escHigh() - 8 end,
+    repeatAfter = 20,
+    haptic = { 90, 90, 2 },
+    speak = function()
+      Host.playNumber(math.floor(State.num("escTemperature") + 0.5),
+                      Host.UNIT_CELSIUS, 0)
+    end,
+  },
+  {
+    id = "governor",
+    -- No number to read out: the state is the message, and the pilot has
+    -- rather more urgent things to do than listen to a word.
+    test  = function()
+      return State.valid("governor") and GOV_FAULT[State.governorText()] == true
+    end,
+    clear = function()
+      return not State.valid("governor")
+             or GOV_FAULT[State.governorText()] ~= true
+    end,
+    repeatAfter = 10,
+    haptic = { 40, 60, 3 },
+    tone = { 260, 200, 40 },
+  },
+  {
+    id = "link",
+    -- Only meaningful once a link has existed. Rotorflight tells us
+    -- authoritatively when it can; otherwise link quality carries it.
+    test = function()
+      if State.linkConnected == false then return true end
+      return State.valid("linkQuality") and State.num("linkQuality") <= 30
+    end,
+    clear = function()
+      if State.linkConnected == true then return true end
+      return not State.valid("linkQuality") or State.num("linkQuality") >= 45
+    end,
+    repeatAfter = 12,
+    haptic = { 50, 50, 2 },
+    tone = { 180, 300, 60 },
+  },
+}
+
+Alerts.DEFS = DEFS
+
+--------------------------------------------------------------------------
+-- Firing
+--------------------------------------------------------------------------
+
+local function fire(def)
+  local h = def.haptic
+  if h then
+    for _ = 1, (h[3] or 1) do Host.playHaptic(h[1], h[2], Host.PLAY_NOW) end
+  end
+  if def.tone then
+    Host.playTone(def.tone[1], def.tone[2], def.tone[3], Host.PLAY_NOW)
+  end
+  if def.speak then pcall(def.speak) end
+  Alerts.lastSpoken = def.id
+  Alerts.count = Alerts.count + 1
+end
+
+function Alerts.reset()
+  state = {}
+  liveSince = nil
+  Alerts.fired = {}
+  Alerts.lastSpoken = nil
+  Alerts.count = 0
+end
+
+-- Any live flight value counts as telemetry being up. Deliberately the same
+-- test the dashboard once used to decide it had something worth drawing.
+local function telemetryLive()
+  return State.valid("cellVoltage") or State.valid("packVoltage")
+      or State.valid("headspeed") or State.valid("batteryPercent")
+      or State.valid("current")
+end
+
+function Alerts.service(now)
+  now = now or Host.now()
+  if not Alerts.enabled then
+    liveSince = nil
+    return
+  end
+
+  if not telemetryLive() then
+    -- Losing telemetry is not itself an alert - a dropout is common and the
+    -- dashboard already says so. Clear the settle timer so a reconnect gets
+    -- its grace period back rather than firing on the first noisy sample.
+    liveSince = nil
+    return
+  end
+  if liveSince == nil then liveSince = now end
+  if (now - liveSince) < Alerts.SETTLE then return end
+
+  -- A held hold switch means the pilot is deliberately parked with the model
+  -- powered. Freezing the extremes without silencing the alarms would make
+  -- the feature useless on the bench.
+  if State.holdActive then return end
+
+  for _, def in ipairs(DEFS) do
+    local s = state[def.id]
+    if not s then s = { active = false, nextAt = 0 }; state[def.id] = s end
+
+    if s.active then
+      if def.clear() then
+        s.active = false
+        Alerts.fired[def.id] = nil
+      elseif now >= s.nextAt then
+        fire(def)
+        s.nextAt = now + Host.seconds(def.repeatAfter)
+      end
+    elseif def.test() then
+      s.active = true
+      Alerts.fired[def.id] = true
+      fire(def)
+      s.nextAt = now + Host.seconds(def.repeatAfter)
+    end
+  end
+end
+
+-- What is currently sounding, worst first, for anything that wants to show it.
+function Alerts.active()
+  local out = {}
+  for _, def in ipairs(DEFS) do
+    if Alerts.fired[def.id] then out[#out + 1] = def.id end
+  end
+  return out
+end
+
+return Alerts
 
 end
 
@@ -2198,11 +2475,6 @@ end
 local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
 local ALIGN_RIGHT  = flag("RIGHT", 0)
 
-local GOV_STATES = {
-  [0]="OFF", [1]="IDLE", [2]="SPOOLUP", [3]="RECOVERY", [4]="ACTIVE",
-  [5]="THR-OFF", [6]="LOST-HS", [7]="AUTOROT", [8]="BAILOUT", [9]="BYPASS",
-}
-
 local V, SHADOW = {}, {}
 
 --------------------------------------------------------------------------
@@ -2347,11 +2619,9 @@ local function cellSag()
   return sag
 end
 
-local function govText()
-  local g, ok = State.get("governor")
-  if not ok then return "--" end
-  return GOV_STATES[math.floor(g)] or "UNKNOWN"
-end
+-- Lives in State: the alert engine needs the same answer and has no business
+-- reaching into the renderer for it.
+local function govText() return State.governorText() end
 
 --------------------------------------------------------------------------
 -- Build
@@ -2977,6 +3247,17 @@ local function updateStrip()
                    color = Theme.warn })
     return
   end
+  -- A sounding alert takes the strip. The radio may be muted, the pilot may
+  -- have missed it, and "which one was that" is a question worth answering
+  -- without having to remember what the buzz pattern meant.
+  local ZD_Alerts = ZD.Alerts
+  local active = ZD_Alerts and ZD_Alerts.active() or {}
+  if #active > 0 then
+    setp(V.tagline, { text = "" })
+    setp(V.link, { text = "ALERT: " .. string.upper(table.concat(active, " + ")),
+                   color = Theme.crit })
+    return
+  end
   setp(V.tagline, { text = "NO HYPE / JUST VOLTAGE / REAL POWER" })
   if RF2.available() then
     if State.linkConnected == false then
@@ -3039,6 +3320,7 @@ local Config  = ZD.Config
 local Sensors = ZD.Sensors
 local RF2     = ZD.RF2
 local State   = ZD.State
+local Alerts  = ZD.Alerts
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
 
@@ -3262,6 +3544,7 @@ end
 function Widget.update(widget, options)
   widget.options = options
   Widget.showSensors = (options and options.SensorMap == 1) or false
+  Alerts.enabled = not (options and options.Alerts == 0)
   -- There used to be a Level option here, stepping the renderer down one
   -- construct at a time. It existed only to bisect the emergency-mode reboot
   -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
@@ -3273,6 +3556,7 @@ function Widget.update(widget, options)
   Widget.degraded = nil
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName())
+  pcall(Alerts.reset)
   built = nil
   ensureScreen(widget)
 end
@@ -3280,7 +3564,9 @@ end
 Widget.degraded = nil
 
 function Widget.refresh(widget, event, touchState)
-  pcall(State.service, Host.now(), serviceOpts(widget))
+  local now = Host.now()
+  pcall(State.service, now, serviceOpts(widget))
+  pcall(Alerts.service, now)
   ensureScreen(widget)
 
   if Widget.showSensors then
@@ -3297,21 +3583,27 @@ function Widget.refresh(widget, event, touchState)
 end
 
 -- Telemetry is serviced here too, so session peaks and flight time are
--- recorded while another screen is in front.
+-- recorded while another screen is in front - and, more to the point, so the
+-- alerts still sound. A low cell does not stop mattering because the pilot
+-- happened to be looking at the model setup page.
 function Widget.background(widget)
-  pcall(State.service, Host.now(), serviceOpts(widget))
+  local now = Host.now()
+  pcall(State.service, now, serviceOpts(widget))
+  pcall(Alerts.service, now)
 end
 
 Widget.options = {
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },
+  { "Alerts",     BOOL,   1 },
 }
 
 Widget.OPTION_LABELS = {
   ArmSwitch  = "Arm Switch (fallback)",
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
+  Alerts     = "Audio + Vibe Alerts",
 }
 
 function Widget.translate(name)

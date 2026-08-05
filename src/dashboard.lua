@@ -37,11 +37,6 @@ end
 local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
 local ALIGN_RIGHT  = flag("RIGHT", 0)
 
-local GOV_STATES = {
-  [0]="OFF", [1]="IDLE", [2]="SPOOLUP", [3]="RECOVERY", [4]="ACTIVE",
-  [5]="THR-OFF", [6]="LOST-HS", [7]="AUTOROT", [8]="BAILOUT", [9]="BYPASS",
-}
-
 local V, SHADOW = {}, {}
 
 --------------------------------------------------------------------------
@@ -186,11 +181,9 @@ local function cellSag()
   return sag
 end
 
-local function govText()
-  local g, ok = State.get("governor")
-  if not ok then return "--" end
-  return GOV_STATES[math.floor(g)] or "UNKNOWN"
-end
+-- Lives in State: the alert engine needs the same answer and has no business
+-- reaching into the renderer for it.
+local function govText() return State.governorText() end
 
 --------------------------------------------------------------------------
 -- Build
@@ -814,6 +807,17 @@ local function updateStrip()
     setp(V.tagline, { text = "" })
     setp(V.link, { text = "NO IMAGE: " .. tostring(Dashboard.missingPath),
                    color = Theme.warn })
+    return
+  end
+  -- A sounding alert takes the strip. The radio may be muted, the pilot may
+  -- have missed it, and "which one was that" is a question worth answering
+  -- without having to remember what the buzz pattern meant.
+  local ZD_Alerts = ZD.Alerts
+  local active = ZD_Alerts and ZD_Alerts.active() or {}
+  if #active > 0 then
+    setp(V.tagline, { text = "" })
+    setp(V.link, { text = "ALERT: " .. string.upper(table.concat(active, " + ")),
+                   color = Theme.crit })
     return
   end
   setp(V.tagline, { text = "NO HYPE / JUST VOLTAGE / REAL POWER" })

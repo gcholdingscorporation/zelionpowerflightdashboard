@@ -258,6 +258,26 @@ function Mock.install()
   _G.MIDSIZE,  _G.DBLSIZE,  _G.XXLSIZE         = 0x0400, 0x0500, 0x0600
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
   _G.SOURCE, _G.BOOL = 1, 2
+  _G.PREC1, _G.PREC2 = 0x10, 0x20
+  _G.PLAY_NOW = 1
+
+  -- Audio and haptic. Recorded rather than played, so a test can assert what
+  -- the pilot would actually have heard and - just as important - that a
+  -- steady condition does not repeat on every service pass.
+  Mock.played = {}
+  _G.playNumber = function(v, unit, attrs)
+    Mock.played[#Mock.played + 1] = { op = "number", value = v,
+                                      unit = unit, attrs = attrs }
+  end
+  _G.playTone = function(freq, dur, pause, flags)
+    Mock.played[#Mock.played + 1] = { op = "tone", freq = freq, dur = dur }
+  end
+  _G.playHaptic = function(dur, pause, flags)
+    Mock.played[#Mock.played + 1] = { op = "haptic", dur = dur }
+  end
+  _G.playFile = function(name)
+    Mock.played[#Mock.played + 1] = { op = "file", name = name }
+  end
   -- A widget that declares useLvgl gets NO immediate-mode drawing. EdgeTX's
   -- LuaWidget::checkEvents calls refresh(nullptr) on that path, so luaLcdBuffer
   -- is null, and every lcd.draw* opens with
@@ -500,6 +520,29 @@ function Mock.drawnText()
     if d.op == "text" then out[#out + 1] = d.text end
   end
   return table.concat(out, "|")
+end
+
+-- How many times a value was actually spoken, optionally of one unit only.
+function Mock.spokenCount(unit)
+  local n = 0
+  for _, p in ipairs(Mock.played or {}) do
+    if p.op == "number" and (unit == nil or p.unit == unit) then n = n + 1 end
+  end
+  return n
+end
+
+-- The values spoken, in order, un-scaled by their PREC attribute.
+function Mock.spokenValues()
+  local out = {}
+  for _, p in ipairs(Mock.played or {}) do
+    if p.op == "number" then
+      local v = p.value
+      if p.attrs == 0x20 then v = v / 100
+      elseif p.attrs == 0x10 then v = v / 10 end
+      out[#out + 1] = v
+    end
+  end
+  return out
 end
 
 function Mock.enableAtomicWrites()

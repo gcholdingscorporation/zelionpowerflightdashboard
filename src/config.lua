@@ -48,6 +48,10 @@ Config.SETTINGS_SECTION = "battery"
 local SETTINGS = {
   cellFull = { default = 4.00, min = 3.00, max = 4.50 },
   cellMin  = { default = 3.30, min = 2.50, max = 4.00 },
+  -- Alert thresholds. alertCell is the one a pilot actually tunes: it is the
+  -- voltage you want to hear about, not the voltage the pack dies at.
+  alertCell = { default = 3.40, min = 2.80, max = 4.10 },
+  alertEsc  = { default = 110,  min = 40,   max = 200 },
 }
 
 -- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus

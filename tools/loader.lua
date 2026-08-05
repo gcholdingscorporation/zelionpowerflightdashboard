@@ -15,6 +15,7 @@ Loader.MODULES = {
   "sensors",
   "rf2",
   "state",
+  "alerts",
   "theme",
   "layout",
   "dashboard",

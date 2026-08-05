@@ -150,6 +150,41 @@ function Host.rssi()
 end
 
 --------------------------------------------------------------------------
+-- Audio and haptic
+--------------------------------------------------------------------------
+
+-- Every one of these is optional: a radio may be built without haptic, and a
+-- firmware may not expose the call at all. An alert that cannot be heard must
+-- never be an alert that raises.
+--
+-- playNumber speaks a value through the radio's own number vocabulary, which
+-- is why nothing here ships a .wav. The pilot hears the reading in whatever
+-- language the radio is set to, and there is no asset to install or lose.
+local PREC1 = g("PREC1") or 0x10
+local PREC2 = g("PREC2") or 0x20
+
+Host.PREC1, Host.PREC2 = PREC1, PREC2
+Host.UNIT_VOLTS   = tonumber(g("UNIT_VOLTS"))   or 1
+Host.UNIT_CELSIUS = tonumber(g("UNIT_CELSIUS")) or 11
+Host.UNIT_RPMS    = tonumber(g("UNIT_RPMS"))    or 18
+Host.UNIT_PERCENT = tonumber(g("UNIT_PERCENT")) or 13
+Host.PLAY_NOW     = tonumber(g("PLAY_NOW"))     or 1
+
+local function optional(name)
+  return function(...)
+    local fn = g(name)
+    if type(fn) ~= "function" then return false end
+    local ok = pcall(fn, ...)
+    return ok
+  end
+end
+
+Host.playNumber = optional("playNumber")
+Host.playTone   = optional("playTone")
+Host.playHaptic = optional("playHaptic")
+Host.playFile   = optional("playFile")
+
+--------------------------------------------------------------------------
 -- Text measurement
 --------------------------------------------------------------------------
 
