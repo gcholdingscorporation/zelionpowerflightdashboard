@@ -1,0 +1,121 @@
+# ZelionDash sensor overrides
+#
+# Copy to /WIDGETS/ZelionDash/sensors.cfg on the radio's storage.
+# Everything here is OPTIONAL - sensor discovery is automatic. Use this file
+# only when your model publishes a sensor under a name the widget does not
+# recognise, or when auto-detection picked the wrong one.
+#
+# Format:   role = SensorName
+# Sections: [*] applies to every model
+#           [Model Name] applies to that model only, and wins over [*]
+#           Section names are matched case-insensitively.
+#
+# A line naming a role that does not exist is reported on the diagnostics
+# screen rather than ignored, so typos are visible.
+#
+# The right-hand side may also be "off", which leaves the role unbound and
+# stops the widget guessing at it:
+#
+#   throttle = off
+#
+# That is the answer to a wrong (guess) on the sensor map. Naming a different
+# sensor does NOT work when the sensor you want does not exist - a name the
+# firmware does not know falls through to the same guess that was wrong. On
+# ExpressLRS there is no Thr sensor, so throttle matches the first spare
+# percent sensor on the radio, which is usually TQly - the transmitter link
+# quality - and reads a confident, permanent THR 100%.
+#
+# Switching a role off is a decision, not a gap: the sensor map shows it as
+# "off" and it is not counted among the unresolved sensors.
+
+[*]
+# --- rotor ---
+# headspeed        = Hspd
+# tailSpeed        = Tspd
+
+# --- battery ---
+# packVoltage      = Vbat
+# cellVoltage      = Vcel
+# cellCount        = Cel#
+# batteryPercent   = Bat%
+# capacity         = Capa
+# batteryProfile   = BAT#
+
+# --- power ---
+# current          = Curr
+# power            = Pwr
+# becVoltage       = Vbec
+
+# --- temperatures ---
+# escTemperature   = Tesc
+# mcuTemperature   = Tmcu
+
+# --- flight controller ---
+# governor         = Gov
+# armFlags         = ARM
+# throttle         = Thr      (or "off" - see above, ExpressLRS has no Thr)
+# flightMode       = FM
+
+# --- radio link ---
+# linkQuality      = RQly
+# rssi1            = 1RSS
+# rssi2            = 2RSS
+# txVoltage        = tx-voltage
+
+
+# Example of a per-model override:
+#
+# [Goblin 700]
+# escTemperature = Tmp1
+
+
+# ---------------------------------------------------------------------------
+# [battery] - settings, not sensor bindings
+# ---------------------------------------------------------------------------
+#
+# These matter ONLY when the widget has to work out the battery percentage
+# itself. On Rotorflight it never does: the flight controller computes the
+# state of charge - the "Smart Fuel" feature - and publishes it as the Bat%
+# sensor, which the widget reads directly. Smart Fuel has the pack's history,
+# a sag model and the stick positions, and a widget has none of those, so its
+# answer always wins.
+#
+# If your percentage looks wrong on a Rotorflight heli, the fix is in the
+# flight controller, not here: set Smart Fuel's mode on the Rotorflight
+# configurator's Smart Fuel page.
+#
+#   OFF        nothing is computed
+#   VOLTAGE    from sag-compensated cell voltage
+#   CURRENT    from consumed capacity, so it assumes a full pack at power-on
+#   COMBINED   the lower of the two - the conservative reading, and usually
+#              the one you want on a heli
+#
+# When Bat% is absent - a non-Rotorflight flight controller, or Smart Fuel OFF
+# - the widget derives the percentage from cell voltage using Rotorflight's own
+# VOLTAGE-mode curve, so both setups report the same number for the same pack.
+# These two values are that curve's endpoints, and match Rotorflight's stock
+# vbat_min_cell_voltage / vbat_full_cell_voltage. Change them only for a
+# chemistry that is not a standard LiPo.
+#
+# [battery]
+# cellFull = 4.00
+# cellMin  = 3.30
+#
+# --- alert thresholds ---
+#
+# alertCell is the voltage you want to HEAR about, not the voltage the pack
+# dies at. It fires once when a cell reaches it, repeats every 15 seconds while
+# it stays there, and re-arms only once the pack recovers 0.10V above it - so a
+# cell sagging across the line under load does not announce itself on every
+# rotor beat. The reading is spoken through the radio's own voice, so there is
+# no sound file to install.
+#
+# alertEsc works the same way, clearing 8 degrees below the trigger.
+#
+# Alerts can be switched off entirely in the widget settings, and "Test Alert"
+# there sounds one on demand - so checking that the buzzer and the voice work
+# does not mean editing a threshold here and editing it back afterwards.
+#
+# [battery]
+# alertCell = 3.40
+# alertEsc  = 110
