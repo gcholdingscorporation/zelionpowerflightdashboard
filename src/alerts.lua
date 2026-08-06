@@ -137,7 +137,7 @@ local function fire(def)
 end
 
 -- Fires one alert on demand, so "are the alerts working" can be answered
--- without waiting for a flat pack or editing a threshold on the SD card and
+-- without waiting for a flat pack or editing a threshold in sensors.cfg and
 -- editing it back afterwards. Also the honest pre-flight check: it proves the
 -- volume is up and the haptic is on, which are radio settings this widget has
 -- no way to see.

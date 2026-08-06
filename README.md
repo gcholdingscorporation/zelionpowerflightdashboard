@@ -3,8 +3,9 @@
 An RC helicopter telemetry dashboard widget for EdgeTX, targeting Rotorflight
 electric setups on the RadioMaster TX16S Mk3 and TX15.
 
-**Status: in development.** The dashboard renders. Alerts and flight logging
-are not built yet.
+**Status: running on hardware.** The dashboard draws, telemetry binds, alerts
+arm, and the flight log writes. Not yet flown — the alert engine has never
+fired against a real sag, a hot ESC or a dropout.
 
 ## Requirements
 
@@ -46,10 +47,16 @@ tiles; cell voltage sits above the fuel gauge on the left; governor, current,
 ESC temperature and BEC sit right of centre. The critical values are pinned
 left, on the assumption you fly off a neck strap and glance down-left.
 
-Before the pack is plugged in there is nothing truthful to draw, so the screen
-shows the Zelion mark and `WAITING FOR TELEMETRY` instead of a grid of dashes.
-A mid-flight telemetry dropout does **not** trigger this — blanking the screen
-at exactly the wrong moment would be worse than showing stale values.
+There is one screen and it is built once. A separate splash used to stand in
+before the pack was plugged in, on the reasoning that a grid of dashes looks
+broken — but the dashboard already tells "no sensor" apart from "reading zero",
+and the real layout says more: you can see the widget is alive, laid out, and
+waiting on named values. Removing it also removed the only screen-to-screen
+transition, which is where an emergency-mode reboot used to live.
+
+A mid-flight telemetry dropout blanks the live value but keeps the session
+peak — blanking everything at exactly the wrong moment would be worse than
+showing a reading that has stopped moving.
 
 ## Sensor diagnostics
 
@@ -148,7 +155,7 @@ If Rotorflight's **RF Tool** widget is installed, ZelionDash uses it for two
 things telemetry alone cannot provide:
 
 - **Flight count and total airtime from the flight controller itself**, rather
-  than a counter kept on the radio's SD card. The FC's numbers match what
+  than a counter kept on the radio's storage. The FC's numbers match what
   Configurator reports and don't diverge when you fly the same heli with a
   second radio. Requires MSP API 12.9 or newer.
 - **Authoritative connection state.** Without RF Tool the dashboard can only
@@ -202,7 +209,7 @@ src/       widget sources, one file per layer
 tools/     build script, desktop EdgeTX mock, module loader
 tests/     test suite (runs against both src/ and the built artifact)
 dist/      the deployable widget — copy this to the radio
-docs/      configuration reference
+docs/      a ready-to-install sensors.cfg, and the full reference
 ```
 
 `src/` is modular for development; `tools/build.lua` concatenates it into a
@@ -220,14 +227,17 @@ Seven layers, each talking only to its neighbours:
    abstract roles to whatever sensors this model actually has.
 3. **State model** (`state.lua`) — current values, session extremes, validity,
    arm detection, flight timing.
-4. **Alert engine** — *not yet built.*
+4. **Alert engine** (`alerts.lua`) — decides when a condition is worth
+   interrupting the pilot for. Hysteresis, repeat timers and a settle window,
+   because the only way an alert system fails in practice is by becoming noise.
 5. **Layout engine** (`layout.lua`, `theme.lua`) — screen geometry as pure
    arithmetic. Two density classes rather than one scaled layout, because the
    targets are different shapes and EdgeTX fonts do not scale continuously.
 6. **Renderer** (`dashboard.lua`) — retained-mode LVGL. Objects are created
    once; each frame writes only the properties whose values changed.
-7. **Persistence** — *not yet built.* Flight count already comes from the
-   flight controller when RF Tool is available.
+7. **Persistence** (`flightlog.lua`) — one CSV line per flight, written once at
+   landing. Flight count also comes from the flight controller when RF Tool is
+   available.
 
 Two rules run through all of it:
 
@@ -235,7 +245,9 @@ Two rules run through all of it:
   Every value carries a validity flag, and readings outside a plausible range
   are rejected rather than displayed.
 - **Fail loud, not silent.** An unresolvable sensor, a bad config line, or a
-  failed SD write is shown on screen rather than swallowed.
+  failed write is shown on screen rather than swallowed. Harder than it sounds:
+  three separate silent failures cost one flight record between them, and each
+  only became visible once the previous was fixed.
 
 ## Credits
 

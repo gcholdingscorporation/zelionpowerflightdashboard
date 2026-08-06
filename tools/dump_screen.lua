@@ -51,10 +51,22 @@ Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
 
 if kind == "safe" then
   ZD.Dashboard.buildMinimal(w, h)
+elseif kind == "sensors" then
+  -- Loader stops at layer 6: widget.lua is the EdgeTX entry point, not a
+  -- module. It follows the same factory convention, so load it by hand.
+  local factory = assert(loadfile("src/widget.lua"))()
+  factory(ZD)
+  -- The diagnostics screen, built through the widget so the rows are the ones
+  -- the radio would actually produce - roles, how each bound, the flight log
+  -- line and the artwork summary - rather than a hand-written sample.
+  ZD.Dashboard.buildSensorMap(w, h)
+  ZD.Widget.showSensors = true
+  local rows, bound, note, bad = ZD.Widget.sensorMapRows()
+  ZD.Dashboard.updateSensorMap(rows, 0, bound, note, bad)
 else
   ZD.Dashboard.build(w, h)
 end
-ZD.Dashboard.update()
+if kind ~= "sensors" then ZD.Dashboard.update() end
 
 local function esc(s)
   return (tostring(s):gsub("\\", "\\\\"):gsub("\t", " "):gsub("\n", " "))

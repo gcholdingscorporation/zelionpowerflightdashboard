@@ -1299,7 +1299,7 @@ do
 --      alive. RF Tool actually knows.
 --   2. The flight controller's own flight statistics - total flights and total
 --      airtime, maintained by the FC itself. That beats a counter kept on the
---      radio's SD card, which silently diverges the moment you fly the same
+--      radio's storage, which silently diverges the moment you fly the same
 --      heli with a second radio.
 --
 -- This module is strictly additive. `rf2` only exists when RF Tool is
@@ -2071,7 +2071,7 @@ local function fire(def)
 end
 
 -- Fires one alert on demand, so "are the alerts working" can be answered
--- without waiting for a flat pack or editing a threshold on the SD card and
+-- without waiting for a flat pack or editing a threshold in sensors.cfg and
 -- editing it back afterwards. Also the honest pre-flight check: it proves the
 -- volume is up and the haptic is on, which are radio settings this widget has
 -- no way to see.
@@ -3077,7 +3077,7 @@ local mode  -- "dash" | "minimal" | "toosmall"
 -- branding never leaves the screen.
 
 
--- Artwork lives on the SD card, so it can simply be absent - a widget copied
+-- Artwork lives on the radio's storage, so it can simply be absent - a widget copied
 -- without its PNGs is the likeliest first-run mistake. Check before asking
 -- LVGL to load it: a missing image otherwise fails silently and leaves a hole
 -- with nothing to explain it.
@@ -3823,7 +3823,7 @@ end
 
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
 -- actually in the widget folder and what each probe makes of it - rather than
--- inferring any of it from this side of the SD card.
+-- inferring any of it from this side of the link.
 local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 
 -- Returns a one-line summary and the full detail block separately. The detail
@@ -3931,6 +3931,10 @@ local function sensorMapRows()
   end
   return rows, bound, note, bad
 end
+
+-- Exposed for tools/dump_screen.lua, so the documented sensor map is the one
+-- the radio builds rather than a hand-written sample that drifts.
+Widget.sensorMapRows = sensorMapRows
 
 --------------------------------------------------------------------------
 -- Lifecycle

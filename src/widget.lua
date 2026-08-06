@@ -81,7 +81,7 @@ end
 
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
 -- actually in the widget folder and what each probe makes of it - rather than
--- inferring any of it from this side of the SD card.
+-- inferring any of it from this side of the link.
 local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 
 -- Returns a one-line summary and the full detail block separately. The detail
@@ -189,6 +189,10 @@ local function sensorMapRows()
   end
   return rows, bound, note, bad
 end
+
+-- Exposed for tools/dump_screen.lua, so the documented sensor map is the one
+-- the radio builds rather than a hand-written sample that drifts.
+Widget.sensorMapRows = sensorMapRows
 
 --------------------------------------------------------------------------
 -- Lifecycle
