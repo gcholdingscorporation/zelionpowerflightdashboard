@@ -57,11 +57,21 @@ local SETTINGS = {
 -- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus
 -- Config.settings for the reserved section.
 -- Returns sections, problems, settings.
+-- Which settings the file actually named, as opposed to the ones sitting at
+-- their defaults. Both look identical in Config.settings, and the aircraft
+-- profile needs to tell them apart: it may fill in a threshold nobody set, but
+-- must never overrule one a pilot wrote down.
+Config.explicit = {}
+
 function Config.parse(text)
   local sections, problems = {}, {}
   local settings = {}
+  local explicit = {}
   for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
-  if not text or text == "" then return sections, problems, settings end
+  if not text or text == "" then
+    Config.explicit = explicit
+    return sections, problems, settings
+  end
 
   local current = "*"
   sections[current] = sections[current] or {}
@@ -100,6 +110,7 @@ function Config.parse(text)
                             spec.min, spec.max)
           else
             settings[key] = n
+            explicit[key] = true
           end
         elseif not Roles.get(key) then
           problems[#problems + 1] =
@@ -115,8 +126,10 @@ function Config.parse(text)
     problems[#problems + 1] = "cellMin must be below cellFull"
     settings.cellMin  = SETTINGS.cellMin.default
     settings.cellFull = SETTINGS.cellFull.default
+    explicit.cellMin, explicit.cellFull = nil, nil
   end
 
+  Config.explicit = explicit
   return sections, problems, settings
 end
 

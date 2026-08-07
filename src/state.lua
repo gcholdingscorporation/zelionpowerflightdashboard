@@ -132,6 +132,8 @@ function State.reloadModel()
   State.modelName = name
   State.values = {}
   Sensors.reload(name)
+  -- The next model is quite possibly the other helicopter.
+  ZD.Profiles.reset()
   State.resetSession()
 end
 
@@ -182,9 +184,17 @@ State.armSwitch = nil
 -- is the one a flight log wants anyway: the interesting numbers all happen
 -- while the head is turning. Hysteresis keeps a spool-down from ending the
 -- flight, and the landing delay keeps a momentary dropout from doing so.
+-- Defaults, used until an aircraft profile says otherwise. They suit a large
+-- heli, which idles far below 250; a 200-size flies at around 5000 rpm and
+-- would have its spool-up counted as a flight at these numbers.
 State.SPIN_UP        = 250     -- rpm: the head is turning, call it a flight
 State.SPIN_DOWN      = 100     -- rpm: below this, start counting down
 State.LANDED_SECONDS = 5
+
+local function spinThresholds()
+  local up, down = ZD.Profiles.spin()
+  return up or State.SPIN_UP, down or State.SPIN_DOWN
+end
 
 local function armedFromRotor(now)
   local hs, ok = State.get("headspeed")
@@ -192,9 +202,10 @@ local function armedFromRotor(now)
     -- No headspeed at all is not a landing; it is a dropout. Hold the state.
     return spunUp
   end
-  if hs >= State.SPIN_UP then
+  local spinUp, spinDown = spinThresholds()
+  if hs >= spinUp then
     spunUp, belowSince = true, nil
-  elseif spunUp and hs < State.SPIN_DOWN then
+  elseif spunUp and hs < spinDown then
     if belowSince == nil then belowSince = now end
     if (now - belowSince) >= Host.seconds(State.LANDED_SECONDS) then
       spunUp, belowSince = false, nil
@@ -382,6 +393,15 @@ function State.service(now, opts)
   Sensors.service(now)
   RF2.service(now)
   State.linkConnected = RF2.connected
+
+  -- Pack voltage first, so auto-detection has settled on an aircraft before
+  -- anything downstream asks the profile what is plausible. sampleRole runs
+  -- the role again below; reading a sensor twice is cheaper than sampling
+  -- every other role against a profile that arrives one pass late.
+  do
+    local v, ok = Sensors.read("packVoltage")
+    ZD.Profiles.observe(v, ok == "ok")
+  end
 
   for i = 1, #Roles.order do
     sampleRole(Roles.order[i])

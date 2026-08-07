@@ -110,7 +110,13 @@
 # rotor beat. The reading is spoken through the radio's own voice, so there is
 # no sound file to install.
 #
-# alertEsc works the same way, clearing 8 degrees below the trigger.
+# alertEsc works the same way, clearing 8 degrees below the trigger. Its
+# default comes from the aircraft profile rather than being one number for
+# every helicopter - 110 on a big ESC, 90 on a 200-size one in a tight canopy.
+# Setting it here overrides the profile, for either aircraft.
+#
+# alertCell has no profile default: a LiPo cell is in trouble at 3.40 V whether
+# it is one of two or one of fourteen.
 #
 # Alerts can be switched off entirely in the widget settings, and "Test Alert"
 # there sounds one on demand - so checking that the buzzer and the voice work

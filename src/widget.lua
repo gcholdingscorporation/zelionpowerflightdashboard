@@ -17,6 +17,7 @@ local RF2     = ZD.RF2
 local State   = ZD.State
 local Alerts  = ZD.Alerts
 local FlightLog = ZD.FlightLog
+local Profiles = ZD.Profiles
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
 
@@ -36,6 +37,7 @@ local function flag(name, fallback)
 end
 local SOURCE = flag("SOURCE", 1)
 local BOOL   = flag("BOOL", 2)
+local VALUE  = flag("VALUE", 0)
 local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 0)
 
 Widget.showSensors = false
@@ -148,7 +150,17 @@ local function sensorMapRows()
   -- and whether the last write landed.
   local summary, detail = assetRows()
   local where, verdict = FlightLog.status()
+  local profile = Profiles.current()
   local rows = { summary, {
+    -- What the widget thinks it is bolted to. It decides which readings are
+    -- plausible, what headspeed counts as flying, and when the ESC is too hot,
+    -- so a wrong profile is quiet and consequential.
+    label = "-- PROFILE --",
+    sensor = Profiles.label() .. (profile and ("  " .. profile.note) or ""),
+    value = Profiles.how(),
+    status = profile and "ok" or "unbound",
+    important = true,
+  }, {
     label = "-- FLIGHT LOG --",
     sensor = where,
     value = verdict,
@@ -271,6 +283,7 @@ function Widget.update(widget, options)
   Widget.showSensors = (options and options.SensorMap == 1) or false
   Alerts.enabled = not (options and options.Alerts == 0)
   FlightLog.enabled = not (options and options.FlightLog == 0)
+  Profiles.set(options and options.Profile)
 
   -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
   -- and on again sounds another. update() is only called when the options
@@ -331,6 +344,15 @@ function Widget.background(widget)
 end
 
 Widget.options = {
+  -- 0 auto, 1 Rotorflight (6S and up), 2 OMPHOBBY OSF03 (200-size).
+  --
+  -- A number rather than a name because EdgeTX widget options have no list
+  -- type - BOOL, VALUE, SOURCE, SWITCH, COLOR, STRING and TIMER, and nothing
+  -- that presents a set of named choices. So the resolved name is printed on
+  -- the sensor map instead, where it can also say whether it was set or
+  -- detected. A profile moves alert thresholds silently, and an unlabelled
+  -- "2" in a settings page is not good enough on its own.
+  { "Profile",    VALUE,  0, 0, 2 },
   { "ArmSwitch",  SOURCE, 0 },
   { "HoldSwitch", SOURCE, 0 },
   { "SensorMap",  BOOL,   0 },

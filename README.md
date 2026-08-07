@@ -58,6 +58,47 @@ A mid-flight telemetry dropout blanks the live value but keeps the session
 peak — blanking everything at exactly the wrong moment would be worse than
 showing a reading that has stopped moving.
 
+## Aircraft profile
+
+The **Profile** option in the widget settings says what class of helicopter
+this is:
+
+| Value | Profile | For |
+|---|---|---|
+| `0` | Auto *(default)* | works it out from pack voltage |
+| `1` | Rotorflight | 6S 1800 mAh and up |
+| `2` | OMPHOBBY OSF03 | 200-size, 2S–3S |
+
+It's a number rather than a name because EdgeTX widget options have no list
+type. The resolved name is shown on the sensor map instead, along with whether
+it was set or detected.
+
+Telemetry can tell the dashboard that the current is 300 A. It cannot tell it
+whether that is a Tuesday or a bad frame — that depends entirely on the
+aircraft. So a profile carries only the things the widget genuinely cannot
+detect and that change what it does:
+
+- **What readings are plausible**, so a corrupt frame is rejected instead of
+  becoming a session peak and going into the flight log.
+- **What headspeed counts as flying.** A 700 idles well below 250 rpm; a
+  200-size flies at around 5000, so 250 rpm there is still spooling up.
+- **The ESC temperature alert.** 110 °C on a big ESC, 90 °C on a small one in
+  a tight canopy.
+
+Cell voltage is deliberately *not* in there: a LiPo cell is in trouble at
+3.40 V whether it is one of two or one of fourteen.
+
+**Auto** goes on pack voltage — 6S is 18 V flat and 3S is 12.6 V full, so
+nothing lands in the gap. It decides once and then holds, so a pack sagging
+across the boundary can't reclassify the aircraft mid-flight. It re-decides
+when you change model.
+
+Note the split is really by size and pack rather than by firmware — Rotorflight
+runs 200-size helis too. A Rotorflight 200 wants profile `2`, and Auto picks
+that correctly.
+
+Anything you set in `sensors.cfg` beats the profile.
+
 ## Sensor diagnostics
 
 Turn on **Show Sensor Map** in the widget settings. It lists every telemetry **role** the dashboard knows
