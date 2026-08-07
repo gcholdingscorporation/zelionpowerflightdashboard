@@ -175,6 +175,14 @@ end
 -- what the pilot asked for, telemetry says what the aircraft did.
 State.armSwitch = nil
 
+-- Which way round the switch is. EdgeTX reports a two-position switch as
+-- -1024 and +1024, and which end means "armed" depends entirely on how the
+-- switch is mounted and set up - there is nothing in the value to say. Arming
+-- with the switch back therefore reads as permanently armed, and the widget
+-- has no way to know it is wrong: it would run the flight timer on the bench
+-- and log a flight the moment you switched off.
+State.armInvert = false
+
 -- Last resort: the rotor itself. A flight controller that publishes no ARM
 -- flags and a pilot who has not nominated a switch would otherwise never
 -- record a flight, never reset their peaks and never run the flight timer -
@@ -224,7 +232,11 @@ local function readArmed(now)
   end
   if State.armSwitch and State.armSwitch ~= 0 then
     local v = Host.read(State.armSwitch)
-    if v ~= nil then return v > 0, "switch" end
+    if v ~= nil then
+      local on = v > 0
+      if State.armInvert then on = not on end
+      return on, State.armInvert and "switch (inv)" or "switch"
+    end
   end
   if State.valid("headspeed") or spunUp then
     return armedFromRotor(now or Host.now()), "rotor"

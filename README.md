@@ -183,6 +183,23 @@ averages into a lie.
 Anything under 20 seconds is not logged — that is a spool-up test, not a
 flight.
 
+### If a switch is round the wrong way
+
+EdgeTX reports a two-position switch as `-1024` and `+1024`, and nothing in the
+value says which end you call "armed" — that depends on how the switch is
+mounted. The widget assumes the positive end. If yours is the other way round,
+turn on **Arm Invert** (or **Hold Invert**) in the widget settings.
+
+Both are worth getting right, and both fail silently:
+
+- A reversed **arm** switch reads as armed whenever you think it's off. It runs
+  the flight timer on the bench, and logs a "flight" the moment you switch off.
+- A reversed **hold** switch silences the alerts and freezes the peaks for the
+  entire flight, while looking exactly like a working one.
+
+The sensor map shows `arm source switch (inv)` when the arm switch is
+inverted, so the two cases don't look identical.
+
 A flight starts and ends from the flight controller's ARM flags where they
 exist. Where they do not, ZelionDash falls back to the **Arm Switch** option
 if you have set one, and failing that to the rotor itself: above 250 rpm is a

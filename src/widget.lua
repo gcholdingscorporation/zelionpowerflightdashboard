@@ -213,10 +213,14 @@ Widget.sensorMapRows = sensorMapRows
 local function serviceOpts(widget)
   local opts = widget.options or {}
   State.armSwitch = opts.ArmSwitch
+  State.armInvert = opts.ArmInvert == 1
   local hold = false
   if opts.HoldSwitch and opts.HoldSwitch ~= 0 then
     local v = Host.read(opts.HoldSwitch)
-    hold = v ~= nil and v > 0
+    if v ~= nil then
+      hold = v > 0
+      if opts.HoldInvert == 1 then hold = not hold end
+    end
   end
   return { hold = hold }
 end
@@ -353,8 +357,16 @@ Widget.options = {
   -- detected. A profile moves alert thresholds silently, and an unlabelled
   -- "2" in a settings page is not good enough on its own.
   { "Profile",    VALUE,  0, 0, 2 },
+  -- EdgeTX reports a two-position switch as -1024 and +1024, and nothing in
+  -- the value says which end the pilot calls "armed" - that depends on how the
+  -- switch is mounted. Getting it backwards is silent and consequential in
+  -- both cases: a reversed arm switch runs the flight timer on the bench and
+  -- logs a flight when you switch off, and a reversed hold switch silences the
+  -- alerts for the whole flight while looking exactly like a working one.
   { "ArmSwitch",  SOURCE, 0 },
+  { "ArmInvert",  BOOL,   0 },
   { "HoldSwitch", SOURCE, 0 },
+  { "HoldInvert", BOOL,   0 },
   { "SensorMap",  BOOL,   0 },
   { "Alerts",     BOOL,   1 },
   { "TestAlert",  BOOL,   0 },
