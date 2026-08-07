@@ -1,0 +1,39 @@
+name: tests
+
+# The suite takes seconds and catches things a human cannot. One test in
+# particular only works as a check that runs by itself: EdgeTX registers
+# `string` as a plain table without a metatable, so `s:gsub(...)` raises on the
+# radio and nowhere else. Running the widget can never find that - only a scan
+# of the built file can, and a scan nobody runs finds nothing.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+
+      - name: Build
+        run: lua5.4 tools/build.lua
+
+      # dist/ is committed, and it is the file that gets copied onto the radio.
+      # A src/ change without a rebuild ships stale code to the aircraft while
+      # every test passes against the new source. The build is deterministic,
+      # so any diff here means someone forgot to rebuild.
+      - name: dist/ is up to date with src/
+        run: |
+          if ! git diff --exit-code --stat -- dist/; then
+            echo "::error::dist/ is stale. Run 'lua5.4 tools/build.lua' and commit the result."
+            exit 1
+          fi
+
+      - name: Tests
+        run: lua5.4 tests/run.lua
