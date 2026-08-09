@@ -188,6 +188,9 @@ end
 -- Clamp-free validity test. Values outside the window are rejected outright
 -- rather than clamped, because a clamped garbage reading still looks plausible
 -- on screen and that is worse than showing nothing.
+-- The role's window is the outer limit; an aircraft profile may tighten it.
+-- Looked up at call time rather than captured, because Profiles loads after
+-- this module and the active profile changes with the model.
 function Roles.isSane(role, value)
   local def = Roles.defs[role]
   if not def or value == nil then return false end
@@ -196,6 +199,13 @@ function Roles.isSane(role, value)
   if def.min and v < def.min then return false end
   if def.max and v > def.max then return false end
   if def.int and v ~= math.floor(v) then return false end
+
+  local P = ZD.Profiles
+  local w = P and P.window(role)
+  if w then
+    if w.min and v < w.min then return false end
+    if w.max and v > w.max then return false end
+  end
   return true
 end
 

@@ -50,8 +50,12 @@ local state = {}           -- id -> { active, nextAt }
 -- trigger/clear are deliberately asymmetric. speak() is called on every fire,
 -- after the haptic, and may say nothing at all - a governor fault has no
 -- number worth reading out.
+-- Cell voltage is chemistry, not aircraft: a LiPo cell is in trouble at 3.4 V
+-- whether it is one of two or one of fourteen. ESC temperature is aircraft -
+-- a small ESC in a tight canopy is struggling well before a 700's is - so it
+-- goes through the profile, which still lets sensors.cfg overrule it.
 local function cellLow()  return Config.setting("alertCell") end
-local function escHigh()  return Config.setting("alertEsc") end
+local function escHigh()  return ZD.Profiles.setting("alertEsc") end
 
 local GOV_FAULT = { ["THR-OFF"] = true, ["LOST-HS"] = true, AUTOROT = true }
 
@@ -137,7 +141,7 @@ local function fire(def)
 end
 
 -- Fires one alert on demand, so "are the alerts working" can be answered
--- without waiting for a flat pack or editing a threshold on the SD card and
+-- without waiting for a flat pack or editing a threshold in sensors.cfg and
 -- editing it back afterwards. Also the honest pre-flight check: it proves the
 -- volume is up and the haptic is on, which are radio settings this widget has
 -- no way to see.

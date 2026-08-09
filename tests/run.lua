@@ -11,6 +11,7 @@ local SUITES = {
   "test_sensors",
   "test_state",
   "test_alerts",
+  "test_profiles",
   "test_flightlog",
   "test_rf2",
   "test_layout",

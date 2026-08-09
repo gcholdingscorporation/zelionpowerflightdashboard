@@ -8,7 +8,7 @@
 --      alive. RF Tool actually knows.
 --   2. The flight controller's own flight statistics - total flights and total
 --      airtime, maintained by the FC itself. That beats a counter kept on the
---      radio's SD card, which silently diverges the moment you fly the same
+--      radio's storage, which silently diverges the moment you fly the same
 --      heli with a second radio.
 --
 -- This module is strictly additive. `rf2` only exists when RF Tool is

@@ -85,6 +85,48 @@ H.test("no string method syntax survives into the build", function()
        "use string." .. "fn(s, ...) instead -- " .. table.concat(offenders, ", "))
 end)
 
+H.group("build: a hold switch round the wrong way")
+
+-- Reversed, the hold switch freezes the extremes and silences the alerts for
+-- the whole flight while looking exactly like a working one. Driven through
+-- the built artifact because the inversion lives in the widget's option
+-- handling, and the observable effect is a peak that stops moving.
+
+local function heldPeak(invert, switchValue)
+  local widgetDef, widget = boot(800, 480,
+    { HoldSwitch = "SH", HoldInvert = invert },
+    function()
+      flying()
+      Mock.addSensor("SH", nil, switchValue)
+    end)
+  Mock.advanceSeconds(0.2)
+  widgetDef.refresh(widget)
+  Mock.setSensor("Hspd", 2150)          -- a new peak, if it is allowed through
+  Mock.advanceSeconds(0.5)
+  widgetDef.refresh(widget)
+  return Mock.lvglText()
+end
+
+H.test("held normally, the peak stops moving", function()
+  local text = heldPeak(0, 1024)
+  H.falsy(string.find(text, "MAX 2150", 1, true), "frozen while held")
+end)
+
+H.test("not held, the peak follows", function()
+  local text = heldPeak(0, -1024)
+  H.truthy(string.find(text, "MAX 2150", 1, true))
+end)
+
+H.test("inverted, the far end of the switch is what holds", function()
+  local text = heldPeak(1, -1024)
+  H.falsy(string.find(text, "MAX 2150", 1, true), "held, the other way round")
+end)
+
+H.test("inverted, the near end no longer holds", function()
+  local text = heldPeak(1, 1024)
+  H.truthy(string.find(text, "MAX 2150", 1, true))
+end)
+
 H.group("build: artifact")
 
 H.test("exports the EdgeTX widget interface", function()

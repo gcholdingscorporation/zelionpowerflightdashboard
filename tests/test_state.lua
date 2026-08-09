@@ -112,6 +112,62 @@ H.test("the rotor latch does not follow you to the next model", function()
   H.eq(ZD.State.armSource, "none")
 end)
 
+H.group("state: a switch that is round the wrong way")
+
+-- EdgeTX reports a two-position switch as -1024 and +1024. Nothing in the
+-- value says which end the pilot calls "armed" - that is how the switch is
+-- mounted - so getting it backwards is silent, and the widget cannot tell.
+
+H.test("a switch at +1024 arms, as before", function()
+  local ZD = fresh(function() Mock.addSensor("SA", nil, 1024) end)
+  ZD.State.armSwitch = "SA"
+  run(ZD, 0.3)
+  H.truthy(ZD.State.armed)
+  H.eq(ZD.State.armSource, "switch")
+end)
+
+H.test("a reversed switch reads as permanently armed without the option", function()
+  -- Pins the bug the option exists for: on the bench this runs the flight
+  -- timer, and switching off at the end logs a flight that never happened.
+  local ZD = fresh(function() Mock.addSensor("SA", nil, -1024) end)
+  ZD.State.armSwitch = "SA"
+  run(ZD, 0.3)
+  H.falsy(ZD.State.armed, "reads disarmed while the pilot has it armed")
+end)
+
+H.test("inverting it puts the flight the right way round", function()
+  local ZD = fresh(function() Mock.addSensor("SA", nil, -1024) end)
+  ZD.State.armSwitch = "SA"
+  ZD.State.armInvert = true
+  run(ZD, 0.3)
+  H.truthy(ZD.State.armed)
+  Mock.setSensor("SA", 1024)
+  run(ZD, 0.3)
+  H.falsy(ZD.State.armed, "and disarms at the other end")
+end)
+
+H.test("the sensor map says the switch is inverted", function()
+  -- Otherwise "arm source switch" looks identical whichever way round it is,
+  -- and a pilot chasing a wrong flight time has nothing to go on.
+  local ZD = fresh(function() Mock.addSensor("SA", nil, -1024) end)
+  ZD.State.armSwitch = "SA"
+  ZD.State.armInvert = true
+  run(ZD, 0.3)
+  H.eq(ZD.State.armSource, "switch (inv)")
+end)
+
+H.test("inverting does not touch telemetry or the rotor", function()
+  local ZD = fresh(function()
+    Mock.addSensor("SA", nil, -1024)
+    Mock.addSensor("ARM", nil, 0)
+  end)
+  ZD.State.armSwitch = "SA"
+  ZD.State.armInvert = true
+  run(ZD, 0.3)
+  H.falsy(ZD.State.armed, "the flight controller still wins, and said no")
+  H.eq(ZD.State.armSource, "telemetry")
+end)
+
 H.group("state: session extremes")
 
 H.test("tracks a maximum across the session", function()

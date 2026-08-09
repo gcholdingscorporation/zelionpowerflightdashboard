@@ -202,7 +202,7 @@ local mode  -- "dash" | "minimal" | "toosmall"
 -- branding never leaves the screen.
 
 
--- Artwork lives on the SD card, so it can simply be absent - a widget copied
+-- Artwork lives on the radio's storage, so it can simply be absent - a widget copied
 -- without its PNGs is the likeliest first-run mistake. Check before asking
 -- LVGL to load it: a missing image otherwise fails silently and leaves a hole
 -- with nothing to explain it.
