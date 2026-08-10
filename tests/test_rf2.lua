@@ -168,4 +168,103 @@ H.test("survives rf2 being a non-table", function()
   H.falsy(ZD.RF2.registered)
 end)
 
+H.group("rf2: saying which of the four problems it is")
+
+-- The module is invisible when it works and invisible when it does not. These
+-- are the states a pilot can actually be in, and each has a different fix:
+-- RF Tool not installed, installed but never registered, registered but the
+-- flight controller never handshaked, and working.
+
+local function status(ZD)
+  local detail, verdict = ZD.RF2.status()
+  return detail .. " | " .. verdict
+end
+
+H.test("not installed says so, and does not read as broken", function()
+  local ZD = fresh()
+  run(ZD, 6)
+  local detail, verdict, st = ZD.RF2.status()
+  H.eq(detail, "not installed")
+  H.eq(verdict, "optional", "absence is the normal case, not a fault")
+  H.truthy(st ~= "insane", "and must not be flagged red")
+end)
+
+H.test("installed but not yet registered is called out", function()
+  local ZD = fresh(function() Mock.installRf2({ apiVersion = 12.09 }) end)
+  -- No service pass, so registration has not run.
+  local detail, verdict = ZD.RF2.status()
+  H.eq(detail, "found, not registered")
+  H.eq(verdict, "waiting")
+end)
+
+H.test("registered but no flight controller yet", function()
+  local ZD = fresh(function() Mock.installRf2({}) end)   -- no apiVersion
+  run(ZD, 6)
+  H.truthy(ZD.RF2.registered, "registration itself succeeded")
+  local _, verdict = ZD.RF2.status()
+  H.eq(verdict, "waiting", "nothing has handshaked")
+end)
+
+H.test("working shows the craft name and the API version", function()
+  local ZD = fresh(function()
+    Mock.installRf2({ apiVersion = 12.09, modelName = "GOBLIN 700" })
+  end)
+  run(ZD, 6)
+  local detail, verdict, st = ZD.RF2.status()
+  H.truthy(string.find(detail, "GOBLIN 700", 1, true), "from the FC, got " .. detail)
+  H.truthy(string.find(detail, "12.09", 1, true), "and the API version")
+  H.eq(st, "ok")
+  H.truthy(verdict ~= "waiting")
+end)
+
+H.test("a dropped link is distinguishable from never having had one", function()
+  local ZD = fresh(function()
+    Mock.installRf2({ apiVersion = 12.09, modelName = "GOBLIN 700" })
+  end)
+  run(ZD, 6)
+  Mock.rf2Widgets[1].onStateChanged(nil, "disconnected")
+  local _, verdict = ZD.RF2.status()
+  H.eq(verdict, "no link")
+end)
+
+H.group("rf2: the flight controller's own totals")
+
+H.test("reports flights and airtime once read", function()
+  local ZD = fresh(function()
+    Mock.installRf2({ apiVersion = 12.09, modelName = "GOBLIN 700" })
+  end)
+  run(ZD, 6)
+  local text, verdict = ZD.RF2.statsText()
+  H.eq(verdict, "ok")
+  H.truthy(string.find(text, "137 flights", 1, true), "got " .. text)
+  H.truthy(string.find(text, "11h 27m", 1, true), "41230s as hours, got " .. text)
+end)
+
+H.test("an FC too old to answer says so rather than reading as broken", function()
+  local ZD = fresh(function() Mock.installRf2({ apiVersion = 12.06 }) end)
+  run(ZD, 6)
+  local text, verdict, st = ZD.RF2.statsText()
+  H.eq(verdict, "too old")
+  H.truthy(string.find(text, "12.09", 1, true), "names the version needed")
+  H.truthy(st ~= "insane", "not a fault, just an older flight controller")
+end)
+
+H.test("a reply it cannot parse is a failure, not a zero", function()
+  local ZD = fresh(function()
+    Mock.installRf2({ apiVersion = 12.09, stats = { nonsense = true } })
+  end)
+  run(ZD, 6)
+  local _, verdict, st = ZD.RF2.statsText()
+  H.eq(verdict, "FAILED")
+  H.eq(st, "insane")
+end)
+
+H.test("with RF Tool absent the stats line is off, not failed", function()
+  local ZD = fresh()
+  run(ZD, 6)
+  local _, verdict, st = ZD.RF2.statsText()
+  H.eq(verdict, "off")
+  H.truthy(st ~= "insane")
+end)
+
 end

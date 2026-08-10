@@ -127,6 +127,37 @@ H.test("inverted, the near end no longer holds", function()
   H.truthy(string.find(text, "MAX 2150", 1, true))
 end)
 
+H.group("build: RF Tool reaches the screen")
+
+H.test("the RF Tool rows appear on the sensor map", function()
+  Mock.reset()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.installRf2({ apiVersion = 12.09, modelName = "GOBLIN 700" })
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+  local opts = { SensorMap = 1 }
+  local def = loadDist()
+  local widget = def.create({ x = 0, y = 0, w = 800, h = 480 }, opts)
+  def.update(widget, opts)
+  for _ = 1, 70 do
+    Mock.advanceSeconds(0.1)
+    def.refresh(widget, 0, nil)
+  end
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "RF TOOL", 1, true), "the row is there")
+  H.truthy(string.find(t, "GOBLIN 700", 1, true), "with the FC craft name")
+  H.truthy(string.find(t, "137 flights", 1, true), "and the FC's own total")
+end)
+
+H.test("and say 'not installed' rather than nothing when it is absent", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "RF TOOL", 1, true))
+  H.truthy(string.find(t, "not installed", 1, true),
+           "absence has to be visible too - a blank row proves nothing")
+end)
+
 H.group("build: artifact")
 
 H.test("exports the EdgeTX widget interface", function()

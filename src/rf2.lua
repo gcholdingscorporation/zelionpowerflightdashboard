@@ -188,6 +188,60 @@ function RF2.service(now)
   end
 end
 
+--------------------------------------------------------------------------
+-- Diagnostics
+--------------------------------------------------------------------------
+--
+-- This whole module is invisible when it works and invisible when it does not.
+-- The only outward sign was the sensor map footer quietly showing the flight
+-- controller's craft name instead of the EdgeTX model name, which is not
+-- enough to tell "RF Tool is not installed" from "installed but never
+-- registered" from "registered but the FC never handshaked" - four different
+-- problems with four different fixes.
+--
+-- Returns detail, verdict, status. Same shape as FlightLog.status().
+function RF2.status()
+  if not RF2.available() then
+    -- Not a fault. The dashboard is fully usable without RF Tool, and most
+    -- radios will never have it.
+    return "not installed", "optional", "unbound"
+  end
+  if not RF2.registered then
+    return "found, not registered", "waiting", "insane"
+  end
+
+  local detail = RF2.craftName or "registered"
+  if RF2.apiVersion then
+    detail = detail .. string.format("  api %.2f", RF2.apiVersion)
+  end
+
+  if RF2.connected == false then return detail, "no link", "unbound" end
+  if RF2.connected == nil then return detail, "waiting", "unbound" end
+  return detail, RF2.linkState or "connected", "ok"
+end
+
+-- The flight controller's own totals, which is the point of the integration:
+-- a counter kept on the radio diverges the moment you fly the same heli with
+-- a second radio.
+function RF2.statsText()
+  if not RF2.available() then return "--", "off", "unbound" end
+  if RF2.statsStatus == "unsupported" then
+    return "needs MSP API 12.09", "too old", "unbound"
+  end
+  if RF2.statsStatus == "ok" then
+    local s = string.format("%d flights", RF2.totalFlights or 0)
+    local secs = tonumber(RF2.totalFlightSeconds)
+    if secs then
+      s = s .. string.format(", %dh %02dm",
+                             math.floor(secs / 3600),
+                             math.floor((secs % 3600) / 60))
+    end
+    return s, "ok", "ok"
+  end
+  if RF2.statsStatus == "error" then return "no usable reply", "FAILED", "insane" end
+  return "--", RF2.statsStatus, "unbound"
+end
+
 function RF2.reset()
   RF2.registered = false
   RF2.linkState  = nil

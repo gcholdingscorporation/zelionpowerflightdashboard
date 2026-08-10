@@ -151,7 +151,24 @@ local function sensorMapRows()
   local summary, detail = assetRows()
   local where, verdict = FlightLog.status()
   local profile = Profiles.current()
+  local rfWhere, rfVerdict, rfStatus = RF2.status()
+  local statsText, statsVerdict, statsStatus = RF2.statsText()
   local rows = { summary, {
+    -- Optional, and silent either way. Without this the only outward sign of
+    -- RF Tool was the footer quietly showing the FC's craft name, which cannot
+    -- distinguish "not installed" from "installed but never registered" from
+    -- "registered but the FC never handshaked".
+    label = "-- RF TOOL --",
+    sensor = rfWhere,
+    value = rfVerdict,
+    status = rfStatus,
+    important = true,
+  }, {
+    label = "  fc stats",
+    sensor = statsText,
+    value = statsVerdict,
+    status = statsStatus,
+  }, {
     -- What the widget thinks it is bolted to. It decides which readings are
     -- plausible, what headspeed counts as flying, and when the ESC is too hot,
     -- so a wrong profile is quiet and consequential.
