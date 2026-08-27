@@ -3299,7 +3299,10 @@ local CLASS = {
     chipH = 75, colGapV = 8,
     heroGapV = 8, batShare = 0.508,
     batValShare = 0.62, hsValShare = 0.78,
-    govH = 90, rowGapV = 8, tileH = 110, tileGapH = 3,
+    govH = 82, rowGapV = 8, tileH = 110, tileGapH = 3,
+    -- The headspeed tile may not be squeezed below this to make the
+    -- battery tile line up: an XXLSIZE numeral is 102px on its own.
+    minHeroH = 150,
   },
   tight = {
     name = "tight", refH = 320,
@@ -3308,7 +3311,8 @@ local CLASS = {
     chipH = 61, colGapV = 7,
     heroGapV = 6, batShare = 0.5,
     batValShare = 0.62, hsValShare = 0.82,
-    govH = 56, rowGapV = 7, tileH = 74, tileGapH = 3,
+    govH = 52, rowGapV = 7, tileH = 74, tileGapH = 3,
+    minHeroH = 108,
   },
 }
 
@@ -3358,16 +3362,12 @@ function Layout.build(w, h)
   local barY = contentTop + chipH + C.colGapV
   L.bar = rect(barX, barY, C.barW, contentH - chipH - C.colGapV)
 
-  -- --- hero column: battery above, headspeed below ------------------------
-  local heroAvail = contentH - C.heroGapV
-  local batH = round(heroAvail * C.batShare)
-  L.battery   = rect(heroX, contentTop, heroW, batH)
-  L.headspeed = rect(heroX, contentTop + batH + C.heroGapV, heroW,
-                     heroAvail - batH)
-
   -- --- right column: governor, tile row, logo -----------------------------
-  -- Governor and the tile row are fixed; the logo takes the remainder, so a
-  -- taller screen grows the brand block rather than stretching the data.
+  -- Laid out before the hero column, because this side has the hard minimums.
+  -- Every height here is a font: the governor holds a word at DBLSIZE, and
+  -- each tile holds a title, a reading and a min/max footnote. Squeeze either
+  -- and the text collides. The battery tile has no such floor, so it is the
+  -- one that gives.
   local govH  = C.govH
   local tileH = C.tileH
   L.gov = rect(rightX, contentTop, C.rightW, govH)
@@ -3384,6 +3384,22 @@ function Layout.build(w, h)
   local logoY = tileY + tileH + C.rowGapV
   local logoBox = rect(rightX, logoY, C.rightW, (contentTop + contentH) - logoY)
   L.logoBox = logoBox
+
+  -- --- hero column: battery above, headspeed below ------------------------
+  -- The battery tile ends exactly where the tile row ends. Two columns of
+  -- data stopping at different heights read as a mistake even when both are
+  -- deliberate - the eye lands on that edge before it reads any number.
+  --
+  -- Derived rather than tuned. Two heights that happen to add up are a pair
+  -- of numbers that drifts apart the first time either column changes, and
+  -- these had already drifted 18px.
+  local heroAvail = contentH - C.heroGapV
+  local batH = govH + C.rowGapV + tileH
+  if batH > heroAvail - C.minHeroH then batH = heroAvail - C.minHeroH end
+  L.battery   = rect(heroX, contentTop, heroW, batH)
+  L.headspeed = rect(heroX, contentTop + batH + C.heroGapV, heroW,
+                     heroAvail - batH)
+
 
   -- The mark fills whatever space is left at its own aspect ratio, never
   -- stretched: an unevenly scaled logo is worse than a slightly smaller one.
