@@ -108,6 +108,8 @@ function Mock.reset()
   Mock.state.writes = 0
   Mock.state.readOnly = false
   Mock.state.missingDirs = {}
+  Mock.state.timers = { [0] = { value = 0, start = 0 } }
+  Mock.state.timerWrites = 0
   Mock.played = {}
   reindex()
 end
@@ -165,6 +167,19 @@ function Mock.install()
   _G.model = {
     getInfo = function() return { name = Mock.state.modelName } end,
     getTimer = function(i) return Mock.state.timers[i] end,
+    -- Merges, the way EdgeTX's does: only the fields the caller passes are
+    -- touched. A widget that clobbered a pilot's timer name or countdown
+    -- preference is a widget nobody keeps installed.
+    setTimer = function(i, fields)
+      local t = Mock.state.timers[i]
+      if not t then
+        t = {}
+        Mock.state.timers[i] = t
+      end
+      for k, v in pairs(fields or {}) do t[k] = v end
+      Mock.state.timerWrites = (Mock.state.timerWrites or 0) + 1
+      return true
+    end,
   }
   if Mock.state.hasGetSensor then
     _G.model.getSensor = function(i)

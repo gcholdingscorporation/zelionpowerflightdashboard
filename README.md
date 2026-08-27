@@ -155,6 +155,36 @@ confirms the right sensor is bound.
 
 Thresholds are configurable; see `docs/sensors.cfg.example`.
 
+## Time remaining
+
+Set **Time Timer** in the widget settings to 1, 2 or 3 and ZelionDash drives
+that EdgeTX timer with the predicted seconds of flight left. 0 is off.
+
+Only the timer's *running value* is written. Its name, countdown voice, minute
+calls and haptic stay yours, configured on the timer page — so the radio
+announces the countdown in your own language, with your cadence, and the number
+shows up on the header bar and every telemetry screen rather than only here.
+
+Voltage is a late signal on an electric heli: sag under load dominates, so the
+cell alert fires when you are already most of the way through the pack.
+Consumed capacity is the early, linear one.
+
+**It does not need to know your pack size.** Capacity used is a real number of
+mAh and battery percent is the fraction still in there, so the remainder
+follows from the two — 580 mAh gone with 42% showing implies 420 mAh left. That
+matters when the same radio flies a 400 mAh 2S and a 12S 700: a pack size
+configured once is a pack size that is wrong next time you change battery.
+
+The estimate reaches zero at a reserve rather than at a flat pack. Default 20%;
+change it with `reservePct` in `sensors.cfg`.
+
+It refuses to answer rather than guess — in the first seconds of a flight,
+off a pack too full for the arithmetic to mean anything, or with no capacity or
+percent sensor. The `flight` row on the sensor map says which. It also only
+ever falls: an estimate that climbs while you fly reads as broken, and EdgeTX
+announces a countdown by watching thresholds, so a value drifting back up over
+60 would say "one minute" twice.
+
 ## Flight log
 
 **Log Flights** is on by default. One CSV line per flight, written once, when

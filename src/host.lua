@@ -390,6 +390,22 @@ function Host.modelName()
   return tostring(n)
 end
 
+-- Writes a live timer value. EdgeTX's setTimer accepts mode, start, value,
+-- countdownBeep, minuteBeep, persistent, name, showElapsed, switch,
+-- countdownStart and extraHaptic; `value` sets the running value rather than
+-- the start, which is what makes a timer drivable from a script.
+--
+-- Only the fields the caller passes are touched. Everything else on that timer
+-- belongs to the pilot's settings page, and a widget that overwrote a name or
+-- a countdown preference would be a widget nobody keeps installed.
+function Host.setTimer(index, fields)
+  if type(modelTbl) ~= "table" or type(modelTbl.setTimer) ~= "function" then
+    return false
+  end
+  if type(fields) ~= "table" then return false end
+  return (pcall(modelTbl.setTimer, index or 0, fields))
+end
+
 function Host.timer(index)
   if type(modelTbl) ~= "table" or type(modelTbl.getTimer) ~= "function" then
     return nil
