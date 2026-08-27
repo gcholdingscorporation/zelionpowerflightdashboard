@@ -2678,15 +2678,19 @@ function FlightTime.clock()
   return string.format("%d:%02d", math.floor(s / 60), s % 60)
 end
 
-function FlightTime.summary()
-  if FlightTime.seconds == nil then return FlightTime.why end
-  local parts = string.format("to %d%% reserve", reserve())
-  if FlightTime.rate then
-    parts = parts .. string.format(", %.0f mAh/min", FlightTime.rate * 60)
-  end
+-- Which EdgeTX timer is being overwritten, for the sensor map. Nothing else
+-- on the radio says. Point this at a timer already in use and it quietly
+-- stops being that timer - the pilot's own flight timer replaced by this
+-- countdown, wearing its name and its settings, and no way to tell until you
+-- are in the air wondering why it reads wrong.
+--
+-- Shown rather than forbidden. A hard refusal would also block someone doing
+-- it deliberately, and the problem here was never the choice - it was that
+-- the choice was invisible.
+function FlightTime.timerLabel()
   local idx = FlightTime.timerIndex
-  if idx then parts = parts .. string.format(", timer %d", idx + 1) end
-  return parts
+  if idx == nil then return nil end
+  return string.format("T%d", idx + 1)
 end
 
 function FlightTime.resetTimerWrite()
@@ -4467,8 +4471,10 @@ local function sensorMapRows()
     -- flight there is nothing to write, and "no file appeared" reads exactly
     -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("FLYING, from " .. State.armSource)
-             or ("idle, arm source " .. State.armSource),
+    sensor = (State.armed and ("FLYING, from " .. State.armSource)
+              or ("idle, arm source " .. State.armSource))
+             .. (FlightTime.timerLabel()
+                 and (" -> " .. FlightTime.timerLabel()) or ""),
     -- Elapsed, then whichever second figure is worth the space. On the
     -- ground that is the 20s a flight has to reach to be logged; in the air
     -- it is how long is left, which is the only number anyone wants mid-air.

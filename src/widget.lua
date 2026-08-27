@@ -190,8 +190,10 @@ local function sensorMapRows()
     -- flight there is nothing to write, and "no file appeared" reads exactly
     -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("FLYING, from " .. State.armSource)
-             or ("idle, arm source " .. State.armSource),
+    sensor = (State.armed and ("FLYING, from " .. State.armSource)
+              or ("idle, arm source " .. State.armSource))
+             .. (FlightTime.timerLabel()
+                 and (" -> " .. FlightTime.timerLabel()) or ""),
     -- Elapsed, then whichever second figure is worth the space. On the
     -- ground that is the 20s a flight has to reach to be logged; in the air
     -- it is how long is left, which is the only number anyone wants mid-air.

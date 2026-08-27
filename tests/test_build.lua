@@ -158,6 +158,35 @@ H.test("and say 'not installed' rather than nothing when it is absent", function
            "absence has to be visible too - a blank row proves nothing")
 end)
 
+H.group("build: which timer is being overwritten")
+
+-- Point Time Timer at a timer already in use and it quietly stops being that
+-- timer. Nothing else on the radio says which one this widget has taken, so a
+-- wrong setting would only surface in the air.
+
+H.test("the flight row names the timer being driven", function()
+  local def, widget = boot(800, 480, { SensorMap = 1, TimeTimer = 3 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "-> T3", 1, true),
+           "a wrong timer has to be obvious on the ground")
+end)
+
+H.test("and says nothing when no timer is being driven", function()
+  local def, widget = boot(800, 480, { SensorMap = 1, TimeTimer = 0 }, flying)
+  def.refresh(widget, 0, nil)
+  H.falsy(string.find(Mock.lvglText(), "-> T", 1, true),
+          "off means off, not a dangling arrow")
+end)
+
+H.test("option 1 means EdgeTX timer 1, not timer 2", function()
+  -- Timers are 0-based in Lua and 1-based on the settings page. Getting that
+  -- wrong would overwrite the neighbouring timer, which is precisely the
+  -- accident this label exists to catch.
+  local def, widget = boot(800, 480, { SensorMap = 1, TimeTimer = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "-> T1", 1, true))
+end)
+
 H.group("build: artifact")
 
 H.test("exports the EdgeTX widget interface", function()

@@ -176,6 +176,12 @@ follows from the two — 580 mAh gone with 42% showing implies 420 mAh left. Tha
 matters when the same radio flies a 400 mAh 2S and a 12S 700: a pack size
 configured once is a pack size that is wrong next time you change battery.
 
+**Pick a timer you are not already using.** Only the running value is written,
+so the timer's own settings survive — but the number becomes this estimate, and
+a timer you had counting down from 5:00 stops being that timer. The sensor map's
+`flight` row shows which one is being driven (`FLYING, from telemetry -> T3`),
+so a wrong choice is visible on the ground rather than in the air.
+
 The estimate reaches zero at a reserve rather than at a flat pack. Default 20%;
 change it with `reservePct` in `sensors.cfg`.
 
