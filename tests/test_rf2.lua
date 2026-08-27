@@ -267,4 +267,70 @@ H.test("with RF Tool absent the stats line is off, not failed", function()
   H.truthy(st ~= "insane")
 end)
 
+H.group("rf2: a flight controller that turns up later")
+
+-- Observed on hardware. The radio boots with the heli unpowered, so we
+-- register while RF Tool has nothing; the pack goes in a minute later. RF Tool
+-- publishes state only on *change* and no event reached us, so the widget sat
+-- on "waiting" indefinitely while RF Tool's own screen read Connected.
+
+H.test("picks up an FC that connects after we registered, with no event", function()
+  local rf2
+  local ZD = fresh(function()
+    rf2 = Mock.installRf2({})          -- RF Tool present, FC not connected
+  end)
+  run(ZD, 6)
+  H.truthy(ZD.RF2.registered, "registered against an idle RF Tool")
+  H.nilv(ZD.RF2.connected, "and correctly reports nothing yet")
+
+  -- Heli powered. RF Tool handshakes; no onStateChanged is delivered to us.
+  rf2.apiVersion = 12.09
+  rf2.modelName  = "OMPHOBBY M7R"
+  run(ZD, 1)
+
+  H.truthy(ZD.RF2.connected, "must notice without being told")
+  H.eq(ZD.RF2.craftName, "OMPHOBBY M7R")
+  H.eq(ZD.RF2.statsStatus, "ok", "and go and fetch the stats")
+end)
+
+H.test("an explicit disconnect beats the poll", function()
+  -- The event is authoritative. If RF Tool says disconnected but leaves
+  -- apiVersion populated, the poll must not immediately undo it.
+  local rf2
+  local ZD = fresh(function()
+    rf2 = Mock.installRf2({ apiVersion = 12.09, modelName = "OMPHOBBY M7R" })
+  end)
+  run(ZD, 6)
+  H.truthy(ZD.RF2.connected)
+
+  Mock.rf2Widgets[1].onStateChanged(nil, "disconnected")
+  run(ZD, 2)                            -- several polls go by
+  H.eq(ZD.RF2.connected, false, "still disconnected, as RF Tool said")
+end)
+
+H.test("a handshake that drops is noticed", function()
+  local rf2
+  local ZD = fresh(function()
+    rf2 = Mock.installRf2({ apiVersion = 12.09, modelName = "OMPHOBBY M7R" })
+  end)
+  run(ZD, 6)
+  H.truthy(ZD.RF2.connected)
+
+  rf2.apiVersion = nil                  -- RF Tool lost the FC, told us nothing
+  run(ZD, 1)
+  H.eq(ZD.RF2.connected, false)
+  H.nilv(ZD.RF2.craftName, "and the stale craft name is cleared")
+end)
+
+H.test("polling does not re-request stats on every pass", function()
+  -- MSP is a round trip over the telemetry link, not a local read. Asking
+  -- once a frame would flood it.
+  local ZD = fresh(function()
+    Mock.installRf2({ apiVersion = 12.09, modelName = "OMPHOBBY M7R" })
+  end)
+  run(ZD, 20)
+  H.truthy(Mock.rf2Reads <= 2,
+           "one request, not one per service pass - got " .. Mock.rf2Reads)
+end)
+
 end

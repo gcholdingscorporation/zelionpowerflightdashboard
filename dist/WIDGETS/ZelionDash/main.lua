@@ -1532,6 +1532,13 @@ RF2.statsStatus = "none"
 
 local lastAttempt = -1e9
 
+-- What rf2.apiVersion read the last time we looked. The poll below acts on a
+-- *change* in that field rather than on its value, so that an explicit
+-- disconnect event - which RF Tool does deliver, and which is authoritative -
+-- cannot be immediately undone by a poll seeing a field RF Tool has not
+-- bothered to clear.
+local polledApi = nil
+
 local function rf2Table()
   local t = rawget(_G, "rf2")
   if type(t) ~= "table" then return nil end
@@ -1615,6 +1622,10 @@ local function handleStateChange(newState)
   if newState == "disconnected" then
     RF2.connected = false
     clearFcData()
+    -- Adopt whatever the field says now, so the poll treats this as the
+    -- current state rather than as a fresh connection to react to.
+    local tbl = rf2Table()
+    polledApi = tbl and tonumber(tbl.apiVersion) or nil
     return
   end
 
@@ -1649,24 +1660,44 @@ RF2.proxy = {
 -- Called from the normal service pass. Cheap once registered, and retries on a
 -- slow timer while RF Tool has not appeared.
 function RF2.service(now)
-  if RF2.registered then return end
   now = now or Host.now()
-  if (now - lastAttempt) < REGISTER_RETRY then return end
-  lastAttempt = now
 
+  if not RF2.registered then
+    if (now - lastAttempt) < REGISTER_RETRY then return end
+    lastAttempt = now
+    local tbl = rf2Table()
+    if not tbl or type(tbl.registerWidget) ~= "function" then return end
+    if not pcall(tbl.registerWidget, RF2.proxy) then return end
+    RF2.registered = true
+  end
+
+  -- Then keep watching RF Tool's own fields, every pass, for as long as we
+  -- run. Events alone are not enough and this is the bug that proved it:
+  -- RF Tool publishes state only on *change*, and on a radio that boots before
+  -- the heli is powered we register while nothing is connected, hear no event
+  -- when the flight controller later appears, and sit on "waiting" forever
+  -- while RF Tool's own screen says Connected.
+  --
+  -- Seeding once at registration - which is what this used to do - only covers
+  -- the case where the FC was already up at that instant. Reading two table
+  -- fields per pass is a local lookup, not MSP, so there is no reason to be
+  -- clever about when to do it.
   local rf2 = rf2Table()
-  if not rf2 or type(rf2.registerWidget) ~= "function" then return end
+  if not rf2 then return end
 
-  if not pcall(rf2.registerWidget, RF2.proxy) then return end
-  RF2.registered = true
+  local api = tonumber(rf2.apiVersion)
+  if api == polledApi then return end
+  polledApi = api
 
-  -- RF Tool only publishes state on *change*. If the flight controller was
-  -- already connected before we registered, no event is coming - so seed from
-  -- the current state instead of waiting for one that never arrives.
-  if tonumber(rf2.apiVersion) ~= nil then
-    RF2.connected = true
-    RF2.craftName = rf2.modelName
+  if api ~= nil then
+    RF2.apiVersion = api
+    RF2.connected  = true
+    RF2.craftName  = rf2.modelName
     requestFlightStats()
+  else
+    -- RF Tool lost its handshake with the flight controller.
+    RF2.connected = false
+    clearFcData()
   end
 end
 
@@ -1729,6 +1760,7 @@ function RF2.reset()
   RF2.linkState  = nil
   RF2.connected  = nil
   lastAttempt    = -1e9
+  polledApi      = nil
   clearFcData()
 end
 
