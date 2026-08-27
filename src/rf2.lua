@@ -50,6 +50,13 @@ RF2.statsStatus = "none"
 
 local lastAttempt = -1e9
 
+-- What rf2.apiVersion read the last time we looked. The poll below acts on a
+-- *change* in that field rather than on its value, so that an explicit
+-- disconnect event - which RF Tool does deliver, and which is authoritative -
+-- cannot be immediately undone by a poll seeing a field RF Tool has not
+-- bothered to clear.
+local polledApi = nil
+
 local function rf2Table()
   local t = rawget(_G, "rf2")
   if type(t) ~= "table" then return nil end
@@ -133,6 +140,10 @@ local function handleStateChange(newState)
   if newState == "disconnected" then
     RF2.connected = false
     clearFcData()
+    -- Adopt whatever the field says now, so the poll treats this as the
+    -- current state rather than as a fresh connection to react to.
+    local tbl = rf2Table()
+    polledApi = tbl and tonumber(tbl.apiVersion) or nil
     return
   end
 
@@ -167,25 +178,99 @@ RF2.proxy = {
 -- Called from the normal service pass. Cheap once registered, and retries on a
 -- slow timer while RF Tool has not appeared.
 function RF2.service(now)
-  if RF2.registered then return end
   now = now or Host.now()
-  if (now - lastAttempt) < REGISTER_RETRY then return end
-  lastAttempt = now
 
-  local rf2 = rf2Table()
-  if not rf2 or type(rf2.registerWidget) ~= "function" then return end
-
-  if not pcall(rf2.registerWidget, RF2.proxy) then return end
-  RF2.registered = true
-
-  -- RF Tool only publishes state on *change*. If the flight controller was
-  -- already connected before we registered, no event is coming - so seed from
-  -- the current state instead of waiting for one that never arrives.
-  if tonumber(rf2.apiVersion) ~= nil then
-    RF2.connected = true
-    RF2.craftName = rf2.modelName
-    requestFlightStats()
+  if not RF2.registered then
+    if (now - lastAttempt) < REGISTER_RETRY then return end
+    lastAttempt = now
+    local tbl = rf2Table()
+    if not tbl or type(tbl.registerWidget) ~= "function" then return end
+    if not pcall(tbl.registerWidget, RF2.proxy) then return end
+    RF2.registered = true
   end
+
+  -- Then keep watching RF Tool's own fields, every pass, for as long as we
+  -- run. Events alone are not enough and this is the bug that proved it:
+  -- RF Tool publishes state only on *change*, and on a radio that boots before
+  -- the heli is powered we register while nothing is connected, hear no event
+  -- when the flight controller later appears, and sit on "waiting" forever
+  -- while RF Tool's own screen says Connected.
+  --
+  -- Seeding once at registration - which is what this used to do - only covers
+  -- the case where the FC was already up at that instant. Reading two table
+  -- fields per pass is a local lookup, not MSP, so there is no reason to be
+  -- clever about when to do it.
+  local rf2 = rf2Table()
+  if not rf2 then return end
+
+  local api = tonumber(rf2.apiVersion)
+  if api == polledApi then return end
+  polledApi = api
+
+  if api ~= nil then
+    RF2.apiVersion = api
+    RF2.connected  = true
+    RF2.craftName  = rf2.modelName
+    requestFlightStats()
+  else
+    -- RF Tool lost its handshake with the flight controller.
+    RF2.connected = false
+    clearFcData()
+  end
+end
+
+--------------------------------------------------------------------------
+-- Diagnostics
+--------------------------------------------------------------------------
+--
+-- This whole module is invisible when it works and invisible when it does not.
+-- The only outward sign was the sensor map footer quietly showing the flight
+-- controller's craft name instead of the EdgeTX model name, which is not
+-- enough to tell "RF Tool is not installed" from "installed but never
+-- registered" from "registered but the FC never handshaked" - four different
+-- problems with four different fixes.
+--
+-- Returns detail, verdict, status. Same shape as FlightLog.status().
+function RF2.status()
+  if not RF2.available() then
+    -- Not a fault. The dashboard is fully usable without RF Tool, and most
+    -- radios will never have it.
+    return "not installed", "optional", "unbound"
+  end
+  if not RF2.registered then
+    return "found, not registered", "waiting", "insane"
+  end
+
+  local detail = RF2.craftName or "registered"
+  if RF2.apiVersion then
+    detail = detail .. string.format("  api %.2f", RF2.apiVersion)
+  end
+
+  if RF2.connected == false then return detail, "no link", "unbound" end
+  if RF2.connected == nil then return detail, "waiting", "unbound" end
+  return detail, RF2.linkState or "connected", "ok"
+end
+
+-- The flight controller's own totals, which is the point of the integration:
+-- a counter kept on the radio diverges the moment you fly the same heli with
+-- a second radio.
+function RF2.statsText()
+  if not RF2.available() then return "--", "off", "unbound" end
+  if RF2.statsStatus == "unsupported" then
+    return "needs MSP API 12.09", "too old", "unbound"
+  end
+  if RF2.statsStatus == "ok" then
+    local s = string.format("%d flights", RF2.totalFlights or 0)
+    local secs = tonumber(RF2.totalFlightSeconds)
+    if secs then
+      s = s .. string.format(", %dh %02dm",
+                             math.floor(secs / 3600),
+                             math.floor((secs % 3600) / 60))
+    end
+    return s, "ok", "ok"
+  end
+  if RF2.statsStatus == "error" then return "no usable reply", "FAILED", "insane" end
+  return "--", RF2.statsStatus, "unbound"
 end
 
 function RF2.reset()
@@ -193,6 +278,7 @@ function RF2.reset()
   RF2.linkState  = nil
   RF2.connected  = nil
   lastAttempt    = -1e9
+  polledApi      = nil
   clearFcData()
 end
 
