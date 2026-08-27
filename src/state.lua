@@ -43,9 +43,21 @@ State.holdActive = false
 -- arm so each flight reports its own peaks rather than the day's.
 State.flightSeconds   = 0
 State.sessionStarted  = false
+
+-- Captured for the flight log, so that a database worth modelling accumulates
+-- before anything is built on it. None of this is displayed.
+--
+-- Resting voltage is sampled while DISARMED and frozen at arm, not read at the
+-- moment of arming. With rotor-based arming the head is already turning by
+-- then, so "the voltage at arm" would be a voltage under load - which is the
+-- one number this is useless without, since sag is the whole point.
+State.startPackVoltage = nil
+State.startCellVoltage = nil
 State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
+local restPack, restCell = nil, nil
+local currentSum, currentCount = 0, 0
 
 -- The rotor-arming latch. Declared up here rather than beside the arm code
 -- below because resetSession clears it: a `local` further down the file is not
@@ -119,8 +131,17 @@ function State.resetExtremes()
   end
 end
 
+-- Mean current over the flight, as opposed to the peak the log already keeps.
+-- A peak says how hard you hit it once; a mean says how you flew.
+function State.avgCurrent()
+  if currentCount == 0 then return nil end
+  return currentSum / currentCount
+end
+
 function State.resetSession()
   State.resetExtremes()
+  currentSum, currentCount = 0, 0
+  State.startPackVoltage, State.startCellVoltage = nil, nil
   spunUp, belowSince = false, nil
   State.flightSeconds  = 0
   State.sessionStarted = false
@@ -430,6 +451,10 @@ function State.service(now, opts)
   if armed and not wasArmed then
     -- Fresh flight: peaks belong to this flight, not the previous one.
     State.resetExtremes()
+    currentSum, currentCount = 0, 0
+    -- Freeze the last voltages seen before the rotor was turning.
+    State.startPackVoltage = restPack
+    State.startCellVoltage = restCell
     State.flightSeconds  = 0
     State.sessionStarted = true
     lastSecondTick = nil
@@ -438,6 +463,22 @@ function State.service(now, opts)
     -- written, so a flight is recorded exactly once even if that write is
     -- deferred or retried.
     State.disarmPending = true
+  end
+
+  if armed then
+    if not State.holdActive then
+      local amps, ampsOk = State.get("current")
+      if ampsOk then
+        currentSum = currentSum + amps
+        currentCount = currentCount + 1
+      end
+    end
+  else
+    -- Disarmed, so whatever the pack reads now is a resting reading.
+    local pv, pOk = State.get("packVoltage")
+    local cv, cOk = State.get("cellVoltage")
+    if pOk then restPack = pv end
+    if cOk then restCell = cv end
   end
 
   updateFlightTimer(now)

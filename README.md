@@ -198,9 +198,24 @@ announces a countdown by watching thresholds, so a value drifting back up over
 the flight ends:
 
 ```
-date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct
-2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22
+date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq
+2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88
 ```
+
+The last four are collected rather than displayed. `start_pack` and
+`start_cell` are the **resting** voltages, sampled while disarmed and frozen at
+arm — not read at the moment of arming, because with rotor-based arming the
+head is already turning by then and a voltage under load is the one thing
+they'd be useless as. Together with `avg_amps` they are what a pack-health
+trend would eventually be built from; `min_lq` is the worst link quality of the
+flight, which is otherwise thrown away every time you land.
+
+Nothing reads them yet. They are here because they cannot be recovered
+afterwards: a flight flown before the column existed is a row that will always
+be blank, and a trend needs flights behind it before it is worth building on.
+
+Columns are only ever appended, never reordered or removed, and a log written
+by an earlier build is widened in place rather than abandoned.
 
 It lands at **`/LOGS/zeliondash.csv`**, next to EdgeTX's own telemetry logs,
 opens in any spreadsheet, and keeps the most recent 200 flights. That location

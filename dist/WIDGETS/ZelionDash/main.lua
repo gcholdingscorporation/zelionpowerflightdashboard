@@ -1839,9 +1839,21 @@ State.holdActive = false
 -- arm so each flight reports its own peaks rather than the day's.
 State.flightSeconds   = 0
 State.sessionStarted  = false
+
+-- Captured for the flight log, so that a database worth modelling accumulates
+-- before anything is built on it. None of this is displayed.
+--
+-- Resting voltage is sampled while DISARMED and frozen at arm, not read at the
+-- moment of arming. With rotor-based arming the head is already turning by
+-- then, so "the voltage at arm" would be a voltage under load - which is the
+-- one number this is useless without, since sag is the whole point.
+State.startPackVoltage = nil
+State.startCellVoltage = nil
 State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
+local restPack, restCell = nil, nil
+local currentSum, currentCount = 0, 0
 
 -- The rotor-arming latch. Declared up here rather than beside the arm code
 -- below because resetSession clears it: a `local` further down the file is not
@@ -1915,8 +1927,17 @@ function State.resetExtremes()
   end
 end
 
+-- Mean current over the flight, as opposed to the peak the log already keeps.
+-- A peak says how hard you hit it once; a mean says how you flew.
+function State.avgCurrent()
+  if currentCount == 0 then return nil end
+  return currentSum / currentCount
+end
+
 function State.resetSession()
   State.resetExtremes()
+  currentSum, currentCount = 0, 0
+  State.startPackVoltage, State.startCellVoltage = nil, nil
   spunUp, belowSince = false, nil
   State.flightSeconds  = 0
   State.sessionStarted = false
@@ -2226,6 +2247,10 @@ function State.service(now, opts)
   if armed and not wasArmed then
     -- Fresh flight: peaks belong to this flight, not the previous one.
     State.resetExtremes()
+    currentSum, currentCount = 0, 0
+    -- Freeze the last voltages seen before the rotor was turning.
+    State.startPackVoltage = restPack
+    State.startCellVoltage = restCell
     State.flightSeconds  = 0
     State.sessionStarted = true
     lastSecondTick = nil
@@ -2234,6 +2259,22 @@ function State.service(now, opts)
     -- written, so a flight is recorded exactly once even if that write is
     -- deferred or retried.
     State.disarmPending = true
+  end
+
+  if armed then
+    if not State.holdActive then
+      local amps, ampsOk = State.get("current")
+      if ampsOk then
+        currentSum = currentSum + amps
+        currentCount = currentCount + 1
+      end
+    end
+  else
+    -- Disarmed, so whatever the pack reads now is a resting reading.
+    local pv, pOk = State.get("packVoltage")
+    local cv, cOk = State.get("cellVoltage")
+    if pOk then restPack = pv end
+    if cOk then restCell = cv end
   end
 
   updateFlightTimer(now)
@@ -2754,9 +2795,37 @@ FlightLog.MIN_SECONDS = 20
 -- Oldest records fall off the top; the header always survives.
 FlightLog.MAX_RECORDS = 200
 
+-- Columns are only ever appended, never reordered or removed. A spreadsheet
+-- someone has already built a chart on is a contract, and an existing file
+-- with an older header is migrated rather than abandoned - see FlightLog.read.
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
-  "max_esc_c,used_mah,end_pct"
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq"
+
+-- Every header this file has ever had, oldest first, so a log written by an
+-- earlier build is widened rather than orphaned. Without this, changing the
+-- header silently starts a new file and leaves the old flights in a .bak
+-- nobody thinks to look for.
+FlightLog.LEGACY_HEADERS = {
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct",
+}
+
+local function columnCount(header)
+  local n = 1
+  for _ in string.gmatch(header, ",") do n = n + 1 end
+  return n
+end
+
+-- Pads an old record out to the current column count. The new fields are
+-- genuinely unknown for a flight flown before they existed, and blank is the
+-- only honest value: a zero would average into every trend built on them.
+local function widen(line, from)
+  local pad = columnCount(FlightLog.HEADER) - columnCount(from)
+  if pad <= 0 then return line end
+  return line .. string.rep(",", pad)
+end
 
 FlightLog.lastError  = nil
 FlightLog.lastWrite  = nil    -- the CSV line most recently written
@@ -2877,6 +2946,14 @@ function FlightLog.record()
       if not State.valid("batteryPercent") then return "" end
       return num(State.num("batteryPercent"), "%d")
     end),
+    -- Resting voltage before the rotor turned, the mean draw, and the worst
+    -- link quality. Collected now because they cannot be recovered later: a
+    -- flight flown without them is a row that will always be blank, and a
+    -- trend needs flights behind it before it is worth building anything on.
+    safe(function() return num(State.startPackVoltage, "%.2f") end),
+    safe(function() return num(State.startCellVoltage, "%.2f") end),
+    safe(function() return num(State.avgCurrent(), "%.1f") end),
+    safe(function() return num(State.min("linkQuality"), "%d") end),
   }, ",")
 end
 
@@ -2901,9 +2978,21 @@ function FlightLog.read()
   if not text then return {} end
   local lines = splitLines(text)
   if #lines == 0 then return {} end
-  if lines[1] ~= FlightLog.HEADER then return {} end
-  table.remove(lines, 1)
-  return lines
+
+  local header = table.remove(lines, 1)
+  if header == FlightLog.HEADER then return lines end
+
+  for _, old in ipairs(FlightLog.LEGACY_HEADERS) do
+    if header == old then
+      for i = 1, #lines do lines[i] = widen(lines[i], old) end
+      return lines
+    end
+  end
+
+  -- Not a header this widget has ever written. Treated as absent rather than
+  -- appended to: half a flight log is more confusing than a fresh one, and
+  -- Host.writeFile leaves the previous file as a .bak.
+  return {}
 end
 
 function FlightLog.append(line)
