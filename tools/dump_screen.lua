@@ -17,7 +17,14 @@ local h    = tonumber(arg[2]) or 480
 local kind = arg[3] or "dash"
 
 Mock.reset()
-Mock.removeRf2()
+-- The sensor map is documented with RF Tool present: it is the screen that
+-- carries the most information, and "not installed" is already described in
+-- prose. Everything else is dumped without it, since most radios never have it.
+if kind == "sensors" then
+  Mock.installRf2({ apiVersion = 12.09, modelName = "OMPHOBBY M7R" })
+else
+  Mock.removeRf2()
+end
 Mock.state.lcdW, Mock.state.lcdH = w, h
 Mock.state.modelName = "GOBLIN 700"
 
@@ -56,6 +63,20 @@ elseif kind == "sensors" then
   -- module. It follows the same factory convention, so load it by hand.
   local factory = assert(loadfile("src/widget.lua"))()
   factory(ZD)
+
+  -- Fly for a while so the time-remaining estimate exists. It needs a draw
+  -- rate measured over several seconds, so a single service pass would
+  -- document a dash where the feature should be.
+  ZD.FlightTime.timerIndex = 2
+  local used = 1240
+  for _ = 1, 30 do
+    used = used + 10
+    Mock.setSensor("Capa", used)
+    Mock.setSensor("Bat%", 68 - (used - 1240) / 25)
+    Mock.advanceSeconds(1)
+    ZD.State.service(Mock.state.time)
+    ZD.FlightTime.service(Mock.state.time)
+  end
   -- The diagnostics screen, built through the widget so the rows are the ones
   -- the radio would actually produce - roles, how each bound, the flight log
   -- line and the artwork summary - rather than a hand-written sample.
