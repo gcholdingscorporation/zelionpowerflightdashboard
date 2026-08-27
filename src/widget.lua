@@ -17,6 +17,7 @@ local RF2     = ZD.RF2
 local State   = ZD.State
 local Alerts  = ZD.Alerts
 local FlightLog = ZD.FlightLog
+local FlightTime = ZD.FlightTime
 local Profiles = ZD.Profiles
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
@@ -189,14 +190,24 @@ local function sensorMapRows()
     -- flight there is nothing to write, and "no file appeared" reads exactly
     -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("FLYING, from " .. State.armSource)
-             or ("idle, arm source " .. State.armSource),
-    value = string.format("%d:%02d  min %ds",
+    sensor = (State.armed and ("FLYING, from " .. State.armSource)
+              or ("idle, arm source " .. State.armSource))
+             .. (FlightTime.timerLabel()
+                 and (" -> " .. FlightTime.timerLabel()) or ""),
+    -- Elapsed, then whichever second figure is worth the space. On the
+    -- ground that is the 20s a flight has to reach to be logged; in the air
+    -- it is how long is left, which is the only number anyone wants mid-air.
+    -- A separate row for it pushed the governor off the first page, and the
+    -- roles are what this screen is consulted for.
+    value = string.format("%d:%02d  %s",
                           math.floor(State.flightSeconds / 60),
                           math.floor(State.flightSeconds % 60),
-                          FlightLog.MIN_SECONDS),
+                          FlightTime.seconds
+                            and ("left " .. FlightTime.clock())
+                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
     status = State.armed and "ok" or "unbound",
   } }
+
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
       label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
@@ -305,6 +316,11 @@ function Widget.update(widget, options)
   Alerts.enabled = not (options and options.Alerts == 0)
   FlightLog.enabled = not (options and options.FlightLog == 0)
   Profiles.set(options and options.Profile)
+  local t = tonumber(options and options.TimeTimer) or 0
+  -- EdgeTX timers are 0-based in Lua but 1-based on the settings page, so the
+  -- option says "Timer 2" and we hand over index 1.
+  FlightTime.timerIndex = (t >= 1 and t <= 3) and (t - 1) or nil
+  FlightTime.resetTimerWrite()
 
   -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
   -- and on again sounds another. update() is only called when the options
@@ -335,6 +351,8 @@ function Widget.refresh(widget, event, touchState)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  pcall(FlightTime.service, now)
+  pcall(FlightTime.driveTimer)
   pcall(FlightLog.service)
   ensureScreen(widget)
 
@@ -359,6 +377,10 @@ function Widget.background(widget)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  -- Kept running off-screen for the same reason the alerts are: the countdown
+  -- has to be right when the pilot looks back, not start over.
+  pcall(FlightTime.service, now)
+  pcall(FlightTime.driveTimer)
   -- Logged from here too: a flight can end while the pilot is on another
   -- screen, and an unwritten flight is lost the moment the model changes.
   pcall(FlightLog.service)
@@ -374,6 +396,11 @@ Widget.options = {
   -- detected. A profile moves alert thresholds silently, and an unlabelled
   -- "2" in a settings page is not good enough on its own.
   { "Profile",    VALUE,  0, 0, 2 },
+  -- Which EdgeTX timer to drive with the predicted time remaining. 0 is off;
+  -- 1-3 pick a timer. Only the timer's running value is written - its name,
+  -- countdown voice, minute calls and haptic stay yours, set on the timer
+  -- page, and EdgeTX does the announcing in your own language.
+  { "TimeTimer",  VALUE,  0, 0, 3 },
   -- EdgeTX reports a two-position switch as -1024 and +1024, and nothing in
   -- the value says which end the pilot calls "armed" - that depends on how the
   -- switch is mounted. Getting it backwards is silent and consequential in

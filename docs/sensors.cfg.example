@@ -125,3 +125,12 @@
 # [battery]
 # alertCell = 3.40
 # alertEsc  = 110
+#
+# --- time remaining ---
+#
+# How much pack the time-remaining estimate treats as untouchable. The timer
+# reaches zero when the pack reaches this, not when it is flat. 0 means fly it
+# to empty, which is a choice rather than a default.
+#
+# [battery]
+# reservePct = 20

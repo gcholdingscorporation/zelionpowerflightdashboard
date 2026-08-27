@@ -401,6 +401,22 @@ function Host.modelName()
   return tostring(n)
 end
 
+-- Writes a live timer value. EdgeTX's setTimer accepts mode, start, value,
+-- countdownBeep, minuteBeep, persistent, name, showElapsed, switch,
+-- countdownStart and extraHaptic; `value` sets the running value rather than
+-- the start, which is what makes a timer drivable from a script.
+--
+-- Only the fields the caller passes are touched. Everything else on that timer
+-- belongs to the pilot's settings page, and a widget that overwrote a name or
+-- a countdown preference would be a widget nobody keeps installed.
+function Host.setTimer(index, fields)
+  if type(modelTbl) ~= "table" or type(modelTbl.setTimer) ~= "function" then
+    return false
+  end
+  if type(fields) ~= "table" then return false end
+  return (pcall(modelTbl.setTimer, index or 0, fields))
+end
+
 function Host.timer(index)
   if type(modelTbl) ~= "table" or type(modelTbl.getTimer) ~= "function" then
     return nil
@@ -897,6 +913,9 @@ local SETTINGS = {
   -- voltage you want to hear about, not the voltage the pack dies at.
   alertCell = { default = 3.40, min = 2.80, max = 4.10 },
   alertEsc  = { default = 110,  min = 40,   max = 200 },
+  -- How much pack the time-remaining estimate counts as untouchable. The
+  -- timer reaches zero when the pack reaches this, not when it is flat.
+  reservePct = { default = 20, min = 0, max = 60 },
 }
 
 -- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus
@@ -2472,6 +2491,213 @@ function Alerts.active()
 end
 
 return Alerts
+
+end
+
+  end)()
+  factory(ZD)
+end
+
+-- ======== src/flighttime.lua ========
+do
+  local factory = (function()
+-- Layer 5e: Flight time remaining.
+--
+-- The number a heli pilot actually wants and no telemetry stream carries:
+-- how long until you have to be on the ground.
+--
+-- Voltage is a late signal on an electric heli. Sag under load dominates, so
+-- a cell alert fires when you are already most of the way through the pack -
+-- the logged flights that prompted this were landing at 24-42% having tripped
+-- the 3.40 V alert. Consumed capacity is the early, linear one.
+--
+-- Deliberately does NOT need to know the pack size. Capacity used is a real
+-- number of mAh and battery percent is a fraction of the whole, so the two
+-- together give the remainder directly:
+--
+--   remaining = used * (pct - reserve) / (100 - pct)
+--
+-- 580 mAh gone with 42% showing implies 420 mAh left of a 1000 mAh pack, and
+-- nobody had to tell the widget it was a 1000. That matters because the same
+-- radio flies a 400 mAh 2S and a 12S 700, and a pack size configured once is
+-- a pack size that is wrong the next time you change battery.
+
+return function(ZD)
+
+local Host   = ZD.Host
+local State  = ZD.State
+local Config = ZD.Config
+
+local FlightTime = {}
+ZD.FlightTime = FlightTime
+
+-- Draw rate is averaged over a window rather than read instantaneously.
+-- Hovering and hard 3D differ by an order of magnitude, and an estimate that
+-- swings between four minutes and forty seconds on every collective pump is
+-- worse than no estimate - a pilot stops believing it, which is the same way
+-- alerts fail.
+FlightTime.WINDOW   = Host.seconds(30)
+-- Below this span the rate is noise, not a measurement.
+FlightTime.MIN_SPAN = Host.seconds(8)
+-- Percent must have moved this far before the remainder arithmetic means
+-- anything. Near 100% the divisor collapses and the answer runs to infinity.
+FlightTime.MAX_PCT  = 95
+FlightTime.CAP      = 3600      -- an hour; anything beyond is not a real answer
+
+FlightTime.seconds = nil        -- the estimate, or nil when none can be made
+FlightTime.rate    = nil        -- mAh per second, averaged
+FlightTime.why     = "idle"     -- why there is no estimate, in a pilot's terms
+
+local samples = {}
+local floorSeconds = nil        -- monotonic clamp, see below
+
+local function reset()
+  samples = {}
+  floorSeconds = nil
+  FlightTime.seconds = nil
+  FlightTime.rate    = nil
+end
+
+FlightTime.reset = reset
+
+local function reserve()
+  return Config.setting("reservePct")
+end
+
+-- Returns seconds, or nil plus the reason.
+local function estimate(now)
+  local used, usedOk = State.get("capacity")
+  local pct,  pctOk  = State.get("batteryPercent")
+  if not usedOk then return nil, "no capacity sensor" end
+  if not pctOk  then return nil, "no battery percent" end
+
+  samples[#samples + 1] = { t = now, used = used }
+  while #samples > 1 and (now - samples[1].t) > FlightTime.WINDOW do
+    table.remove(samples, 1)
+  end
+
+  local first = samples[1]
+  local span  = now - first.t
+  if span < FlightTime.MIN_SPAN then return nil, "measuring" end
+
+  -- Capacity used only ever increases. A decrease means the flight controller
+  -- reset its counter - a new pack - so start over rather than reporting a
+  -- negative draw.
+  local drawn = used - first.used
+  if drawn < 0 then
+    reset()
+    return nil, "new pack"
+  end
+
+  local seconds_span = span / Host.TICKS_PER_SECOND
+  local rate = drawn / seconds_span          -- mAh per second
+  FlightTime.rate = rate
+  if rate <= 0 then return nil, "not drawing" end
+
+  if pct > FlightTime.MAX_PCT then return nil, "pack too full to tell" end
+  local left = pct - reserve()
+  if left <= 0 then return 0, nil end
+
+  -- No pack size required: used mAh is an absolute quantity and pct is the
+  -- fraction still in there, so the remainder follows from the two.
+  local remaining = used * left / (100 - pct)
+  local secs = remaining / rate
+  if secs ~= secs or secs == math.huge then return nil, "cannot tell" end
+  if secs > FlightTime.CAP then secs = FlightTime.CAP end
+  return secs, nil
+end
+
+function FlightTime.service(now)
+  now = now or Host.now()
+
+  if not State.armed then
+    reset()
+    FlightTime.why = "idle"
+    return
+  end
+
+  local secs, why = estimate(now)
+  if secs == nil then
+    FlightTime.seconds = nil
+    FlightTime.why = why or "cannot tell"
+    return
+  end
+
+  -- Monotonic: the estimate may only fall. Two reasons. A number that climbs
+  -- while you fly reads as broken even when it is arithmetically right after
+  -- a spell of hovering. And EdgeTX announces a countdown by watching for
+  -- threshold crossings, so a value that drifts back up over 60 would
+  -- announce "one minute" twice.
+  if floorSeconds == nil or secs < floorSeconds then
+    floorSeconds = secs
+  end
+  FlightTime.seconds = floorSeconds
+  FlightTime.why = "ok"
+end
+
+--------------------------------------------------------------------------
+-- Driving an EdgeTX timer
+--------------------------------------------------------------------------
+--
+-- Rather than inventing an announcement system, write the estimate into a
+-- real EdgeTX timer and let the radio do the talking. The pilot already
+-- configures countdown voice, minute calls and haptic on the timer page, in
+-- their own language - and the timer shows up on the header bar and every
+-- telemetry screen, not only on this widget.
+--
+-- Only `value` is written. Mode, name, countdown beeps and haptic belong to
+-- the pilot; a widget that overwrote those would fight the settings page.
+
+FlightTime.timerIndex = nil     -- nil = off, else 0-based EdgeTX timer index
+
+local lastWritten = nil
+
+function FlightTime.driveTimer()
+  local idx = FlightTime.timerIndex
+  if idx == nil then return false end
+
+  local secs = FlightTime.seconds
+  if secs == nil then return false end
+  secs = math.floor(secs + 0.5)
+
+  -- Once a second at most. The estimate is a 30 second average; writing it at
+  -- 10 Hz would be ten times the work for the same number.
+  if lastWritten == secs then return false end
+  lastWritten = secs
+
+  return Host.setTimer(idx, { value = secs })
+end
+
+-- For the sensor map. "why" is the whole point: an estimate that is simply
+-- absent looks identical whether the sensor is missing, the pack is too full
+-- to tell yet, or the maths gave up.
+function FlightTime.clock()
+  local s = FlightTime.seconds
+  if s == nil then return "--" end
+  s = math.floor(s + 0.5)
+  return string.format("%d:%02d", math.floor(s / 60), s % 60)
+end
+
+-- Which EdgeTX timer is being overwritten, for the sensor map. Nothing else
+-- on the radio says. Point this at a timer already in use and it quietly
+-- stops being that timer - the pilot's own flight timer replaced by this
+-- countdown, wearing its name and its settings, and no way to tell until you
+-- are in the air wondering why it reads wrong.
+--
+-- Shown rather than forbidden. A hard refusal would also block someone doing
+-- it deliberately, and the problem here was never the choice - it was that
+-- the choice was invisible.
+function FlightTime.timerLabel()
+  local idx = FlightTime.timerIndex
+  if idx == nil then return nil end
+  return string.format("T%d", idx + 1)
+end
+
+function FlightTime.resetTimerWrite()
+  lastWritten = nil
+end
+
+return FlightTime
 
 end
 
@@ -4072,6 +4298,7 @@ local RF2     = ZD.RF2
 local State   = ZD.State
 local Alerts  = ZD.Alerts
 local FlightLog = ZD.FlightLog
+local FlightTime = ZD.FlightTime
 local Profiles = ZD.Profiles
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
@@ -4244,14 +4471,24 @@ local function sensorMapRows()
     -- flight there is nothing to write, and "no file appeared" reads exactly
     -- the same either way.
     label = "  flight",
-    sensor = State.armed and ("FLYING, from " .. State.armSource)
-             or ("idle, arm source " .. State.armSource),
-    value = string.format("%d:%02d  min %ds",
+    sensor = (State.armed and ("FLYING, from " .. State.armSource)
+              or ("idle, arm source " .. State.armSource))
+             .. (FlightTime.timerLabel()
+                 and (" -> " .. FlightTime.timerLabel()) or ""),
+    -- Elapsed, then whichever second figure is worth the space. On the
+    -- ground that is the 20s a flight has to reach to be logged; in the air
+    -- it is how long is left, which is the only number anyone wants mid-air.
+    -- A separate row for it pushed the governor off the first page, and the
+    -- roles are what this screen is consulted for.
+    value = string.format("%d:%02d  %s",
                           math.floor(State.flightSeconds / 60),
                           math.floor(State.flightSeconds % 60),
-                          FlightLog.MIN_SECONDS),
+                          FlightTime.seconds
+                            and ("left " .. FlightTime.clock())
+                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
     status = State.armed and "ok" or "unbound",
   } }
+
   for _, r in ipairs(sensorRows) do
     rows[#rows + 1] = {
       label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
@@ -4360,6 +4597,11 @@ function Widget.update(widget, options)
   Alerts.enabled = not (options and options.Alerts == 0)
   FlightLog.enabled = not (options and options.FlightLog == 0)
   Profiles.set(options and options.Profile)
+  local t = tonumber(options and options.TimeTimer) or 0
+  -- EdgeTX timers are 0-based in Lua but 1-based on the settings page, so the
+  -- option says "Timer 2" and we hand over index 1.
+  FlightTime.timerIndex = (t >= 1 and t <= 3) and (t - 1) or nil
+  FlightTime.resetTimerWrite()
 
   -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
   -- and on again sounds another. update() is only called when the options
@@ -4390,6 +4632,8 @@ function Widget.refresh(widget, event, touchState)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  pcall(FlightTime.service, now)
+  pcall(FlightTime.driveTimer)
   pcall(FlightLog.service)
   ensureScreen(widget)
 
@@ -4414,6 +4658,10 @@ function Widget.background(widget)
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
+  -- Kept running off-screen for the same reason the alerts are: the countdown
+  -- has to be right when the pilot looks back, not start over.
+  pcall(FlightTime.service, now)
+  pcall(FlightTime.driveTimer)
   -- Logged from here too: a flight can end while the pilot is on another
   -- screen, and an unwritten flight is lost the moment the model changes.
   pcall(FlightLog.service)
@@ -4429,6 +4677,11 @@ Widget.options = {
   -- detected. A profile moves alert thresholds silently, and an unlabelled
   -- "2" in a settings page is not good enough on its own.
   { "Profile",    VALUE,  0, 0, 2 },
+  -- Which EdgeTX timer to drive with the predicted time remaining. 0 is off;
+  -- 1-3 pick a timer. Only the timer's running value is written - its name,
+  -- countdown voice, minute calls and haptic stay yours, set on the timer
+  -- page, and EdgeTX does the announcing in your own language.
+  { "TimeTimer",  VALUE,  0, 0, 3 },
   -- EdgeTX reports a two-position switch as -1024 and +1024, and nothing in
   -- the value says which end the pilot calls "armed" - that depends on how the
   -- switch is mounted. Getting it backwards is silent and consequential in

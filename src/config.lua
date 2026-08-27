@@ -52,6 +52,9 @@ local SETTINGS = {
   -- voltage you want to hear about, not the voltage the pack dies at.
   alertCell = { default = 3.40, min = 2.80, max = 4.10 },
   alertEsc  = { default = 110,  min = 40,   max = 200 },
+  -- How much pack the time-remaining estimate counts as untouchable. The
+  -- timer reaches zero when the pack reaches this, not when it is flat.
+  reservePct = { default = 20, min = 0, max = 60 },
 }
 
 -- Parse into { [sectionLower] = { [roleName] = sensorName } }, plus

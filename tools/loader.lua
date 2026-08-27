@@ -17,6 +17,7 @@ Loader.MODULES = {
   "rf2",
   "state",
   "alerts",
+  "flighttime",
   "flightlog",
   "theme",
   "layout",
