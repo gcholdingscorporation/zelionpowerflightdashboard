@@ -3,9 +3,10 @@
 An RC helicopter telemetry dashboard widget for EdgeTX, targeting Rotorflight
 electric setups on the RadioMaster TX16S Mk3 and TX15.
 
-**Status: running on hardware.** The dashboard draws, telemetry binds, alerts
-arm, and the flight log writes. Not yet flown — the alert engine has never
-fired against a real sag, a hot ESC or a dropout.
+**Status: flying.** Verified on a TX16S Mk3 and a TX15, across a 200-size
+OMPHOBBY on 2S/3S and a Rotorflight M7R on 12S: sensor binding, arming from
+ARM flags, a switch and the rotor, alerts firing in the air, the flight log,
+the aircraft profile, and RF Tool reading the flight controller's own totals.
 
 ## Requirements
 
