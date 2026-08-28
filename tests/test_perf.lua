@@ -692,6 +692,32 @@ H.test("puts the measurement on screen", function()
   H.truthy(string.find(t, "400 frames", 1, true), "how much evidence")
 end)
 
+-- From hardware: the baseline line read "+2.8" while the engine's verdict on
+-- that delta against a 3.1 spread was "no measurable change" - and the verdict
+-- was on the script-list page, out of sight. The number has to carry its own
+-- qualification, because it is the one line visible from every page.
+H.test("the baseline line says whether the delta beat the noise", function()
+  local ZD = boot()
+  ZD.PerfScreen.build(800, 480)
+
+  local inside = ZD.PerfStats.compare({ fps = 14.5, spread = 3.1 },
+                                      { fps = 17.3, spread = 3.1 })
+  H.eq(inside.verdict, "same")
+  ZD.PerfScreen.update({ snap = { fps = 17.3 }, findings = {}, scroll = 0,
+                         comparison = inside, baselineFps = 14.5 })
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "+2.8", 1, true), t)
+  H.truthy(string.find(t, "inside noise", 1, true),
+           "an unproven gain must not read as a win: " .. t)
+
+  local beyond = ZD.PerfStats.compare({ fps = 14.5, spread = 0.6 },
+                                      { fps = 21.0, spread = 0.6 })
+  ZD.PerfScreen.update({ snap = { fps = 21.0 }, findings = {}, scroll = 0,
+                         comparison = beyond, baselineFps = 14.5 })
+  H.truthy(string.find(Mock.lvglText(), "beats noise", 1, true),
+           Mock.lvglText())
+end)
+
 H.test("clamps the scroll to the findings there are", function()
   local ZD = boot()
   ZD.PerfScreen.build(800, 480)

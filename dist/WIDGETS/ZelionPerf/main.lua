@@ -2545,11 +2545,24 @@ function Screen.update(view)
     local col = Theme.dim
     if cmp.verdict == "better" then col = Theme.lime
     elseif cmp.verdict == "worse" then col = Theme.crit end
+    -- The noise band goes on this line, not just into the findings.
+    --
+    -- From hardware: a screen reading "+2.8" with the script list showing
+    -- looked like a clear win, while the engine's actual verdict on 2.8
+    -- against a 3.1 spread was "no measurable change" - and that verdict was
+    -- on the OTHER page, where the pilot could not see it. A headline number
+    -- that overstates its own certainty is the exact failure this widget was
+    -- built to avoid, so the qualification travels with the number.
+    local band = cmp.noise
+      and string.format(", %s noise +/-%s",
+                        cmp.verdict == "same" and "inside" or "beats",
+                        Stats.fmtFps(cmp.noise))
+      or ""
     setText(V.baseline,
-            string.format("baseline %s fps -> now %s fps  (%s%s)",
+            string.format("baseline %s fps -> now %s fps  (%s%s%s)",
                           Stats.fmtFps(view.baselineFps),
                           Stats.fmtFps(snap.fps), sign,
-                          Stats.fmtFps(math.abs(cmp.delta))), col)
+                          Stats.fmtFps(math.abs(cmp.delta)), band), col)
   else
     setText(V.baseline, "no baseline - press ENTER to mark one", Theme.dim)
   end
