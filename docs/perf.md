@@ -15,19 +15,20 @@ can install either, both, or neither.
 Copy `dist/WIDGETS/ZelionPerf/main.lua` onto the radio and put ZelionPerf in a
 full-screen widget slot. EdgeTX 2.11 or newer, same as the dashboard.
 
-**Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3 across two
-runs: frame timing, the stutter count, gap detection, `getUsage()`,
-`getAvailableMemory()`, the storage scan, the model inventory, the script
-list, the baseline comparison and the text wrapping all work as written.
+**Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3: frame
+timing, the stutter count, gap detection, `getUsage()`, `getAvailableMemory()`,
+the storage scan, the model inventory, the script list, the baseline
+comparison and the text wrapping all work as written.
 
-Between them those two runs found five bugs, every one of them in this widget
-rather than in the radio, and all five are fixed. That is the tool working:
-the first thing a measuring instrument measures is itself. They are listed
-under **What hardware changed** below, because the two classes they fall into
-are worth knowing about before trusting any number on the screen.
+Getting there took three runs, which between them found seven bugs — every one
+of them in this widget rather than in the radio. That is the tool working: the
+first thing a measuring instrument measures is itself. They are listed under
+**What hardware changed** below, because the two classes they fall into are
+worth knowing about before trusting any number on this screen or writing
+anything like it.
 
-The frame-rate thresholds are still NOT calibrated against a radio known to be
-healthy.
+The frame-rate thresholds are calibrated against one radio, whose owner
+confirmed the reading matched what the menus felt like. One data point.
 
 ## What it can and cannot see
 
