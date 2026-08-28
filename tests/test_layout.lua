@@ -48,8 +48,27 @@ H.test("vertical bands land on the design coordinates", function()
   H.eq(L.content.h, 382)
   H.eq(L.cell.y, 46);  H.eq(L.cell.h, 75)
   H.eq(L.bar.y, 129);  H.eq(L.bar.h, 299)
-  H.eq(L.gov.h, 90)
-  H.eq(L.tiles[1].y, 144); H.eq(L.tiles[1].h, 110)
+  H.eq(L.gov.h, 82)
+  H.eq(L.tiles[1].y, 136); H.eq(L.tiles[1].h, 110)
+end)
+
+H.test("the tile row and the battery tile end on the same line", function()
+  -- Two columns of data stopping at different heights read as a mistake even
+  -- when both are deliberate: the eye lands on that edge before it reads any
+  -- number. They had drifted 18px apart.
+  local L = load(800, 480).Layout.build(800, 480)
+  H.eq(L.tiles[1].y + L.tiles[1].h, L.battery.y + L.battery.h)
+end)
+
+H.test("but never at the cost of clipping the headspeed", function()
+  -- On the tight screen the right column's font minimums and the headspeed
+  -- numeral do not both fit above a shared baseline. Text wins: a 5px step
+  -- is a blemish, an XXLSIZE numeral through its own footnote is a bug.
+  local L = load(480, 320).Layout.build(480, 320)
+  local drift = (L.tiles[1].y + L.tiles[1].h) - (L.battery.y + L.battery.h)
+  H.truthy(drift >= 0 and drift <= 8,
+           "close, and never past the tile row: got " .. drift)
+  H.truthy(L.headspeed.h >= 108, "an XXLSIZE numeral is 69px on this screen")
 end)
 
 H.test("three tiles fill the right column exactly", function()
@@ -95,7 +114,7 @@ end)
 H.test("the logo fills its box at the artwork's own aspect ratio", function()
   -- It used to be a fixed 153x86 that stayed put when the column widened.
   -- The sizes here are what tools/make_logos.py has to write.
-  for _, s in ipairs({ {800, 480, 295, 166}, {480, 320, 174, 98} }) do
+  for _, s in ipairs({ {800, 480, 310, 174}, {480, 320, 181, 102} }) do
     local L = load(s[1], s[2]).Layout.build(s[1], s[2])
     H.eq(L.logo.w, s[3]); H.eq(L.logo.h, s[4])
     H.truthy(L.logo.x >= L.logoBox.x, "centred inside its box")

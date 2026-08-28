@@ -322,4 +322,104 @@ H.test("no clock set is obvious rather than plausible", function()
            "reads as 'the clock was not set', which is the truth")
 end)
 
+H.group("flightlog: the columns added later")
+
+-- These exist to be collected, not read. A trend needs flights behind it
+-- before it is worth building anything on, and a flight flown without them is
+-- a row that will always be blank.
+
+H.test("records resting voltage, mean draw and worst link quality", function()
+  local ZD = fresh(function()
+    loaded()
+    Mock.addSensor("RQly", 13, 100)
+  end)
+  -- Sit disarmed for a moment so a resting voltage is seen.
+  run(ZD, 2)
+  Mock.setSensor("Hspd", 1850)
+  Mock.setSensor("Curr", 40)
+  run(ZD, 20)
+  Mock.setSensor("Curr", 60)
+  Mock.setSensor("RQly", 62)
+  run(ZD, 20)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+
+  local f = {}
+  for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
+  H.eq(#f, 15, "eleven original columns plus four")
+  H.eq(f[12], "47.40", "pack at rest, before the rotor turned")
+  H.eq(f[13], "3.95",  "and the cell with it")
+  H.truthy(tonumber(f[14]) > 40 and tonumber(f[14]) < 60,
+           "mean draw sits between the two, got " .. tostring(f[14]))
+  H.eq(f[15], "62", "the worst link quality of the flight")
+end)
+
+H.test("resting voltage is taken before the rotor, not at arm", function()
+  -- With rotor arming the head is already turning by the time we call it a
+  -- flight, so a voltage read at that moment is a voltage under load - which
+  -- is the one number this is useless without.
+  local ZD = fresh(loaded)
+  run(ZD, 2)                          -- resting at 47.4
+  Mock.setSensor("Vbat", 44.0)        -- sags the instant it spools
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  local f = {}
+  for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
+  H.eq(f[12], "47.40", "the resting figure, not the sagged one")
+end)
+
+H.test("a flight with no link sensor leaves that column blank", function()
+  local ZD = fresh(loaded)
+  flight(ZD, 40)
+  local f = {}
+  for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
+  H.eq(f[15], "", "blank, never zero - a zero averages into every trend")
+end)
+
+H.group("flightlog: widening the file without losing it")
+
+local OLD_HEADER =
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct"
+
+H.test("flights logged by an older build survive the new columns", function()
+  -- Changing the header naively starts a fresh file and leaves the history in
+  -- a .bak nobody thinks to look for. There were thirteen real flights in
+  -- there when this column was added.
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = OLD_HEADER ..
+    "\n2026-08-09,08:27:38,>Rotorflight,220,6872,3.31,6.50,17.4,37,251,37\n" ..
+    "2026-08-09,08:45:32,>Rotorflight,231,6864,3.33,6.60,14.4,36,261,34\n"
+  flight(ZD, 40)
+
+  local l = lines()
+  H.eq(l[1], ZD.FlightLog.HEADER, "the file is now on the new header")
+  H.eq(#l, 4, "both old flights kept, plus the new one")
+  H.truthy(string.find(l[2], "08:27:38", 1, true), "the first is still there")
+  H.truthy(string.find(l[3], "08:45:32", 1, true), "and the second")
+end)
+
+H.test("an old row is padded, not left short", function()
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = OLD_HEADER ..
+    "\n2026-08-09,08:27:38,>Rotorflight,220,6872,3.31,6.50,17.4,37,251,37\n"
+  flight(ZD, 40)
+
+  local f = {}
+  for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
+  H.eq(#f, 15, "same width as every other row, so columns still line up")
+  H.eq(f[12], "", "and honestly blank for a flight flown before they existed")
+end)
+
+H.test("a header from no version of this widget still starts over", function()
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = "something,else,entirely\n1,2,3\n"
+  flight(ZD, 40)
+  local l = lines()
+  H.eq(l[1], ZD.FlightLog.HEADER)
+  H.eq(#l, 2, "half a flight log is more confusing than a fresh one")
+end)
+
 end

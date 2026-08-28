@@ -28,8 +28,8 @@ BUDGET = 320 * 180       # verified good on a TX16S Mk3
 #   logo_panel   the right column's logo box on 800x480
 #   logo_small   the same box on 480x320
 TARGETS = {
-    "logo_panel.png": (295, 166),
-    "logo_small.png": (174, 98),
+    "logo_panel.png": (310, 174),
+    "logo_small.png": (181, 102),
 }
 
 
