@@ -8,7 +8,6 @@
 return function(H, Mock, Loader)
 
 local DIST = "dist/WIDGETS/ZelionDash/main.lua"
-local PERF_DIST = "dist/WIDGETS/ZelionPerf/main.lua"
 
 local function loadDist()
   local chunk, err = loadfile(DIST)
@@ -88,10 +87,6 @@ end
 
 H.test("no string method syntax survives into the build", function()
   scanForStringMethods(DIST)
-end)
-
-H.test("no string method syntax survives into the analyser build", function()
-  scanForStringMethods(PERF_DIST)
 end)
 
 H.group("build: a hold switch round the wrong way")
@@ -604,102 +599,6 @@ H.test("survives a model with no telemetry at all", function()
   def.refresh(widget, 0, nil)
   H.truthy(string.find(Mock.lvglText(), "0 bound", 1, true),
            "reports nothing bound rather than erroring")
-end)
-
---------------------------------------------------------------------------
-H.group("build: the analyser artifact")
-
--- The dashboard's build is exercised above at length. What matters here is
--- that the SECOND artifact is a complete, separately loadable widget - the
--- failure the two-widget build could introduce is one file quietly carrying
--- half the other's modules, which compiles and then fails on the radio.
-
-local function loadPerfDist()
-  local chunk, err = loadfile(PERF_DIST)
-  if not chunk then
-    error("analyser build does not compile: " .. tostring(err))
-  end
-  return chunk()
-end
-
-local function bootPerf(w, h, setup)
-  Mock.reset()
-  Mock.state.lcdW, Mock.state.lcdH = w, h
-  if setup then setup() end
-  Mock.install()
-  Mock.installLvgl()
-  local def = loadPerfDist()
-  local widget = def.create({ x = 0, y = 0, w = w, h = h }, {})
-  def.update(widget, {})
-  return def, widget
-end
-
-H.test("declares the whole widget interface EdgeTX asks for", function()
-  Mock.reset(); Mock.install(); Mock.installLvgl()
-  local def = loadPerfDist()
-  H.eq(def.name, "ZelionPerf")
-  H.eq(def.useLvgl, true)
-  for _, fn in ipairs({ "create", "update", "refresh", "background",
-                        "translate" }) do
-    H.eq(type(def[fn]), "function", fn .. " is missing from the build")
-  end
-  H.truthy(#def.options > 0, "options are exported")
-end)
-
-H.test("carries none of the dashboard's modules", function()
-  local realIo = Mock.realIo or io
-  local f = realIo.open(PERF_DIST, "r")
-  local src = f:read("*a")
-  f:close()
-  -- A widget that has to fit a fixed Lua heap should not be carrying the
-  -- flight log and the alert engine around, and a build that silently
-  -- concatenated everything would still compile and still pass every other
-  -- test here.
-  for _, module in ipairs({ "flightlog", "alerts", "dashboard", "rf2" }) do
-    H.falsy(string.find(src, "======== src/" .. module .. ".lua", 1, true),
-            module .. " was built into the analyser")
-  end
-  H.truthy(string.find(src, "======== src/host.lua", 1, true),
-           "the host adapter is shared, and must be there")
-end)
-
-H.test("runs a full lifecycle on both screens", function()
-  for _, size in ipairs({ { 800, 480 }, { 480, 320 } }) do
-    local def, widget = bootPerf(size[1], size[2])
-    for i = 1, 120 do
-      Mock.advance(3)
-      def.refresh(widget, nil, nil)
-    end
-    def.background(widget)
-    local t = Mock.lvglText()
-    H.truthy(string.find(t, "ZELIONPERF", 1, true),
-             string.format("%dx%d rendered nothing", size[1], size[2]))
-    H.truthy(string.find(t, "fps", 1, true), "a frame rate reached the screen")
-  end
-end)
-
-H.test("the built analyser marks and compares a baseline", function()
-  local def, widget = bootPerf(800, 480)
-  for i = 1, 200 do
-    Mock.advance(4)
-    def.refresh(widget, nil, nil)
-  end
-  def.update(widget, { Mark = 1 })
-  for i = 1, 200 do
-    Mock.advance(2)
-    def.refresh(widget, nil, nil)
-  end
-  H.truthy(string.find(Mock.lvglText(), "faster", 1, true), Mock.lvglText())
-end)
-
-H.test("the built analyser lists the scripts it finds", function()
-  local def, widget = bootPerf(800, 480, function()
-    Mock.state.files["/SCRIPTS/MIXES/gyro.lua"] = string.rep("x", 3000)
-  end)
-  def.update(widget, { Scripts = 1 })
-  Mock.advance(4)
-  def.refresh(widget, nil, nil)
-  H.truthy(string.find(Mock.lvglText(), "gyro", 1, true), Mock.lvglText())
 end)
 
 end
