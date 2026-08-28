@@ -366,12 +366,35 @@ end
 -- sparse, so those are walked in full.
 local MAX_LOGICAL_SWITCHES = 64
 local MAX_SPECIAL_FUNCTIONS = 64
+local MAX_OUTPUT_CHANNELS = 32
+local MAX_INPUTS = 32
 
-local function count(fn)
+-- model.getMixesCount and model.getInputsCount are PER CHANNEL and PER INPUT
+-- (radio/src/lua/api_model.cpp: both do luaL_checkinteger(L, 1)). Called with
+-- no argument they raise, which the pcall swallowed - so the analyser showed
+-- a model with no mix and no input count at all, on a radio that has plenty
+-- of both, and said nothing about why.
+--
+-- Summed here rather than reported per channel: what the figure is for is
+-- "how much does the mixer have to compute every cycle", and that is the
+-- total. 32 calls each, on a scan that already runs once and never per frame.
+local function sumOver(fn, limit)
   if type(fn) ~= "function" then return nil end
-  local ok, n = pcall(fn)
-  if not ok then return nil end
-  return tonumber(n)
+  local total, answered = 0, false
+  for i = 0, limit - 1 do
+    local ok, n = pcall(fn, i)
+    if ok then
+      n = tonumber(n)
+      if n then
+        total = total + n
+        answered = true
+      end
+    end
+  end
+  -- nil rather than 0 when the firmware never answered once: "this radio does
+  -- not report it" and "you have none" must not look the same.
+  if not answered then return nil end
+  return total
 end
 
 -- Returns a table of counts, each entry nil where the firmware would not say.
@@ -382,8 +405,8 @@ function Host.modelInventory()
                 specialFunctions = nil, sensors = nil, loggedSensors = nil }
   if type(modelTbl) ~= "table" then return out end
 
-  out.mixes  = count(modelTbl.getMixesCount)
-  out.inputs = count(modelTbl.getInputsCount)
+  out.mixes  = sumOver(modelTbl.getMixesCount, MAX_OUTPUT_CHANNELS)
+  out.inputs = sumOver(modelTbl.getInputsCount, MAX_INPUTS)
 
   if type(modelTbl.getLogicalSwitch) == "function" then
     local n = 0
@@ -398,16 +421,25 @@ function Host.modelInventory()
   end
 
   if type(modelTbl.getCustomFunction) == "function" then
-    local n = 0
+    local n, answered = 0, false
     for i = 0, MAX_SPECIAL_FUNCTIONS - 1 do
       local ok, cf = pcall(modelTbl.getCustomFunction, i)
-      -- An unused slot comes back as nil on current firmware and as a table
-      -- with no switch on older ones; both mean "not configured".
-      if ok and type(cf) == "table" and cf.switch ~= nil then
-        n = n + 1
+      -- An empty slot comes back as a FULLY POPULATED TABLE, not as nil:
+      -- api_model.cpp pushes switch, func and active for every index below
+      -- MAX_SPECIAL_FUNCTIONS whether or not anything is configured there.
+      -- Testing `switch ~= nil` therefore counted all 64 slots, and a radio
+      -- with a handful of special functions was told it had sixty-four - a
+      -- number that was really this loop's own limit read back.
+      --
+      -- The firmware's own test is CFN_EMPTY(p) == !(p)->swtch: switch 0 is
+      -- no switch, which is an unused slot. "Always on" is a real switch
+      -- source with a non-zero index, so it is not caught by this.
+      if ok and type(cf) == "table" then
+        answered = true
+        if (tonumber(cf.switch) or 0) ~= 0 then n = n + 1 end
       end
     end
-    out.specialFunctions = n
+    if answered then out.specialFunctions = n end
   end
 
   local sensors = Host.listSensors()

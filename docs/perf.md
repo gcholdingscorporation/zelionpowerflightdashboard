@@ -15,12 +15,19 @@ can install either, both, or neither.
 Copy `dist/WIDGETS/ZelionPerf/main.lua` onto the radio and put ZelionPerf in a
 full-screen widget slot. EdgeTX 2.11 or newer, same as the dashboard.
 
-**Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3: frame
-timing, the stutter count, `getUsage()`, `getAvailableMemory()`, the storage
-scan, the baseline comparison and the text wrapping all work as written. The
-first run found three things wrong with this widget, all fixed and noted
-below. The frame-rate thresholds have NOT yet been calibrated against a radio
-known to be healthy - see the last section.
+**Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3 across two
+runs: frame timing, the stutter count, gap detection, `getUsage()`,
+`getAvailableMemory()`, the storage scan, the model inventory, the script
+list, the baseline comparison and the text wrapping all work as written.
+
+Between them those two runs found five bugs, every one of them in this widget
+rather than in the radio, and all five are fixed. That is the tool working:
+the first thing a measuring instrument measures is itself. They are listed
+under **What hardware changed** below, because the two classes they fall into
+are worth knowing about before trusting any number on the screen.
+
+The frame-rate thresholds are still NOT calibrated against a radio known to be
+healthy.
 
 ## What it can and cannot see
 
@@ -179,12 +186,40 @@ The first run on a TX16S found three faults, all in this widget:
   for LVGL on every label whether or not the value had moved, and the advice
   re-wrapped for every visible entry on every frame. Both fixed above.
 
-Still open, and the reason the thresholds are not yet calibrated: that radio
-measured **7.9 fps, 100 ms typical**. Whether that is what the radio does or
-what the analyser was doing to it is not yet known — the 10k-per-frame fix
-landed after that reading. The `FPS_BAD` / `FPS_FAIR` values of 15 and 25 in
-`perfadvice.lua` are still the original judgement calls and want a second
-reading before anyone trusts them.
+### The second run
+
+With those fixed, the same radio went from **7.9 fps to 12.5 fps** — typical
+frame 100 ms to 70 ms. The analyser had been costing about a third of the
+frame time it was reporting on. That is the single strongest argument for the
+self-cost figure being on the screen at all.
+
+The script list worked, and promptly showed two more faults — both the same
+mistake in a different place, and both worse than a crash because they look
+like data:
+
+- **"64 special functions"**, on a model with two. `model.getCustomFunction(i)`
+  returns a fully populated table for every slot below the maximum, configured
+  or not, so testing "did I get a table back" was true 64 times out of 64. The
+  number on screen was this code's own loop limit read back as a finding. The
+  firmware's own test is switch ≠ 0, and that is what is used now.
+- **No mix or input count at all.** `model.getMixesCount` takes a *channel* and
+  `getInputsCount` takes an *input*; called with no argument they raise, the
+  guarding `pcall` swallowed it, and the model quietly reported neither. Both
+  are now summed across all channels and inputs.
+
+The lesson both times: a number that comes back from the firmware is not
+evidence that the question was understood. A count that exactly equals a
+constant in your own source is the tell.
+
+### Still open
+
+That radio measures **12.5 fps** with this widget full-screen, which the
+current thresholds paint red. Whether 12.5 is bad for a TX16S carrying 22
+sensors, 9 logical switches and two other dashboards, or simply what such a
+radio does, is not something the code can decide — it needs a person to say
+whether the menus feel laggy. Until someone does, `FPS_BAD` and `FPS_FAIR` in
+`perfadvice.lua` remain the original 15 and 25, which may well be too
+optimistic and would then flag every healthy radio.
 
 ## What it will not tell you
 

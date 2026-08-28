@@ -137,8 +137,11 @@ local function scriptEntries(scan)
     out[#out + 1] = {
       severity = KIND_SEVERITY[s.kind] or Advice.INFO,
       title = s.name,
+      -- No "b" appended: fmtBytes already carries its own unit, so a 75k
+      -- script was being printed as "75kb", which reads as kilobits and is
+      -- wrong by a factor of eight to anyone who takes it literally.
       detail = string.format("%s  runs %s  %s%s", s.dir, s.when,
-                             s.size and Stats.fmtBytes(s.size) .. "b" or "size unknown",
+                             s.size and Stats.fmtBytes(s.size) or "size unknown",
                              s.compiled and "  compiled" or ""),
     }
   end

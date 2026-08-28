@@ -313,10 +313,14 @@ by size, which is the non-obvious part: a script in `/SCRIPTS/MIXES/` runs every
 mixer cycle on every screen and cannot be escaped by navigating away, while a
 telemetry script four times its size is free until you open its page.
 
-It runs on hardware: verified on a TX16S Mk3, where its first run promptly
-found three bugs in itself — a total smaller than the part it contained, a
-heap reading printed as `19695k`, and the analyser allocating 10k a frame.
-All three are fixed. The frame-rate thresholds are still uncalibrated.
+It runs on hardware: verified on a TX16S Mk3 over two runs, which between
+them found five bugs — all five in the analyser, none in the radio. Fixing
+the worst of them (it was allocating 10k a frame) took that radio from 7.9
+fps to 12.5. The other four were readings that looked like data and were not:
+a total smaller than the part inside it, a heap printed as `19695k`, "64
+special functions" on a model with two, and a mix count silently missing
+because the firmware getter wanted an argument. All fixed; the frame-rate
+thresholds are still uncalibrated.
 
 Full reference, including what it deliberately will not tell you and why the
 readings survive a 10 ms clock: **[docs/perf.md](docs/perf.md)**.

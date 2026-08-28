@@ -428,7 +428,9 @@ end)
 
 H.test("reads the model's own load, keeping absent apart from zero", function()
   local ZD = boot(800, 480, function()
-    Mock.state.mixes = 24
+    -- Mixes are counted per channel, so the total is the sum over channels.
+    Mock.state.mixesPerChannel = { [0] = 3, [1] = 2, [5] = 1 }
+    Mock.state.inputsPerInput  = { [0] = 2, [3] = 1 }
     Mock.state.logicalSwitches = { [0] = { func = 3 }, [7] = { func = 5 } }
     Mock.state.customFunctions = { [0] = { switch = 1, func = 2 } }
     Mock.addSensor("Vbat", 1, 47.3)
@@ -436,11 +438,50 @@ H.test("reads the model's own load, keeping absent apart from zero", function()
     Mock.state.sensors[1].logs = true
   end)
   local m = ZD.PerfScan.run().model
-  H.eq(m.mixes, 24)
+  H.eq(m.mixes, 6, "summed over every channel")
+  H.eq(m.inputs, 3)
   H.eq(m.logicalSwitches, 2, "empty slots are not counted")
   H.eq(m.specialFunctions, 1)
   H.eq(m.sensors, 2)
   H.eq(m.loggedSensors, 1)
+end)
+
+-- From hardware. The screen read "64 special functions" on a model with a
+-- handful of them - which is exactly this loop's own limit, read back as
+-- though it were data. Every slot below MAX_SPECIAL_FUNCTIONS comes back as a
+-- fully populated table whether or not anything is configured in it, so the
+-- old test of `switch ~= nil` was true 64 times out of 64.
+H.test("an unconfigured special function slot is not a special function", function()
+  local ZD = boot(800, 480, function()
+    Mock.state.customFunctions = {
+      [0]  = { switch = 12, func = 1, active = 1 },
+      [30] = { switch = 4,  func = 3, active = 0 },
+    }
+  end)
+  local m = ZD.PerfScan.run().model
+  H.eq(m.specialFunctions, 2,
+       "the other 62 slots are empty, not configured")
+end)
+
+-- The same fault in the other direction: model.getMixesCount takes a channel
+-- and raises without one, so the no-argument call was swallowed by its pcall
+-- and the model showed no mixes at all rather than saying it could not tell.
+H.test("a model with no mixes reads as zero, not as unavailable", function()
+  local ZD = boot()
+  local m = ZD.PerfScan.run().model
+  H.eq(m.mixes, 0, "the firmware answered, and the answer was none")
+  H.eq(m.inputs, 0)
+end)
+
+H.test("firmware that cannot answer says so rather than reporting none", function()
+  local ZD = boot(800, 480, function()
+    Mock.state.mixesPerChannel = { [0] = 4 }
+  end)
+  -- A firmware without the getter at all. nil and 0 have to stay apart: one
+  -- is "this radio does not report it", the other is "you have none".
+  _G.model.getMixesCount = nil
+  local m = ZD.PerfScan.run().model
+  H.nilv(m.mixes)
 end)
 
 --------------------------------------------------------------------------
