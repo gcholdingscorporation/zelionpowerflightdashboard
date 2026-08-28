@@ -379,7 +379,7 @@ Two rules run through all of it:
 
 ## See also
 
-**[ZelionPerf](https://github.com/gcholdingscorporation/zelionpref)** — a
+**[ZelionPerf](https://github.com/gcholdingscorporation/zelionperf)** — a
 frame-rate analyser for the EdgeTX UI, which began here and now lives in its
 own repository. If this dashboard, or any other widget, is costing you frames,
 that is the tool that will tell you so and measure what removing it buys.
