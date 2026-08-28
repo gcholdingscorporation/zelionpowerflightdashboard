@@ -15,6 +15,14 @@ can install either, both, or neither.
 Copy `dist/WIDGETS/ZelionPerf/main.lua` onto the radio and put ZelionPerf in a
 full-screen widget slot. EdgeTX 2.11 or newer, same as the dashboard.
 
+**Updating it: delete `/WIDGETS/ZelionPerf/main.luac` as well.** EdgeTX caches
+compiled bytecode beside the source and only recompiles when the `.lua` is
+strictly newer by timestamp - and a file copied over USB often is not, because
+the radio's clock and the computer's disagree. Without deleting it the radio
+goes on running the previous build and says nothing. This has already caught
+one round of testing here: a screen still showing "64 special functions"
+against a build that had fixed it.
+
 **Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3: frame
 timing, the stutter count, gap detection, `getUsage()`, `getAvailableMemory()`,
 the storage scan, the model inventory, the script list, the baseline

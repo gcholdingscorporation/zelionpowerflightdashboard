@@ -46,6 +46,24 @@ frame-rate analyser for the EdgeTX UI. It is installed the same way, from
 `dist/WIDGETS/ZelionPerf/main.lua`, and neither widget needs the other. See
 [ZelionPerf](#zelionperf--frame-rate-analyser) below.
 
+### Updating: delete the .luac
+
+**When you replace `main.lua` with a newer one, delete `main.luac` from the
+same folder.**
+
+EdgeTX compiles a script to bytecode on first run and caches it beside the
+source. On every later load it compares the two timestamps and runs the
+`.luac` unless the `.lua` is strictly newer
+(`luaLoadScriptFileToState`, radio/src/lua/interface.cpp). A file copied over
+USB carries whatever timestamp the copy gave it, and the radio's clock and the
+computer's rarely agree — so a genuinely newer script can easily look older
+than the bytecode the radio built from its predecessor, and the update
+silently does nothing. The widget keeps running the old code, with the old
+bugs, and nothing anywhere says why.
+
+Deleting the `.luac` removes the choice. The radio recompiles on the next
+boot, which costs about a second, once.
+
 ## What it shows
 
 A single screen, no modes. Battery state and headspeed carry the two hero
