@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 0.1.0-dev
+-- Version 1.0.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "0.1.0-dev" }
+local ZD = { VERSION = "1.0.0" }
 
 -- ======== src/host.lua ========
 do

@@ -16,7 +16,7 @@ local Loader = require("loader")
 
 local OUT_DIR  = "dist/WIDGETS/ZelionDash"
 local OUT_FILE = OUT_DIR .. "/main.lua"
-local VERSION  = "0.1.0-dev"
+local VERSION  = "1.0.0"
 
 local MODULES = {}
 for _, name in ipairs(Loader.MODULES) do MODULES[#MODULES + 1] = name end
