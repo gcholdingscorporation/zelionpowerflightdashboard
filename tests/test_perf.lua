@@ -524,6 +524,63 @@ H.test("mix scripts are called out even when the frame rate is fine", function()
   H.truthy(string.find(f[1].detail, "MIXES", 1, true))
 end)
 
+-- Modelled on the radio this was confirmed laggy on: two dashboard widgets
+-- and a function script installed, no mix scripts, 12.5 fps.
+local LADEN = {
+  ok = true, unreadable = {},
+  scripts = {
+    { name = "rf2bg", dir = "/SCRIPTS/FUNCTIONS/", kind = "func",
+      when = "switch on", weight = 3, size = 432, compiled = false },
+    { name = "ZelionDash", dir = "/WIDGETS/", kind = "widget",
+      when = "on screen", weight = 2, size = 76800, compiled = true },
+    { name = "StacyDashV4", dir = "/WIDGETS/", kind = "widget",
+      when = "on screen", weight = 2, size = 52224, compiled = true },
+    { name = "bigpage", dir = "/SCRIPTS/TELEMETRY/", kind = "telem",
+      when = "its page", weight = 1, size = 300000, compiled = true },
+  },
+  counts = { mix = 0, func = 1, widget = 8, telem = 1, tool = 0 },
+  model = { sensors = 22, loggedSensors = 0 },
+}
+
+H.test("a slow radio is told which entries to test, by name", function()
+  local ZD = boot()
+  local f = ZD.PerfAdvice.build(snapshotOf({ fps = 12.5 }), LADEN, nil, nil)
+  H.eq(f[1].severity, ZD.PerfAdvice.HIGH)
+  H.truthy(string.find(f[1].detail, "rf2bg", 1, true), f[1].detail)
+  H.truthy(string.find(f[1].detail, "ZelionDash", 1, true), f[1].detail)
+  -- The 300k telemetry script is by far the biggest thing installed and is
+  -- free until its page is open. Naming it would send the pilot to the one
+  -- entry that cannot be costing them anything right now.
+  H.falsy(string.find(f[1].detail, "bigpage", 1, true),
+          "a page-only script is not a suspect")
+  H.truthy(string.find(f[1].detail, "ENTER", 1, true), "and how to test it")
+end)
+
+H.test("the widget count is trivia on a fast radio and a lead on a slow one", function()
+  local ZD = boot()
+  local fast = ZD.PerfAdvice.build(snapshotOf({ fps = 32 }), LADEN, nil, nil)
+  local slow = ZD.PerfAdvice.build(snapshotOf({ fps = 12.5 }), LADEN, nil, nil)
+
+  local function widgetFinding(list)
+    for _, f in ipairs(list) do
+      if string.find(f.title, "widgets installed", 1, true) then return f end
+    end
+  end
+  H.eq(widgetFinding(fast).severity, ZD.PerfAdvice.LOW)
+  H.eq(widgetFinding(slow).severity, ZD.PerfAdvice.MED)
+  H.truthy(string.find(widgetFinding(slow).detail, "background()", 1, true),
+           "and says why an unshown widget still costs")
+end)
+
+H.test("names nothing when there is nothing worth naming", function()
+  local ZD = boot()
+  -- No scan yet, or a firmware that cannot list scripts. The finding still
+  -- has to say something useful rather than trail off into a blank.
+  local f = ZD.PerfAdvice.build(snapshotOf({ fps = 11 }), nil, nil, nil)
+  H.eq(f[1].severity, ZD.PerfAdvice.HIGH)
+  H.truthy(string.find(f[1].detail, "baseline", 1, true), f[1].detail)
+end)
+
 H.test("a low heap outranks a full sensor list", function()
   local ZD = boot()
   local scan = { ok = true, scripts = {}, unreadable = {},

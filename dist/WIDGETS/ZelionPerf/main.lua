@@ -1941,26 +1941,56 @@ local function finding(severity, title, detail, tone)
   return { severity = severity, title = title, detail = detail, tone = tone }
 end
 
+-- The two entries most worth testing first, named.
+--
+-- "Work through the script list below" was the original advice and it is not
+-- advice, it is a gesture at a menu. The scan already knows which entries run
+-- most of the time, so the finding can say which ones - and on a radio that
+-- is actually slow, that sentence is the whole product.
+--
+-- Named, never blamed: this says where to point the experiment, not what the
+-- cost is. Nothing here knows what either entry costs, and the only way to
+-- find out is the baseline.
+local function namedSuspects(scan, limit)
+  if not scan or not scan.ok then return nil end
+  local names = {}
+  for _, s in ipairs(scan.scripts) do
+    -- Anything that only runs on its own page or from the Tools menu is not
+    -- costing frames while you are looking at this screen, so it is not a
+    -- suspect however big it is.
+    if s.weight > 0 and #names < (limit or 2) then
+      names[#names + 1] = s.name
+    end
+  end
+  if #names == 0 then return nil end
+  return table.concat(names, " and ")
+end
+
 -- Frame rate, stutters, and the difference between them.
 --
 -- They are separate findings because they have different causes and different
 -- fixes: a low average is too much work every frame, while stutters on a good
 -- average are something periodic - an SD write, a collection, a script that
 -- wakes on a timer.
-local function frameRate(out, snap)
+local function frameRate(out, snap, scan)
   local fps = snap.fps
   if fps == nil then return end
+
+  local suspects = namedSuspects(scan, 2)
+  local howToTest = suspects
+    and string.format("Test %s first - they run the most. Press ENTER to "
+                      .. "mark a baseline, take one off this model, and read "
+                      .. "the difference.", suspects)
+    or "Mark a baseline with ENTER, change one thing, and read the difference."
 
   if fps < Advice.FPS_BAD then
     out[#out + 1] = finding(Advice.HIGH,
       string.format("UI is running at %s fps", Stats.fmtFps(fps)),
-      "Slow enough to feel in the menus. Work through the script list below "
-      .. "from the top: those entries run most of the time.")
+      "Slow enough to feel in the menus. " .. howToTest)
   elseif fps < Advice.FPS_FAIR then
     out[#out + 1] = finding(Advice.MED,
       string.format("UI is running at %s fps", Stats.fmtFps(fps)),
-      "Usable but not smooth. Mark a baseline, remove one script from the "
-      .. "list below, and see what it was worth.")
+      "Usable but not smooth. " .. howToTest)
   end
 
   if snap.stalls and snap.stalls > 0 and snap.frames > 0 and fps > 0 then
@@ -2017,7 +2047,14 @@ end
 -- The inventory findings. These are the ones a measurement alone cannot
 -- reach, because they are about code that is running whether or not the
 -- analyser is on screen to see it.
-local function inventory(out, scan)
+local function inventory(out, scan, snap)
+  -- A slow radio changes what the inventory means. On a healthy one, "you
+  -- have a lot of widgets" is trivia and belongs at the bottom of the list;
+  -- on one measured below the smooth threshold it is the leading candidate,
+  -- because a widget goes on running background() when it is not showing and
+  -- that is the cost nobody looks for.
+  local slow = (snap and snap.fps ~= nil and snap.fps < Advice.FPS_FAIR) or false
+
   if not scan or not scan.ok then
     if scan and scan.reason then
       out[#out + 1] = finding(Advice.INFO, "Script list unavailable", scan.reason)
@@ -2038,11 +2075,16 @@ local function inventory(out, scan)
 
   local widgets = scan.counts.widget or 0
   if widgets >= 6 then
-    out[#out + 1] = finding(Advice.LOW,
+    out[#out + 1] = finding(slow and Advice.MED or Advice.LOW,
       string.format("%d widgets installed", widgets),
-      "Only the ones placed on the screen in front of you cost frames - but "
-      .. "most also run background() when they are not showing. An installed "
-      .. "widget you no longer use is free to delete.")
+      slow
+        and ("Most widgets run background() when they are NOT showing, so on "
+             .. "a radio this slow they cost frames from every screen, not "
+             .. "just their own. Deleting one you no longer use is the "
+             .. "cheapest thing on this list to test.")
+        or ("Only the ones placed on the screen in front of you cost frames - "
+            .. "but most also run background() when they are not showing. An "
+            .. "installed widget you no longer use is free to delete."))
   end
 
   local raw = Scan.uncompiled(scan)
@@ -2109,10 +2151,10 @@ function Advice.build(snap, scan, cmp, baselineLabel)
   snap = snap or {}
 
   comparison(out, cmp, baselineLabel)
-  frameRate(out, snap)
+  frameRate(out, snap, scan)
   memory(out, snap)
   luaLoad(out, snap)
-  inventory(out, scan)
+  inventory(out, scan, snap)
 
   -- Stable sort by severity. table.sort is not stable in Lua, and the order
   -- within a severity is meaningful - the comparison result was put first

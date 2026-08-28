@@ -156,6 +156,15 @@ noise will not trust the next reading either.
 "Nothing worth changing" and stops. A tool that always finds five things
 teaches you its findings are decoration.
 
+**A slow radio gets names.** The measurement and the inventory are
+cross-referenced rather than reported side by side: below the smooth
+threshold, the frame-rate finding names the two entries that run the most and
+tells you to baseline one of them, and the widget count stops being trivia and
+says why a widget you are not looking at still costs frames. Entries that only
+run on their own page or from the Tools menu are never named, however large —
+sending you to the biggest file on the radio when it cannot be costing you
+anything right now is the fastest way to waste an afternoon.
+
 **The analyser reports its own cost, and that is not decoration.** Its screen
 is retained-mode LVGL — objects created once, and a property written only when
 its value has actually moved — the advice text is wrapped when the findings
@@ -211,15 +220,16 @@ The lesson both times: a number that comes back from the firmware is not
 evidence that the question was understood. A count that exactly equals a
 constant in your own source is the tell.
 
-### Still open
+### The thresholds, calibrated
 
-That radio measures **12.5 fps** with this widget full-screen, which the
-current thresholds paint red. Whether 12.5 is bad for a TX16S carrying 22
-sensors, 9 logical switches and two other dashboards, or simply what such a
-radio does, is not something the code can decide — it needs a person to say
-whether the menus feel laggy. Until someone does, `FPS_BAD` and `FPS_FAIR` in
-`perfadvice.lua` remain the original 15 and 25, which may well be too
-optimistic and would then flag every healthy radio.
+That radio measures **12.5 fps** with this widget full-screen, and its owner
+confirms the menus feel laggy — the cursor lags the wheel. So `FPS_BAD` = 15
+and `FPS_FAIR` = 25 are keeping their original values: the red is correct, and
+the finding is telling the truth about a radio that really is slow.
+
+That is the first threshold in this file backed by someone looking at the
+radio rather than by a guess, and it is one data point. A colour radio that
+measures below 15 and feels fine would be worth hearing about.
 
 ## What it will not tell you
 
