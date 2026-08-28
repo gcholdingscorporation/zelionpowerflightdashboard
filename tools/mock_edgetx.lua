@@ -116,8 +116,8 @@ function Mock.reset()
   Mock.state.freeMemory = 40000
   Mock.state.hasUsage = true
   Mock.state.hasFreeMemory = true
-  Mock.state.mixes = 0
-  Mock.state.inputs = 0
+  Mock.state.mixesPerChannel = {}
+  Mock.state.inputsPerInput = {}
   Mock.state.logicalSwitches = {}
   Mock.state.customFunctions = {}
   Mock.played = {}
@@ -202,16 +202,32 @@ function Mock.install()
       Mock.state.timerWrites = (Mock.state.timerWrites or 0) + 1
       return true
     end,
-    getMixesCount  = function() return Mock.state.mixes end,
-    getInputsCount = function() return Mock.state.inputs end,
+    -- Per channel and per input, and they RAISE when called without one -
+    -- api_model.cpp does luaL_checkinteger(L, 1) in both. Modelled, because
+    -- a mock that answered a no-argument call hid the bug that made the
+    -- analyser show a model with no mixes and no inputs at all.
+    getMixesCount = function(chn)
+      if tonumber(chn) == nil then error("bad argument: channel expected", 0) end
+      return Mock.state.mixesPerChannel[tonumber(chn)] or 0
+    end,
+    getInputsCount = function(input)
+      if tonumber(input) == nil then error("bad argument: input expected", 0) end
+      return Mock.state.inputsPerInput[tonumber(input)] or 0
+    end,
     -- Sparse, exactly as on the radio: slot 3 can be configured with 0, 1 and
     -- 2 empty, so the inventory has to walk the whole table rather than stop
     -- at the first gap.
     getLogicalSwitch = function(i)
       return Mock.state.logicalSwitches[i] or { func = 0 }
     end,
+    -- Every slot below the limit comes back as a fully populated table,
+    -- configured or not, exactly as the firmware does it. An unused one has
+    -- switch 0 - which is the only thing that distinguishes it, and testing
+    -- for the table instead is what made a radio report all 64 slots in use.
     getCustomFunction = function(i)
+      if tonumber(i) == nil or i < 0 or i >= 64 then return nil end
       return Mock.state.customFunctions[i]
+             or { switch = 0, func = 0, active = 0 }
     end,
   }
   if Mock.state.hasGetSensor then

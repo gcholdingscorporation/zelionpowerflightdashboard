@@ -7,21 +7,9 @@
 
 local Loader = {}
 
--- Two widgets are built from this one tree. They share the host adapter and
--- the theme - the first because it is the only code allowed to touch EdgeTX,
--- the second because they should look like the same product - and nothing
--- else. ZelionPerf knows nothing about telemetry roles, and ZelionDash knows
--- nothing about frame timing.
---
--- Order matters within a list: a module may reference any module before it.
-
--- Shared by both widgets.
-Loader.COMMON = {
+-- Order matters: a module may reference any module listed before it.
+Loader.MODULES = {
   "host",
-  "theme",
-}
-
-Loader.DASH_MODULES = {
   "roles",
   "config",
   "profiles",
@@ -31,37 +19,15 @@ Loader.DASH_MODULES = {
   "alerts",
   "flighttime",
   "flightlog",
+  "theme",
   "layout",
   "dashboard",
 }
 
-Loader.PERF_MODULES = {
-  "perfstats",
-  "perfprobe",
-  "perfscan",
-  "perfadvice",
-  "perfscreen",
-}
-
-local function concat(...)
-  local out = {}
-  for _, list in ipairs({...}) do
-    for _, name in ipairs(list) do out[#out + 1] = name end
-  end
-  return out
-end
-
--- theme.lua used to load after the dashboard's own layers and before the
--- renderer. It is listed in COMMON now, which moves it earlier; nothing
--- between the two positions references it at load time, so the order the
--- modules see is unchanged.
-Loader.MODULES = concat(Loader.COMMON, Loader.DASH_MODULES)
-Loader.PERF    = concat(Loader.COMMON, Loader.PERF_MODULES)
-
-function Loader.load(root, modules)
+function Loader.load(root)
   root = root or "src"
   local ZD = { VERSION = "1.0.0" }
-  for _, name in ipairs(modules or Loader.MODULES) do
+  for _, name in ipairs(Loader.MODULES) do
     local path = root .. "/" .. name .. ".lua"
     local chunk, err = loadfile(path)
     if not chunk then error("failed to load " .. path .. ": " .. tostring(err)) end
@@ -72,16 +38,6 @@ function Loader.load(root, modules)
     factory(ZD)
   end
   return ZD
-end
-
--- Loads the analyser's modules instead of the dashboard's, entry point
--- included. The build lists the entry separately because it also has to name
--- the table to export from it; tests only want the whole thing loaded.
-Loader.PERF_ENTRY = "perfwidget"
-Loader.DASH_ENTRY = "widget"
-
-function Loader.loadPerf(root)
-  return Loader.load(root, concat(Loader.PERF, { Loader.PERF_ENTRY }))
 end
 
 return Loader
