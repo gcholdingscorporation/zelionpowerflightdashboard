@@ -60,7 +60,7 @@ Loader.PERF    = concat(Loader.COMMON, Loader.PERF_MODULES)
 
 function Loader.load(root, modules)
   root = root or "src"
-  local ZD = { VERSION = "0.1.0-dev" }
+  local ZD = { VERSION = "1.0.0" }
   for _, name in ipairs(modules or Loader.MODULES) do
     local path = root .. "/" .. name .. ".lua"
     local chunk, err = loadfile(path)

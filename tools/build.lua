@@ -20,7 +20,7 @@ package.path = "./?.lua;./tools/?.lua;" .. package.path
 
 local Loader = require("loader")
 
-local VERSION = "0.1.0-dev"
+local VERSION = "1.0.0"
 
 local WIDGETS = {
   {
