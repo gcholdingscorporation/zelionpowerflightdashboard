@@ -36,13 +36,8 @@ local osTbl            = g("os")
 local mkdirFn          = g("mkdir")
 local fstatFn          = g("fstat")
 local bitmapTbl        = g("Bitmap")
-local getUsageFn       = g("getUsage")
-local getFreeMemFn     = g("getAvailableMemory")
 
 Host.hasSourceValue = type(getSourceValueFn) == "function"
-Host.hasDir         = type(dirTbl) == "function"
-Host.hasUsage       = type(getUsageFn) == "function"
-Host.hasFreeMemory  = type(getFreeMemFn) == "function"
 Host.hasLvgl        = type(g("lvgl")) == "table"
 
 --------------------------------------------------------------------------
@@ -260,184 +255,10 @@ function Host.listSensors()
           name  = name,
           unit  = tonumber(s.unit),
           prec  = tonumber(s.prec),
-          -- A logged sensor is written to storage as well as computed, which
-          -- is an SD write on the main task rather than arithmetic on it.
-          -- Absent on firmware that does not report it, which reads as false.
-          logs  = s.logs == true or s.logs == 1,
         }
       end
     end
   end
-  return out
-end
-
-
---------------------------------------------------------------------------
--- Runtime cost probes
---------------------------------------------------------------------------
---
--- The two numbers EdgeTX will tell a script about its own execution. Both are
--- read on the hot path, so both are plain pcall-guarded reads with no
--- allocation: a probe that costs a frame to take is measuring itself.
-
--- getUsage() is "percent of the Lua instruction budget already used in this
--- execution cycle" (radio/src/lua/api_general.cpp). Its SCOPE is not the same
--- on every build: a colour radio running an LVGL script gets that script's own
--- refresh figure, while the other paths get a whole-radio number derived from
--- the Lua task duration. Nothing in the API says which you were handed, so
--- this is reported as a load percentage and never as "your widget costs N%".
--- The wall clock below is what carries any claim about the frame rate.
-function Host.usage()
-  if not getUsageFn then return nil end
-  local ok, v = pcall(getUsageFn)
-  if not ok then return nil end
-  return tonumber(v)
-end
-
--- Free bytes remaining in the Lua heap. The absolute figure matters less than
--- its slope: a heap draining a few hundred bytes per frame is a script
--- allocating per frame, and the garbage collection that follows is felt as a
--- stutter rather than as a lower average frame rate.
-function Host.freeMemory()
-  if not getFreeMemFn then return nil end
-  local ok, v = pcall(getFreeMemFn)
-  if not ok then return nil end
-  return tonumber(v)
-end
-
-
--- Size of one file in bytes, or nil when it is not there. The cheapest
--- "does this exist" the firmware offers, and the inventory needs the number
--- anyway.
-function Host.probeSize(path)
-  if type(fstatFn) ~= "function" then return nil end
-  local ok, info = pcall(fstatFn, path)
-  if not ok or type(info) ~= "table" then return nil end
-  return tonumber(info.size)
-end
-
--- Names AND sizes for a folder, for the script inventory. listDir() answers
--- "what is in here", which is all the dashboard's asset probe needs; the
--- analyser also needs how big each one is, since a script's size is the only
--- proxy it has for what that script costs before it runs.
---
--- Capped at 64 entries. A folder larger than that is its own finding, and
--- walking it with fstat on a radio is slow enough to be felt.
-function Host.listFiles(path, limit)
-  limit = tonumber(limit) or 64
-  local names = Host.listDir(path, limit)
-  if names == nil then return nil end
-  local out = {}
-  for i = 1, math.min(#names, limit) do
-    local name = names[i]
-    local size = nil
-    if fstatFn then
-      local ok, info = pcall(fstatFn, path .. name)
-      if ok and type(info) == "table" then size = tonumber(info.size) end
-    end
-    out[#out + 1] = { name = name, size = size }
-  end
-  return out
-end
-
---------------------------------------------------------------------------
--- Model inventory
---------------------------------------------------------------------------
---
--- What this model asks the radio to compute on every mixer pass. None of it is
--- Lua, but all of it shares the main task with Lua, so it sets the budget the
--- scripts are competing for. Read once on a rescan, never per frame - the
--- getters below walk firmware structures and are far too expensive to call
--- from a refresh.
-
--- EdgeTX's own table limits. Enumeration stops at the first empty slot only
--- where the firmware packs them; logical switches and special functions are
--- sparse, so those are walked in full.
-local MAX_LOGICAL_SWITCHES = 64
-local MAX_SPECIAL_FUNCTIONS = 64
-local MAX_OUTPUT_CHANNELS = 32
-local MAX_INPUTS = 32
-
--- model.getMixesCount and model.getInputsCount are PER CHANNEL and PER INPUT
--- (radio/src/lua/api_model.cpp: both do luaL_checkinteger(L, 1)). Called with
--- no argument they raise, which the pcall swallowed - so the analyser showed
--- a model with no mix and no input count at all, on a radio that has plenty
--- of both, and said nothing about why.
---
--- Summed here rather than reported per channel: what the figure is for is
--- "how much does the mixer have to compute every cycle", and that is the
--- total. 32 calls each, on a scan that already runs once and never per frame.
-local function sumOver(fn, limit)
-  if type(fn) ~= "function" then return nil end
-  local total, answered = 0, false
-  for i = 0, limit - 1 do
-    local ok, n = pcall(fn, i)
-    if ok then
-      n = tonumber(n)
-      if n then
-        total = total + n
-        answered = true
-      end
-    end
-  end
-  -- nil rather than 0 when the firmware never answered once: "this radio does
-  -- not report it" and "you have none" must not look the same.
-  if not answered then return nil end
-  return total
-end
-
--- Returns a table of counts, each entry nil where the firmware would not say.
--- nil and 0 are kept apart deliberately: "this radio has no getMixesCount"
--- must not be presented to the pilot as "you have no mixes".
-function Host.modelInventory()
-  local out = { mixes = nil, inputs = nil, logicalSwitches = nil,
-                specialFunctions = nil, sensors = nil, loggedSensors = nil }
-  if type(modelTbl) ~= "table" then return out end
-
-  out.mixes  = sumOver(modelTbl.getMixesCount, MAX_OUTPUT_CHANNELS)
-  out.inputs = sumOver(modelTbl.getInputsCount, MAX_INPUTS)
-
-  if type(modelTbl.getLogicalSwitch) == "function" then
-    local n = 0
-    for i = 0, MAX_LOGICAL_SWITCHES - 1 do
-      local ok, ls = pcall(modelTbl.getLogicalSwitch, i)
-      -- func 0 is LS_FUNC_NONE: the slot exists but computes nothing.
-      if ok and type(ls) == "table" and (tonumber(ls.func) or 0) ~= 0 then
-        n = n + 1
-      end
-    end
-    out.logicalSwitches = n
-  end
-
-  if type(modelTbl.getCustomFunction) == "function" then
-    local n, answered = 0, false
-    for i = 0, MAX_SPECIAL_FUNCTIONS - 1 do
-      local ok, cf = pcall(modelTbl.getCustomFunction, i)
-      -- An empty slot comes back as a FULLY POPULATED TABLE, not as nil:
-      -- api_model.cpp pushes switch, func and active for every index below
-      -- MAX_SPECIAL_FUNCTIONS whether or not anything is configured there.
-      -- Testing `switch ~= nil` therefore counted all 64 slots, and a radio
-      -- with a handful of special functions was told it had sixty-four - a
-      -- number that was really this loop's own limit read back.
-      --
-      -- The firmware's own test is CFN_EMPTY(p) == !(p)->swtch: switch 0 is
-      -- no switch, which is an unused slot. "Always on" is a real switch
-      -- source with a non-zero index, so it is not caught by this.
-      if ok and type(cf) == "table" then
-        answered = true
-        if (tonumber(cf.switch) or 0) ~= 0 then n = n + 1 end
-      end
-    end
-    if answered then out.specialFunctions = n end
-  end
-
-  local sensors = Host.listSensors()
-  out.sensors = #sensors
-  local logged = 0
-  for _, s in ipairs(sensors) do
-    if s.logs then logged = logged + 1 end
-  end
-  out.loggedSensors = logged
   return out
 end
 
@@ -510,14 +331,13 @@ function Host.widgetDirCandidates() return WIDGET_DIR_CANDIDATES end
 
 -- EdgeTX exposes `dir` as an iterator function on some builds and as a table
 -- of file operations on others, so check which one this firmware has.
-function Host.listDir(path, limit)
+function Host.listDir(path)
   if type(dirTbl) ~= "function" then return nil end
-  limit = tonumber(limit) or 32
   local out = {}
   local ok = pcall(function()
     for name in dirTbl(path) do
       out[#out + 1] = tostring(name)
-      if #out >= limit then break end
+      if #out >= 32 then break end
     end
   end)
   if not ok then return nil end

@@ -41,11 +41,6 @@ Copy the built widget onto the radio's storage:
 The file to copy is `dist/WIDGETS/ZelionDash/main.lua`. Then add ZelionDash to
 a full-screen widget slot on the radio.
 
-This repository also builds a second, independent widget — **ZelionPerf**, a
-frame-rate analyser for the EdgeTX UI. It is installed the same way, from
-`dist/WIDGETS/ZelionPerf/main.lua`, and neither widget needs the other. See
-[ZelionPerf](#zelionperf--frame-rate-analyser) below.
-
 ### Updating: delete the .luac
 
 **When you replace `main.lua` with a newer one, delete `main.luac` from the
@@ -299,50 +294,6 @@ functional and says nothing about it. Flight controller data is requested only
 when the link connects and after each landing, never per frame, so it costs
 almost no telemetry bandwidth.
 
-## ZelionPerf — frame rate analyser
-
-A separate widget, built from this same source tree, for the other half of the
-problem: when the radio's own UI is slow.
-
-It measures the frame rate of the screen it is on, counts stutters separately
-from slowness, watches the Lua heap, lists every script installed on the radio
-with a note on **when each one runs**, and ranks what to change.
-
-The part worth knowing before installing it: **EdgeTX's Lua API cannot
-enumerate running scripts or report what another script costs.** There is no
-process table and no per-script timer — `getUsage()` describes the caller's own
-execution cycle and that is the whole surface. So no widget can break a frame
-down by script, and one claiming to is inventing the numbers.
-
-What it does instead is measure by experiment. Press ENTER to mark a baseline,
-change one thing, and read the difference:
-
-```
-7.4 fps faster than the baseline (marked)
-Bigger than the 1.2 fps run-to-run spread. Keep the change.
-```
-
-A difference smaller than the run-to-run spread is reported as no change rather
-than as a small one, because a pilot told "3 fps faster" who finds it was noise
-stops trusting the next reading too.
-
-The script list is sorted by how much of the time each entry runs rather than
-by size, which is the non-obvious part: a script in `/SCRIPTS/MIXES/` runs every
-mixer cycle on every screen and cannot be escaped by navigating away, while a
-telemetry script four times its size is free until you open its page.
-
-It runs on hardware: verified on a TX16S Mk3 over two runs, which between
-them found five bugs — all five in the analyser, none in the radio. Fixing
-the worst of them (it was allocating 10k a frame) took that radio from 7.9
-fps to 12.5. The other four were readings that looked like data and were not:
-a total smaller than the part inside it, a heap printed as `19695k`, "64
-special functions" on a model with two, and a mix count silently missing
-because the firmware getter wanted an argument. All fixed; the frame-rate
-thresholds are still uncalibrated.
-
-Full reference, including what it deliberately will not tell you and why the
-readings survive a 10 ms clock: **[docs/perf.md](docs/perf.md)**.
-
 ## Configuring sensor names
 
 Sensor discovery is automatic and usually needs no configuration. If your model
@@ -375,27 +326,23 @@ A missing config file is entirely normal — everything auto-detects.
 Requires Lua 5.4 on the desktop (`apt install lua5.4`).
 
 ```sh
-lua5.4 tools/build.lua    # src/*.lua  ->  dist/WIDGETS/{ZelionDash,ZelionPerf}/main.lua
+lua5.4 tools/build.lua    # src/*.lua  ->  dist/WIDGETS/ZelionDash/main.lua
 lua5.4 tests/run.lua      # run the test suite
 ```
 
 ### Layout
 
 ```
-src/       widget sources, one file per layer; perf*.lua are ZelionPerf's
+src/       widget sources, one file per layer
 tools/     build script, desktop EdgeTX mock, module loader
-tests/     test suite (runs against both src/ and the built artifacts)
-dist/      the deployable widgets - copy these to the radio
+tests/     test suite (runs against both src/ and the built artifact)
+dist/      the deployable widget - copy this to the radio
 docs/      a ready-to-install sensors.cfg, and the full reference
 ```
 
-Two widgets come out of one build. They share `host.lua`, because that is the
-only code allowed to touch EdgeTX, and `theme.lua`, so they look like the same
-product; nothing else is shared, and neither carries the other's modules.
-
 `src/` is modular for development; `tools/build.lua` concatenates it into a
-single `main.lua` per widget for the radio, because EdgeTX's multi-file loading
-is fiddly enough that every widget of this size ships as one file.
+single `main.lua` for the radio, because EdgeTX's multi-file loading is fiddly
+enough that every widget of this size ships as one file.
 
 ### Architecture
 
@@ -429,6 +376,13 @@ Two rules run through all of it:
   failed write is shown on screen rather than swallowed. Harder than it sounds:
   three separate silent failures cost one flight record between them, and each
   only became visible once the previous was fixed.
+
+## See also
+
+**[ZelionPerf](https://github.com/gcholdingscorporation/zelionperf)** — a
+frame-rate analyser for the EdgeTX UI, which began here and now lives in its
+own repository. If this dashboard, or any other widget, is costing you frames,
+that is the tool that will tell you so and measure what removing it buys.
 
 ## Credits
 
