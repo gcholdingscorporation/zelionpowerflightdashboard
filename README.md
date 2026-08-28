@@ -313,6 +313,11 @@ by size, which is the non-obvious part: a script in `/SCRIPTS/MIXES/` runs every
 mixer cycle on every screen and cannot be escaped by navigating away, while a
 telemetry script four times its size is free until you open its page.
 
+It runs on hardware: verified on a TX16S Mk3, where its first run promptly
+found three bugs in itself — a total smaller than the part it contained, a
+heap reading printed as `19695k`, and the analyser allocating 10k a frame.
+All three are fixed. The frame-rate thresholds are still uncalibrated.
+
 Full reference, including what it deliberately will not tell you and why the
 readings survive a 10 ms clock: **[docs/perf.md](docs/perf.md)**.
 

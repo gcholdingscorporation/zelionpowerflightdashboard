@@ -229,14 +229,24 @@ end
 -- Bytes allocated per frame, or nil before there is a second sample to
 -- difference against.
 --
--- A slight UNDERESTIMATE, unavoidably: in the frame where the collector runs,
--- what it handed back and what was allocated arrive as one net rise, and the
--- allocation inside it cannot be separated out. So the figure misses roughly
--- one frame's worth per collection. It is reported as a floor on what is
--- being allocated rather than corrected by a guess.
-function Stats.allocPerFrame(h)
+-- `frames` is how many frames those samples span. It has to be passed in
+-- because the heap is now sampled TWICE per frame - once entering the
+-- widget's own work and once leaving it - so the sample count is no longer
+-- the frame count. Sampling on both sides is what makes the total consistent
+-- with the widget's own share: every segment of time belongs to exactly one
+-- of the two, the same non-negative rule is applied to each, and the total is
+-- therefore the sum of the parts by construction rather than by hope.
+--
+-- Still an UNDERESTIMATE, unavoidably: in any segment where the collector
+-- runs, what it handed back and what was allocated arrive as one net rise and
+-- cannot be separated. Sampling twice as often halves how much time each such
+-- segment covers, so it hides less - but the figure remains a floor on what
+-- is being allocated rather than a guess corrected upwards.
+function Stats.allocPerFrame(h, frames)
   if not h or h.samples < 2 then return nil end
-  return h.allocated / (h.samples - 1)
+  local n = tonumber(frames)
+  if n == nil or n < 1 then n = h.samples - 1 end
+  return h.allocated / n
 end
 
 --------------------------------------------------------------------------
@@ -307,12 +317,23 @@ function Stats.fmtFps(fps)
   return string.format("%.1f", fps)
 end
 
+-- A megabyte tier, because the Lua heap on a colour radio is not the 64k this
+-- was first written against. A TX16S with external SDRAM reports around 20MB
+-- free, which came out as "19695k" - a number nobody can read at a glance and
+-- which looks like a fault rather than a healthy radio.
 function Stats.fmtBytes(n)
   if n == nil then return "--" end
-  if math.abs(n) >= 10240 then
+  local a = math.abs(n)
+  if a >= 10 * 1024 * 1024 then
+    return string.format("%.0fM", n / (1024 * 1024))
+  end
+  if a >= 1024 * 1024 then
+    return string.format("%.1fM", n / (1024 * 1024))
+  end
+  if a >= 10240 then
     return string.format("%.0fk", n / 1024)
   end
-  if math.abs(n) >= 1024 then
+  if a >= 1024 then
     return string.format("%.1fk", n / 1024)
   end
   return string.format("%d", math.floor(n + 0.5))

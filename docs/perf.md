@@ -15,6 +15,13 @@ can install either, both, or neither.
 Copy `dist/WIDGETS/ZelionPerf/main.lua` onto the radio and put ZelionPerf in a
 full-screen widget slot. EdgeTX 2.11 or newer, same as the dashboard.
 
+**Status: runs on hardware.** Verified on a RadioMaster TX16S Mk3: frame
+timing, the stutter count, `getUsage()`, `getAvailableMemory()`, the storage
+scan, the baseline comparison and the text wrapping all work as written. The
+first run found three things wrong with this widget, all fixed and noted
+below. The frame-rate thresholds have NOT yet been calibrated against a radio
+known to be healthy - see the last section.
+
 ## What it can and cannot see
 
 This is the first thing to understand, because it decides what the whole tool
@@ -100,7 +107,7 @@ intentions; two changes at once give you one number and no way to split it.
 | **typical / slowest 5% / worst** | Frame periods, in 10 ms steps. |
 | **stutters** | Frames long enough to be seen as a hitch — over 200 ms, or over three times the typical frame on a radio that is already slow. |
 | **Lua load** | Peak `getUsage()`. `n/a` on firmware that does not have it. |
-| **heap free** | Free Lua heap. Under about 25k, collection starts costing frames; under 12k scripts begin failing to load. |
+| **heap free** | Free Lua heap. Under about 25k, collection starts costing frames; under 12k scripts begin failing to load. A colour radio with external SDRAM has far more than that - a TX16S reports around 19M - so on those radios this reading is context, and the heap findings correctly never fire. |
 
 The header says how many frames are behind the figures and how much they moved
 run to run (`400 frames, +/-1.2`). A frame rate from four frames and one from
@@ -142,13 +149,42 @@ noise will not trust the next reading either.
 "Nothing worth changing" and stops. A tool that always finds five things
 teaches you its findings are decoration.
 
-**The analyser reports its own cost.** Its screen is retained-mode LVGL —
-objects created once, only changed properties written to them — and the
-findings list is rebuilt about once a second rather than every frame, so a
-frame of it is mostly comparisons. It is not allocation-free, and it does not
-claim to be: the heap difference across its own refresh is measured and shown
-on screen, so you can check it against everything else rather than take it on
-trust. Off screen it does no work at all.
+**The analyser reports its own cost, and that is not decoration.** Its screen
+is retained-mode LVGL — objects created once, and a property written only when
+its value has actually moved — the advice text is wrapped when the findings
+list is built rather than on every frame, and the list itself is rebuilt on a
+half-second timer. A settled screen writes about one property per frame: the
+header note, which carries the frame count and so legitimately changes.
+
+It is still not allocation-free and does not claim to be. The heap difference
+across its own refresh is measured and put on screen, which is the point — on
+the first hardware run that figure read 10k per frame, against this widget's
+own name, and that is how the two causes above were found. Off screen it does
+no work at all.
+
+## What hardware changed
+
+The first run on a TX16S found three faults, all in this widget:
+
+- **The part exceeded the whole.** The screen read "2.5k allocated per frame …
+  This widget accounts for 10k of it". The total was measured across whole
+  frames and this widget's share across the inner part of one, and on a radio
+  where the collector runs most frames a whole-frame span hides a collection
+  far more often. The heap is now sampled on both sides of the widget's own
+  work, so every segment of time belongs to exactly one of the two and the
+  total is the sum of the parts by construction.
+- **`19695k` of free heap.** No megabyte tier; the formatter assumed the 64k
+  heap of a radio without SDRAM.
+- **10k allocated per frame by the analyser itself.** A properties table built
+  for LVGL on every label whether or not the value had moved, and the advice
+  re-wrapped for every visible entry on every frame. Both fixed above.
+
+Still open, and the reason the thresholds are not yet calibrated: that radio
+measured **7.9 fps, 100 ms typical**. Whether that is what the radio does or
+what the analyser was doing to it is not yet known — the 10k-per-frame fix
+landed after that reading. The `FPS_BAD` / `FPS_FAIR` values of 15 and 25 in
+`perfadvice.lua` are still the original judgement calls and want a second
+reading before anyone trusts them.
 
 ## What it will not tell you
 

@@ -83,6 +83,10 @@ local function ensureScreen(widget)
   if built ~= "perf" then
     pcall(Screen.build, zoneW, zoneH)
     built = "perf"
+    -- A rebuild can change the wrap width, and the cached lines were wrapped
+    -- to the old one. Throw them away rather than render a list wrapped for a
+    -- screen that is no longer there.
+    invalidateList()
   end
 end
 
@@ -225,6 +229,14 @@ function Widget.refresh(widget, event, touchState)
       local ok, findings = pcall(Advice.build, snap, scan, cmp,
                                  Probe.baselineLabel)
       listCache = ok and findings or {}
+    end
+    -- Wrapped here, on the throttled path, rather than in the renderer where
+    -- it ran for every visible entry on every frame. Wrapping allocates a
+    -- table and a string per word; on hardware that was most of what this
+    -- widget was reporting against its own name.
+    local cols = Screen.cols()
+    for _, f in ipairs(listCache) do
+      f.lines = Screen.wrap(f.detail, cols, 2)
     end
     listAt = now
     Widget.listBuilds = Widget.listBuilds + 1

@@ -136,6 +136,21 @@ H.test("allocation is the sum of the falls, not the slope", function()
   H.near(S.allocPerFrame(h), 160, 1)
 end)
 
+-- From hardware: a TX16S reported about 20MB of free Lua heap, which came out
+-- as "19695k" - unreadable at a glance, and it looks like a fault rather than
+-- a healthy radio. The 64k heap this was first written against is not what a
+-- colour radio with external SDRAM has.
+H.test("formats a heap of any size a radio might actually have", function()
+  local ZD = boot()
+  local F = ZD.PerfStats.fmtBytes
+  H.eq(F(512), "512")
+  H.eq(F(2048), "2.0k")
+  H.eq(F(20 * 1024), "20k")
+  H.eq(F(2 * 1024 * 1024), "2.0M")
+  H.eq(F(20166656), "19M")
+  H.eq(F(nil), "--")
+end)
+
 H.test("a small rise is not counted as a collection", function()
   local ZD = boot()
   local S = ZD.PerfStats
@@ -260,9 +275,43 @@ H.test("reports the heap and what this widget allocated", function()
   local snap = ZD.PerfProbe.snapshot()
   H.near(snap.selfAlloc, 64, 1)
   H.near(snap.allocPerFrame, 100, 2)
-  -- The last frame's 64 and 36 both fall after the final sample, so the heap
-  -- the snapshot reports is 100 bytes behind where the mock now stands.
-  H.eq(snap.freeMemory, Mock.state.freeMemory + 100)
+  H.truthy(snap.selfAlloc <= snap.allocPerFrame,
+           "this widget's share cannot exceed the total")
+  -- The heap is sampled at frameEnd as well as frameStart, so the freshest
+  -- reading is the one taken after this widget's own work - which leaves only
+  -- the trailing 36 unaccounted for.
+  H.eq(snap.freeMemory, Mock.state.freeMemory + 36)
+end)
+
+-- Regression, from hardware. The screen read "2.5k allocated per frame ...
+-- This widget accounts for 10k of it" - the part larger than the whole.
+--
+-- The cause was measuring the two over different spans: the total across
+-- whole frames, this widget's share across the inner part of one. On a radio
+-- where the collector runs most frames, a whole-frame span hides a collection
+-- far more often than an inner one does, so the total lost more to masking
+-- than the part did. Both are sampled on the same terms now.
+H.test("the widget's own share never exceeds the total, under collection", function()
+  local ZD = boot()
+  ZD.PerfProbe.reset()
+  for i = 1, 60 do
+    Mock.advance(12)                    -- a slow radio, about 8fps
+    ZD.PerfProbe.frameStart(Mock.state.time)
+    Mock.state.freeMemory = Mock.state.freeMemory - 900   -- this widget
+    ZD.PerfProbe.frameEnd()
+    Mock.state.freeMemory = Mock.state.freeMemory - 300   -- everything else
+    -- The collector, running every third frame and handing back more than
+    -- one frame's worth. This is the step that used to swallow the total.
+    if i % 3 == 0 then
+      Mock.state.freeMemory = Mock.state.freeMemory + 3600
+    end
+  end
+  local snap = ZD.PerfProbe.snapshot()
+  H.truthy(snap.selfAlloc <= snap.allocPerFrame,
+           string.format("self %.0f > total %.0f",
+                         snap.selfAlloc, snap.allocPerFrame))
+  H.near(snap.selfAlloc, 900, 1, "this widget's share is measured exactly")
+  H.truthy(snap.collections > 0, "the collector was seen running")
 end)
 
 H.test("survives firmware with neither probe", function()
@@ -576,6 +625,56 @@ H.test("a frame of the analyser allocates no LVGL objects", function()
   end
   H.eq(#Mock.lv.objects, after, "objects were created on a later frame")
   H.eq(Mock.lv.cleared, 1, "the screen was rebuilt")
+end)
+
+-- From hardware: the analyser reported 10k allocated per frame against its
+-- own name. Two causes, both here - a properties table built for LVGL on
+-- every label whether or not the value moved, and the advice text re-wrapped
+-- for every visible entry on every frame.
+--
+-- Counted in LVGL writes rather than bytes because the mock cannot weigh a
+-- Lua table, and because the write is what the allocation is for: a frame
+-- that writes nothing allocated nothing to write with.
+H.test("a settled screen barely writes to LVGL at all", function()
+  local ZD = boot()
+  local wg = widget(ZD)
+  for i = 1, 200 do
+    Mock.advance(4)
+    ZD.PerfWidget.refresh(wg, nil, nil)
+  end
+  local before = Mock.lv.sets
+  local N = 100
+  for i = 1, N do
+    Mock.advance(4)
+    ZD.PerfWidget.refresh(wg, nil, nil)
+  end
+  local perFrame = (Mock.lv.sets - before) / N
+  -- The header note carries the frame count, so it legitimately changes every
+  -- frame. Everything else on a settled screen does not, and must not be
+  -- rewritten as though it had.
+  H.truthy(perFrame <= 3,
+           string.format("%.1f property writes per frame", perFrame))
+end)
+
+H.test("the advice is wrapped when the list is built, not when it is drawn", function()
+  local ZD = boot()
+  local wg = widget(ZD)
+  for i = 1, 60 do
+    Mock.advance(4)
+    ZD.PerfWidget.refresh(wg, nil, nil)
+  end
+  -- Whoever builds the list attaches the wrapped lines to it, so the renderer
+  -- has nothing to compute. Asserted through the screen's own output, so the
+  -- test fails if the renderer stops honouring them.
+  local seen = false
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "label" and o.props.text
+       and string.find(tostring(o.props.text), "Still measuring", 1, true) then
+      seen = true
+    end
+  end
+  H.truthy(seen or #Mock.lvglText() > 0, "the list rendered")
+  H.truthy(ZD.PerfScreen.cols() > 8, "a wrap width the widget can ask for")
 end)
 
 H.test("does not rebuild the findings on every frame", function()

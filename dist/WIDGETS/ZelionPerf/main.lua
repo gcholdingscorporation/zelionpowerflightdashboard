@@ -1265,14 +1265,24 @@ end
 -- Bytes allocated per frame, or nil before there is a second sample to
 -- difference against.
 --
--- A slight UNDERESTIMATE, unavoidably: in the frame where the collector runs,
--- what it handed back and what was allocated arrive as one net rise, and the
--- allocation inside it cannot be separated out. So the figure misses roughly
--- one frame's worth per collection. It is reported as a floor on what is
--- being allocated rather than corrected by a guess.
-function Stats.allocPerFrame(h)
+-- `frames` is how many frames those samples span. It has to be passed in
+-- because the heap is now sampled TWICE per frame - once entering the
+-- widget's own work and once leaving it - so the sample count is no longer
+-- the frame count. Sampling on both sides is what makes the total consistent
+-- with the widget's own share: every segment of time belongs to exactly one
+-- of the two, the same non-negative rule is applied to each, and the total is
+-- therefore the sum of the parts by construction rather than by hope.
+--
+-- Still an UNDERESTIMATE, unavoidably: in any segment where the collector
+-- runs, what it handed back and what was allocated arrive as one net rise and
+-- cannot be separated. Sampling twice as often halves how much time each such
+-- segment covers, so it hides less - but the figure remains a floor on what
+-- is being allocated rather than a guess corrected upwards.
+function Stats.allocPerFrame(h, frames)
   if not h or h.samples < 2 then return nil end
-  return h.allocated / (h.samples - 1)
+  local n = tonumber(frames)
+  if n == nil or n < 1 then n = h.samples - 1 end
+  return h.allocated / n
 end
 
 --------------------------------------------------------------------------
@@ -1343,12 +1353,23 @@ function Stats.fmtFps(fps)
   return string.format("%.1f", fps)
 end
 
+-- A megabyte tier, because the Lua heap on a colour radio is not the 64k this
+-- was first written against. A TX16S with external SDRAM reports around 20MB
+-- free, which came out as "19695k" - a number nobody can read at a glance and
+-- which looks like a fault rather than a healthy radio.
 function Stats.fmtBytes(n)
   if n == nil then return "--" end
-  if math.abs(n) >= 10240 then
+  local a = math.abs(n)
+  if a >= 10 * 1024 * 1024 then
+    return string.format("%.0fM", n / (1024 * 1024))
+  end
+  if a >= 1024 * 1024 then
+    return string.format("%.1fM", n / (1024 * 1024))
+  end
+  if a >= 10240 then
     return string.format("%.0fk", n / 1024)
   end
-  if math.abs(n) >= 1024 then
+  if a >= 1024 then
     return string.format("%.1fk", n / 1024)
   end
   return string.format("%d", math.floor(n + 0.5))
@@ -1492,6 +1513,8 @@ function Probe.frameStart(now)
   end
 
   local free = Host.freeMemory()
+  -- Closes the segment that ran between the last frameEnd and now: everything
+  -- on the radio EXCEPT this widget. frameEnd opens the next one.
   Stats.heapSample(heap, free)
   frameFree = free
 end
@@ -1502,12 +1525,22 @@ end
 -- one cost figure the analyser can attribute to a single script with
 -- certainty - it is the only script it can put brackets around. It is
 -- reported on screen so the pilot can see the measurement is not the thing
--- being measured; a reading above a few dozen bytes here is a bug in this
--- widget, not a finding about theirs.
+-- being measured.
+--
+-- The same reading is also fed to the heap tracker, which is what stops the
+-- screen contradicting itself. It used to sample only at frameStart, so the
+-- total was measured across whole frames while this figure was measured
+-- across the inner part of one - and on a radio where the collector runs most
+-- frames, the total lost far more to that masking than the part did. The
+-- screen printed "2.5k allocated per frame ... this widget accounts for 10k
+-- of it", which is not a finding, it is an arithmetic error in public.
+-- Sampling here closes the widget's own segment on the same terms as every
+-- other, so the part can no longer exceed the whole.
 function Probe.frameEnd()
   if frameFree == nil then return end
   local after = Host.freeMemory()
   if after == nil then return end
+  Stats.heapSample(heap, after)
   local used = frameFree - after
   -- Negative means the collector ran mid-frame and handed back more than we
   -- took. Nothing to attribute, so it is skipped rather than counted as a
@@ -1543,7 +1576,9 @@ function Probe.snapshot(label)
   s.usageMax = usageMax
   s.freeMemory = heap.last
   s.minFree    = heap.minFree
-  s.allocPerFrame = Stats.allocPerFrame(heap)
+  -- total.frames is periods, which is one short of frames observed; the heap
+  -- has been sampled since the first of them, so periods is the right divisor.
+  s.allocPerFrame = Stats.allocPerFrame(heap, total.frames)
   s.collections   = heap.collections
   s.selfAlloc = selfSamples > 0 and (selfAlloc / selfSamples) or nil
   s.label = label
@@ -2141,6 +2176,33 @@ local function setp(obj, props)
   if changed then obj:set(props) end
 end
 
+-- setp() builds a table for LVGL on every call, whether or not anything
+-- changed. Most of what is on this screen does not move frame to frame - the
+-- typical frame period, the stall count, the heap - so most of those tables
+-- were garbage before LVGL had finished reading them.
+--
+-- setText compares first and only builds one when the value has actually
+-- moved. It deliberately does not reuse a scratch table: EdgeTX's binding
+-- reads the fields synchronously today, but a widget that hands a mutable
+-- table to a C function and then keeps writing into it is one firmware
+-- change away from a fault nobody would connect to this line.
+--
+-- This is half the fix for the widget reporting 10k allocated per frame
+-- against its own name on hardware.
+local function setText(obj, text, color)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if not st then st = {}; SHADOW[obj] = st end
+  if st.text == text and (color == nil or st.color == color) then return end
+  st.text = text
+  if color == nil then
+    obj:set({ text = text })
+  else
+    st.color = color
+    obj:set({ text = text, color = color })
+  end
+end
+
 -- Every font goes through Theme.safeFont. EdgeTX indexes its font array with
 -- no bounds check, so an index it has no font for is a native fault and an
 -- EMERGENCY MODE reboot rather than something pcall can catch.
@@ -2329,6 +2391,15 @@ end
 Screen.mode = function() return mode end
 Screen.visibleEntries = function() return L and L.visible or 0 end
 
+-- The character budget the detail lines are wrapped to.
+--
+-- Exposed so the widget can wrap when it BUILDS the list - twice a second -
+-- rather than here, where it happened on every frame for every visible entry.
+-- Wrapping allocates a table and a string per word, so four findings of two
+-- lines each was most of what this screen fed the collector. That is the
+-- other half of the 10k.
+Screen.cols = function() return L and L.cols or 40 end
+
 --------------------------------------------------------------------------
 -- Update
 --------------------------------------------------------------------------
@@ -2362,23 +2433,19 @@ function Screen.update(view)
   if scroll > #findings - n then scroll = math.max(0, #findings - n) end
   if scroll < 0 then scroll = 0 end
 
-  setp(V.fps, { text = Stats.fmtFps(snap.fps), color = fpsColor(snap.fps) })
+  setText(V.fps, Stats.fmtFps(snap.fps), fpsColor(snap.fps))
 
   local c = V.cells
-  setp(c.p50,   { text = Stats.fmtMs(snap.p50) })
-  setp(c.p95,   { text = Stats.fmtMs(snap.p95) })
-  setp(c.worst, { text = Stats.fmtMs(snap.worst),
-                  color = (snap.stalls or 0) > 0 and Theme.warn or Theme.ink })
-  setp(c.stalls, { text = tostring(snap.stalls or 0),
-                   color = (snap.stalls or 0) > 0 and Theme.warn or Theme.ink })
-  setp(c.usage, { text = snap.usageMax and (math.floor(snap.usageMax) .. "%")
-                          or "n/a",
-                  color = (snap.usageMax or 0) >= Advice.USAGE_HIGH
-                          and Theme.warn or Theme.ink })
-  setp(c.heap,  { text = snap.freeMemory and Stats.fmtBytes(snap.freeMemory)
-                          or "n/a",
-                  color = (snap.freeMemory or math.huge) < Advice.HEAP_LOW
-                          and Theme.warn or Theme.ink })
+  local stallColor = (snap.stalls or 0) > 0 and Theme.warn or Theme.ink
+  setText(c.p50,   Stats.fmtMs(snap.p50))
+  setText(c.p95,   Stats.fmtMs(snap.p95))
+  setText(c.worst, Stats.fmtMs(snap.worst), stallColor)
+  setText(c.stalls, tostring(snap.stalls or 0), stallColor)
+  setText(c.usage, snap.usageMax and (math.floor(snap.usageMax) .. "%") or "n/a",
+          (snap.usageMax or 0) >= Advice.USAGE_HIGH and Theme.warn or Theme.ink)
+  setText(c.heap, snap.freeMemory and Stats.fmtBytes(snap.freeMemory) or "n/a",
+          (snap.freeMemory or math.huge) < Advice.HEAP_LOW
+          and Theme.warn or Theme.ink)
 
   -- Header note: how much evidence is behind the numbers. A frame rate from
   -- four frames and one from four hundred look identical otherwise.
@@ -2395,7 +2462,7 @@ function Screen.update(view)
   else
     note = "measuring"
   end
-  setp(V.scanNote, { text = note })
+  setText(V.scanNote, note)
 
   -- Baseline
   local cmp = view.comparison
@@ -2404,37 +2471,50 @@ function Screen.update(view)
     local col = Theme.dim
     if cmp.verdict == "better" then col = Theme.lime
     elseif cmp.verdict == "worse" then col = Theme.crit end
-    setp(V.baseline, {
-      text = string.format("baseline %s fps -> now %s fps  (%s%s)",
-                           Stats.fmtFps(view.baselineFps),
-                           Stats.fmtFps(snap.fps), sign,
-                           Stats.fmtFps(math.abs(cmp.delta))),
-      color = col })
+    setText(V.baseline,
+            string.format("baseline %s fps -> now %s fps  (%s%s)",
+                          Stats.fmtFps(view.baselineFps),
+                          Stats.fmtFps(snap.fps), sign,
+                          Stats.fmtFps(math.abs(cmp.delta))), col)
   else
-    setp(V.baseline, { text = "no baseline - press ENTER to mark one",
-                       color = Theme.dim })
+    setText(V.baseline, "no baseline - press ENTER to mark one", Theme.dim)
   end
 
   for i = 1, n do
     local e = V.entries[i]
     local f = findings[i + scroll]
     if not f then
-      setp(e.title, { text = "" })
-      setp(e.detail[1], { text = "" })
-      setp(e.detail[2], { text = "" })
+      setText(e.title, "")
+      setText(e.detail[1], "")
+      setText(e.detail[2], "")
     else
-      setp(e.title, { text = f.title or "", color = severityColor(f) })
-      local lines = Screen.wrap(f.detail, L.cols, 2)
-      setp(e.detail[1], { text = lines[1] or "" })
-      setp(e.detail[2], { text = lines[2] or "" })
+      setText(e.title, f.title or "", severityColor(f))
+      -- Pre-wrapped by whoever built the list, which happens twice a second.
+      -- Wrapping here is the fallback for a caller that did not, and for the
+      -- tests that call update() directly.
+      local lines = f.lines or Screen.wrap(f.detail, L.cols, 2)
+      setText(e.detail[1], lines[1] or "")
+      setText(e.detail[2], lines[2] or "")
     end
   end
 
-  setp(V.hint, { text = view.hint or "" })
-  setp(V.page, { text = (#findings > n)
-                        and string.format("%d-%d/%d", scroll + 1,
-                              math.min(#findings, scroll + n), #findings)
-                        or "" })
+  setText(V.hint, view.hint or "")
+  -- Only formatted when the page actually turned. string.format on every
+  -- frame to produce the same "1-4/5" is the cheapest thing here to stop
+  -- doing, and there is no reason to keep doing it.
+  local page = ""
+  if #findings > n then
+    local last = math.min(#findings, scroll + n)
+    local st = SHADOW[V.page]
+    if not (st and st.scroll == scroll and st.last == last
+            and st.total == #findings) then
+      page = string.format("%d-%d/%d", scroll + 1, last, #findings)
+      if st then st.scroll, st.last, st.total = scroll, last, #findings end
+    else
+      page = st.text
+    end
+  end
+  setText(V.page, page)
   return scroll
 end
 
@@ -2534,6 +2614,10 @@ local function ensureScreen(widget)
   if built ~= "perf" then
     pcall(Screen.build, zoneW, zoneH)
     built = "perf"
+    -- A rebuild can change the wrap width, and the cached lines were wrapped
+    -- to the old one. Throw them away rather than render a list wrapped for a
+    -- screen that is no longer there.
+    invalidateList()
   end
 end
 
@@ -2676,6 +2760,14 @@ function Widget.refresh(widget, event, touchState)
       local ok, findings = pcall(Advice.build, snap, scan, cmp,
                                  Probe.baselineLabel)
       listCache = ok and findings or {}
+    end
+    -- Wrapped here, on the throttled path, rather than in the renderer where
+    -- it ran for every visible entry on every frame. Wrapping allocates a
+    -- table and a string per word; on hardware that was most of what this
+    -- widget was reporting against its own name.
+    local cols = Screen.cols()
+    for _, f in ipairs(listCache) do
+      f.lines = Screen.wrap(f.detail, cols, 2)
     end
     listAt = now
     Widget.listBuilds = Widget.listBuilds + 1

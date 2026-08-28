@@ -125,6 +125,8 @@ function Probe.frameStart(now)
   end
 
   local free = Host.freeMemory()
+  -- Closes the segment that ran between the last frameEnd and now: everything
+  -- on the radio EXCEPT this widget. frameEnd opens the next one.
   Stats.heapSample(heap, free)
   frameFree = free
 end
@@ -135,12 +137,22 @@ end
 -- one cost figure the analyser can attribute to a single script with
 -- certainty - it is the only script it can put brackets around. It is
 -- reported on screen so the pilot can see the measurement is not the thing
--- being measured; a reading above a few dozen bytes here is a bug in this
--- widget, not a finding about theirs.
+-- being measured.
+--
+-- The same reading is also fed to the heap tracker, which is what stops the
+-- screen contradicting itself. It used to sample only at frameStart, so the
+-- total was measured across whole frames while this figure was measured
+-- across the inner part of one - and on a radio where the collector runs most
+-- frames, the total lost far more to that masking than the part did. The
+-- screen printed "2.5k allocated per frame ... this widget accounts for 10k
+-- of it", which is not a finding, it is an arithmetic error in public.
+-- Sampling here closes the widget's own segment on the same terms as every
+-- other, so the part can no longer exceed the whole.
 function Probe.frameEnd()
   if frameFree == nil then return end
   local after = Host.freeMemory()
   if after == nil then return end
+  Stats.heapSample(heap, after)
   local used = frameFree - after
   -- Negative means the collector ran mid-frame and handed back more than we
   -- took. Nothing to attribute, so it is skipped rather than counted as a
@@ -176,7 +188,9 @@ function Probe.snapshot(label)
   s.usageMax = usageMax
   s.freeMemory = heap.last
   s.minFree    = heap.minFree
-  s.allocPerFrame = Stats.allocPerFrame(heap)
+  -- total.frames is periods, which is one short of frames observed; the heap
+  -- has been sampled since the first of them, so periods is the right divisor.
+  s.allocPerFrame = Stats.allocPerFrame(heap, total.frames)
   s.collections   = heap.collections
   s.selfAlloc = selfSamples > 0 and (selfAlloc / selfSamples) or nil
   s.label = label
