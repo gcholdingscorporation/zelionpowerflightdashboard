@@ -110,6 +110,16 @@ function Mock.reset()
   Mock.state.missingDirs = {}
   Mock.state.timers = { [0] = { value = 0, start = 0 } }
   Mock.state.timerWrites = 0
+  -- Runtime cost probes. nil for either means "this firmware does not have
+  -- the call", which the analyser has to survive rather than assume away.
+  Mock.state.usage = 0
+  Mock.state.freeMemory = 40000
+  Mock.state.hasUsage = true
+  Mock.state.hasFreeMemory = true
+  Mock.state.mixes = 0
+  Mock.state.inputs = 0
+  Mock.state.logicalSwitches = {}
+  Mock.state.customFunctions = {}
   Mock.played = {}
   reindex()
 end
@@ -134,6 +144,18 @@ function Mock.install()
 
   function _G.getVersion()
     return Mock.state.radio, Mock.state.version
+  end
+
+  if Mock.state.hasUsage then
+    function _G.getUsage() return Mock.state.usage end
+  else
+    _G.getUsage = nil
+  end
+
+  if Mock.state.hasFreeMemory then
+    function _G.getAvailableMemory() return Mock.state.freeMemory end
+  else
+    _G.getAvailableMemory = nil
   end
 
   function _G.getFieldInfo(name)
@@ -180,12 +202,23 @@ function Mock.install()
       Mock.state.timerWrites = (Mock.state.timerWrites or 0) + 1
       return true
     end,
+    getMixesCount  = function() return Mock.state.mixes end,
+    getInputsCount = function() return Mock.state.inputs end,
+    -- Sparse, exactly as on the radio: slot 3 can be configured with 0, 1 and
+    -- 2 empty, so the inventory has to walk the whole table rather than stop
+    -- at the first gap.
+    getLogicalSwitch = function(i)
+      return Mock.state.logicalSwitches[i] or { func = 0 }
+    end,
+    getCustomFunction = function(i)
+      return Mock.state.customFunctions[i]
+    end,
   }
   if Mock.state.hasGetSensor then
     _G.model.getSensor = function(i)
       local s = Mock.state.sensors[i + 1]
       if not s then return nil end
-      return { name = s.name, unit = s.unit, prec = 0 }
+      return { name = s.name, unit = s.unit, prec = 0, logs = s.logs or false }
     end
   end
 
@@ -266,11 +299,28 @@ function Mock.install()
   -- os table has to be shadowed too, otherwise desktop Lua's os.rename leaks
   -- in and the widget would try to rename files on the actual disk.
   -- EdgeTX's dir() is an iterator over a folder's filenames.
+  --
+  -- Yields folder names as well as filenames, which the real one does: the
+  -- widget inventory lists /WIDGETS/ expecting a folder per widget, and a
+  -- mock that returned only files made that path untestable.
   _G.dir = function(path)
-    local names, i = {}, 0
+    for missing in pairs(Mock.state.missingDirs or {}) do
+      if string.sub(tostring(path), 1, #missing) == missing then
+        error("no such directory: " .. missing, 0)
+      end
+    end
+    local names, seen, i = {}, {}, 0
+    local prefix = path:gsub("%-", "%%-")
     for full in pairs(Mock.state.files) do
-      local name = string.match(full, "^" .. path:gsub("%-", "%%-") .. "([^/]+)$")
-      if name then names[#names + 1] = name end
+      local rest = string.match(full, "^" .. prefix .. "(.+)$")
+      if rest then
+        local folder = string.match(rest, "^([^/]+)/")
+        local name = folder or rest
+        if not string.find(name, "/", 1, true) and not seen[name] then
+          seen[name] = true
+          names[#names + 1] = name
+        end
+      end
     end
     table.sort(names)
     return function()
@@ -323,7 +373,10 @@ function Mock.install()
   _G.STDSIZE,  _G.BOLD                         = 0x0000, 0x0100
   _G.TINSIZE,  _G.SMLSIZE                      = 0x0200, 0x0300
   _G.MIDSIZE,  _G.DBLSIZE,  _G.XXLSIZE         = 0x0400, 0x0500, 0x0600
+  -- ENTER is here for the analyser, whose whole optimisation loop is that one
+  -- key: mark, change one thing, read the delta.
   _G.EVT_VIRTUAL_NEXT, _G.EVT_VIRTUAL_PREV = 100, 101
+  _G.EVT_VIRTUAL_ENTER = 102
   _G.SOURCE, _G.BOOL = 1, 2
   _G.PREC1, _G.PREC2 = 0x10, 0x20
   _G.getDateTime = function()
