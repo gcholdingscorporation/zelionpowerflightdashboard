@@ -842,8 +842,14 @@ function Roles.isSane(role, value)
   local P = ZD.Profiles
   local w = P and P.window(role)
   if w then
-    if w.min and v < w.min then return false end
-    if w.max and v > w.max then return false end
+    if (w.min and v < w.min) or (w.max and v > w.max) then
+      -- Rejected by the aircraft profile, not by the role. Told to the profile
+      -- so it can notice it is wrong: keep doing this to readings the role
+      -- itself accepts and the aircraft is not the one it thinks.
+      P.noteRejection(role)
+      return false
+    end
+    P.noteAccept(role)
   end
   return true
 end
@@ -1082,6 +1088,7 @@ do
 return function(ZD)
 
 local Config = ZD.Config
+local Host   = ZD.Host
 
 local Profiles = {}
 ZD.Profiles = Profiles
@@ -1133,21 +1140,74 @@ Profiles.AUTO_VOLTS = 15
 Profiles.selected = Profiles.AUTO   -- what the widget option says
 Profiles.detected = nil             -- what auto-detection settled on
 
--- Auto-detection latches. A pack reading that dips through the boundary during
--- a brownout must not reclassify the aircraft mid-flight and silently move
--- every threshold underneath the pilot.
-function Profiles.observe(volts, ok)
-  if not ok then return end
+-- Watch the pack for this long before deciding, and decide on the HIGHEST
+-- reading seen rather than the first.
+--
+-- Deciding on the first cost a real flight: a 12S M7R came up reading low for
+-- a moment, latched as a 200-size, and then spent the flight rejecting its own
+-- pack voltage and capacity as out of range. One sample is not a measurement,
+-- and the error is one-directional - a pack coming up can read too low, never
+-- too high - so the peak is the honest figure.
+Profiles.SETTLE = Host.seconds(3)
+
+local firstSeen, peakVolts = nil, nil
+
+function Profiles.observe(volts, ok, now)
   if Profiles.detected ~= nil then return end
+  if not ok then return end
   volts = tonumber(volts)
   if volts == nil or volts <= 0 then return end
+
+  now = now or Host.now()
+  if firstSeen == nil then firstSeen = now end
+  if peakVolts == nil or volts > peakVolts then peakVolts = volts end
+  if (now - firstSeen) < Profiles.SETTLE then return end
+
   Profiles.detected =
-    (volts >= Profiles.AUTO_VOLTS) and Profiles.LARGE or Profiles.SMALL
+    (peakVolts >= Profiles.AUTO_VOLTS) and Profiles.LARGE or Profiles.SMALL
+end
+
+-- A profile that keeps rejecting readings the role itself accepts is a wrong
+-- profile. Nothing else notices: the windows do their job silently, and the
+-- symptom is a dashboard quietly showing "out of range" for an aircraft that
+-- is working perfectly.
+--
+-- Consecutive, so a single glitched frame - which is what the windows are for
+-- in the first place - does not undo a correct decision. Two seconds of
+-- continuous rejection at 10 Hz is a mismatch, not a glitch.
+Profiles.REJECTS_BEFORE_REDETECT = 20
+
+-- Counted per role, not globally. A service pass samples every role in turn,
+-- so one shared counter is reset by whichever role happens to be fine a
+-- microsecond after the wrong one was rejected - it can never accumulate, and
+-- the self-correction never fires. The streak has to belong to the reading
+-- that keeps being refused.
+local rejectStreak = {}
+
+function Profiles.noteRejection(role)
+  -- Only ever second-guesses its own inference. A pilot who set the option
+  -- meant it, and may be deliberately clamping an aircraft this widget would
+  -- classify differently.
+  if Profiles.selected ~= Profiles.AUTO then return end
+  if Profiles.detected == nil then return end
+  local n = (rejectStreak[role] or 0) + 1
+  rejectStreak[role] = n
+  if n >= Profiles.REJECTS_BEFORE_REDETECT then
+    Profiles.redetections = (Profiles.redetections or 0) + 1
+    Profiles.reset()
+  end
+end
+
+function Profiles.noteAccept(role)
+  rejectStreak[role] = 0
 end
 
 -- Cleared on model change: the next model is quite possibly the other heli.
+-- Also used to abandon a decision the readings have disproved.
 function Profiles.reset()
   Profiles.detected = nil
+  firstSeen, peakVolts = nil, nil
+  rejectStreak = {}
 end
 
 function Profiles.set(n)
@@ -1155,7 +1215,7 @@ function Profiles.set(n)
   if n ~= Profiles.LARGE and n ~= Profiles.SMALL then n = Profiles.AUTO end
   if n ~= Profiles.selected then
     Profiles.selected = n
-    Profiles.detected = nil
+    Profiles.reset()
   end
 end
 
@@ -1176,9 +1236,17 @@ end
 -- alert thresholds, so how it was chosen has to be as visible as what it is.
 function Profiles.how()
   if Profiles.selected ~= Profiles.AUTO then return "set" end
-  if Profiles.detected ~= nil then return "auto" end
+  if Profiles.detected ~= nil then
+    -- Say so when the first answer was wrong. A profile that silently
+    -- corrected itself mid-flight is a thing the pilot should be able to see,
+    -- because it explains a stretch of readings that went missing.
+    if (Profiles.redetections or 0) > 0 then return "auto*" end
+    return "auto"
+  end
   return "waiting"
 end
+
+Profiles.redetections = 0
 
 function Profiles.label()
   local p = Profiles.current()

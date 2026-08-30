@@ -203,8 +203,14 @@ function Roles.isSane(role, value)
   local P = ZD.Profiles
   local w = P and P.window(role)
   if w then
-    if w.min and v < w.min then return false end
-    if w.max and v > w.max then return false end
+    if (w.min and v < w.min) or (w.max and v > w.max) then
+      -- Rejected by the aircraft profile, not by the role. Told to the profile
+      -- so it can notice it is wrong: keep doing this to readings the role
+      -- itself accepts and the aircraft is not the one it thinks.
+      P.noteRejection(role)
+      return false
+    end
+    P.noteAccept(role)
   end
   return true
 end

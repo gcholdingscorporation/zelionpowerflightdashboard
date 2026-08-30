@@ -108,9 +108,21 @@ Cell voltage is deliberately *not* in there: a LiPo cell is in trouble at
 3.40 V whether it is one of two or one of fourteen.
 
 **Auto** goes on pack voltage — 6S is 18 V flat and 3S is 12.6 V full, so
-nothing lands in the gap. It decides once and then holds, so a pack sagging
-across the boundary can't reclassify the aircraft mid-flight. It re-decides
-when you change model.
+nothing lands in the gap. It watches for three seconds and decides on the
+*highest* reading seen, because a pack coming up can read too low but never too
+high. It then holds, so a pack sagging across the boundary can't reclassify the
+aircraft mid-flight, and it re-decides when you change model.
+
+**It also notices when it got it wrong.** A profile that keeps rejecting
+readings the role itself accepts is a wrong profile, so after two seconds of
+that it drops the decision and detects again. The sensor map then shows `auto*`
+rather than `auto`, because a stretch of readings that went missing deserves an
+explanation.
+
+That path exists because it happened: a 12S M7R came up reading low for a
+moment, latched as a 200-size, and spent the flight rejecting its own pack
+voltage and capacity as out of range — the windows doing exactly their job,
+aimed at the wrong aircraft.
 
 Note the split is really by size and pack rather than by firmware — Rotorflight
 runs 200-size helis too. A Rotorflight 200 wants profile `2`, and Auto picks
