@@ -622,6 +622,60 @@ H.test("an important role that bound to nothing is never folded away", function(
           "an ordinary unbound role should have folded away")
 end)
 
+-- Every label on the sensor map fits the box it was given. The dashboard's
+-- overlap test clamps a label to its box before checking neighbours, which is
+-- right for the tiles - their boxes are deliberately wider than their text -
+-- but wrong here, where the box IS the column and anything past it is clipped
+-- by LVGL on the radio. A clipped sensor name on the diagnostics screen is a
+-- diagnostics screen that lies by omission.
+local function assertSensorMapFits(what)
+  local over = {}
+  for _, o in ipairs(Mock.lv.objects) do
+    local text = o.props.text
+    if o.kind == "label" and (text or "") ~= "" and (o.props.w or 0) > 0 then
+      local h  = Mock.fontHeight(o.props.font)
+      local tw = math.floor(#text * h * 0.55)
+      if tw > o.props.w then
+        over[#over + 1] = string.format("%q needs %dpx, box is %dpx",
+                                        text, tw, o.props.w)
+      end
+    end
+  end
+  H.eq(#over, 0, what .. ": " .. table.concat(over, "; "))
+end
+
+H.test("every sensor map label fits its column", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    for _, withRf in ipairs({ false, true }) do
+      local w, h = size[1], size[2]
+      local def, widget = boot(w, h, { SensorMap = 1, TimeTimer = 3 }, function()
+        flying()
+        Mock.addSensor("Capa", 14, 1240)
+        Mock.addSensor("Vbec", 1, 8.1)
+        Mock.addSensor("RQly", 12, 92)
+        if withRf then
+          Mock.installRf2({ apiVersion = 12.09, modelName = "OMPHOBBY M7R" })
+        end
+      end)
+      def.refresh(widget, 0, nil)
+      -- Fly long enough for the time-remaining figure to appear on the flight
+      -- row: it is the longest thing that row ever says.
+      local used = 1240
+      for _ = 1, 30 do
+        used = used + 10
+        Mock.setSensor("Capa", used)
+        Mock.setSensor("Bat%", 68 - (used - 1240) / 25)
+        Mock.advanceSeconds(1)
+        def.refresh(widget, 0, nil)
+      end
+      local what = string.format("%dx%d %s RF Tool", w, h, withRf and "with" or "without")
+      assertSensorMapFits(what .. " page 1")
+      for _ = 1, 30 do def.refresh(widget, 100, nil) end
+      assertSensorMapFits(what .. " last page")
+    end
+  end
+end)
+
 H.test("a failed write says so on the sensor map", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   Mock.state.readOnly = true
@@ -634,18 +688,26 @@ H.test("a failed write says so on the sensor map", function()
            "a card that will not take the write must not fail quietly")
 end)
 
-H.test("the roles come first, with artwork summarised above them", function()
+H.test("the roles come first; healthy artwork does not lead the list", function()
   -- The full artwork block used to lead, from when a missing PNG was the open
   -- problem. Seven rows of it pushed the governor - the row actually being
-  -- looked for - off the bottom of the screen.
+  -- looked for - off the bottom of the screen. Then a one-line "2 ok" summary
+  -- led instead, which at the larger row font was still a row the roles
+  -- needed. Now it heads its own detail block at the bottom, and only leads
+  -- when it has something to report (see the missing-PNG test below).
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
-  local artwork = string.find(t, "ARTWORK", 1, true)
-  H.truthy(artwork, "one summary line, so a failed load still announces itself")
-  H.truthy(string.find(t, "2 ok", 1, true), "and says whether they loaded")
-  H.truthy(string.find(t, "Governor", 1, true), "the roles fit on one screen now")
-  H.truthy(string.find(t, "Headspeed", 1, true) > artwork, "roles below the summary")
+  H.falsy(string.find(t, "ARTWORK", 1, true),
+          "artwork that loaded has nothing to say on the first page")
+  H.truthy(string.find(t, "RF TOOL", 1, true), "the status block leads")
+  H.truthy(string.find(t, "Governor", 1, true), "the roles fit on one screen")
+
+  -- Still there, and still says whether they loaded - at the bottom.
+  for _ = 1, 30 do def.refresh(widget, 100, nil) end
+  local bottom = Mock.lvglText()
+  H.truthy(string.find(bottom, "ARTWORK", 1, true), "summary heads the detail")
+  H.truthy(string.find(bottom, "2 ok", 1, true), "and says whether they loaded")
 end)
 
 H.test("the artwork detail is still reachable, at the bottom", function()

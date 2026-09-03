@@ -39,7 +39,7 @@ Profiles.defs = {
   [Profiles.LARGE] = {
     id    = "rotorflight",
     label = "Rotorflight",
-    note  = "6S 1800mAh and up",
+    note  = "6S and up",
     windows = {
       headspeed   = { max =   4000 },   -- 700-size turns 1500-2200
       packVoltage = { max =     72 },   -- 14S at an implausible 5.1V/cell
@@ -54,7 +54,7 @@ Profiles.defs = {
   [Profiles.SMALL] = {
     id    = "osf03",
     label = "OMPHOBBY OSF03",
-    note  = "200-size, 2S-3S",
+    note  = "2S-3S",
     windows = {
       headspeed   = { max =  12000 },   -- 200-size flies around 5000
       packVoltage = { max =   13.5 },   -- 3S at 4.5V/cell

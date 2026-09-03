@@ -1102,7 +1102,7 @@ Profiles.defs = {
   [Profiles.LARGE] = {
     id    = "rotorflight",
     label = "Rotorflight",
-    note  = "6S 1800mAh and up",
+    note  = "6S and up",
     windows = {
       headspeed   = { max =   4000 },   -- 700-size turns 1500-2200
       packVoltage = { max =     72 },   -- 14S at an implausible 5.1V/cell
@@ -1117,7 +1117,7 @@ Profiles.defs = {
   [Profiles.SMALL] = {
     id    = "osf03",
     label = "OMPHOBBY OSF03",
-    note  = "200-size, 2S-3S",
+    note  = "2S-3S",
     windows = {
       headspeed   = { max =  12000 },   -- 200-size flies around 5000
       packVoltage = { max =   13.5 },   -- 3S at 4.5V/cell
@@ -4182,6 +4182,18 @@ function Dashboard.buildSensorMap(w, h)
   local pad = compact and 6 or 12
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
 
+  -- The list is read standing still, in a workshop, with the radio at arm's
+  -- length - not in flight - and it was set in the smallest font EdgeTX has.
+  -- One size up is 23px against 17 on a TX16S and 17 against 12 on a TX15,
+  -- which is the difference between squinting and reading. It costs four rows
+  -- on both radios; the two rows folded away below pay most of that back.
+  --
+  -- The TX15 stays at the small size. At 480 wide, three columns at 17px
+  -- cannot hold "-- FLIGHT LOG --" beside "/LOGS/zeliondash.csv" beside
+  -- "no flight yet" - the role column alone comes up short - and clipping the
+  -- diagnostics screen to make it bigger defeats the purpose. Measured, not
+  -- assumed: the fit test below this layout tries every row on both radios.
+  local rowFont = compact and F.tiny or F.small
   local headerH = fh(F.small) + (compact and 4 or 8)
   label(pad, compact and 2 or 4, math.floor(w * 0.6),
         compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
@@ -4190,19 +4202,30 @@ function Dashboard.buildSensorMap(w, h)
                     F.tiny, Theme.dim, ALIGN_RIGHT)
   lvgl.hline({ x = 0, y = headerH, w = w, h = 1, color = Theme.rule })
 
-  local rowH    = fh(F.tiny) + (compact and 3 or 4)
+  local rowH    = fh(rowFont) + (compact and 3 or 4)
   local footerH = fh(F.tiny) + (compact and 4 or 8)
   local listTop = headerH + (compact and 3 or 6)
   SM.visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
+  -- The fold wraps against the row font, so the row builder has to be told
+  -- which one it is rather than assuming the smallest.
+  SM.rowFont = rowFont
 
   -- Three columns, not four. "how" is folded into the sensor cell as a
   -- suffix: it is worth knowing whether a binding came from the config file,
   -- a name match or a unit guess, but not worth a column of its own once
   -- every row costs a retained object.
+  -- Column split. The role column carries the longest fixed strings
+  -- ("-- FLIGHT LOG --", "Battery profile") and needs no more than that; the
+  -- sensor column carries free text - a craft name and api version, a profile
+  -- and its note, the arm source and timer - and needs everything the role
+  -- column can spare. At the larger font on the wide screen the split moves
+  -- left for exactly that reason. The value column is sized for "no flight
+  -- yet" and "0:30 min 20s", the longest things that land there.
   local colRole   = pad
-  local colSensor = math.floor(w * 0.36)
-  local sensorW   = math.floor(w * 0.34)
+  local colSensor = math.floor(w * (compact and 0.36 or 0.31))
+  local valueW    = math.floor(w * (compact and 0.25 or 0.22))
   local colValue  = w - pad
+  local sensorW   = colValue - valueW - colSensor - 8
 
   -- A folded row has a list where a sensor name goes and nothing on the right,
   -- so it borrows the value column's width. Kept here rather than in the row
@@ -4215,9 +4238,10 @@ function Dashboard.buildSensorMap(w, h)
   for i = 1, SM.visible do
     local y = listTop + (i - 1) * rowH
     SM.rows[i] = {
-      role   = label(colRole, y, colSensor - colRole - 4, "", F.tiny, Theme.ink),
-      sensor = label(colSensor, y, sensorW, "", F.tiny, Theme.dim),
-      value  = label(colValue - 120, y, 120, "", F.tiny, Theme.dim, ALIGN_RIGHT),
+      role   = label(colRole, y, colSensor - colRole - 4, "", rowFont, Theme.ink),
+      sensor = label(colSensor, y, sensorW, "", rowFont, Theme.dim),
+      value  = label(colValue - valueW, y, valueW, "", rowFont, Theme.dim,
+                     ALIGN_RIGHT),
     }
   end
 
@@ -4274,6 +4298,7 @@ function Dashboard.sensorMapVisible() return SM.visible end
 -- How much room a folded row has for its list. The row builder wraps against
 -- this, so the wrap follows the screen rather than a guess about it.
 function Dashboard.sensorFoldWidth() return SM.wideW or 0 end
+function Dashboard.sensorRowFont()  return SM.rowFont or Theme.font.tiny end
 
 --------------------------------------------------------------------------
 -- Update
@@ -4639,12 +4664,12 @@ local function assetRows()
     status = (bad == 0) and "ok" or "insane",
     important = true,
   }
-  detail[#detail + 1] = { label = "-- ARTWORK DETAIL --",
-                          sensor = Host.widgetDirSource, status = "ok",
-                          important = true }
-  -- The header belongs above the block it heads.
-  table.insert(detail, 1, table.remove(detail))
-  return summary, detail
+  -- The block's own header, for when the summary has gone to the top of the
+  -- list and is not there to head it. Carries how the folder was found, which
+  -- is only worth reading when the folder is the problem.
+  local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
+                   status = "ok", important = true }
+  return summary, header, detail
 end
 
 -- Wraps the folded role names across as few rows as they fit in, measured
@@ -4658,7 +4683,7 @@ local function foldRows(names)
   if #names == 0 then return {} end
 
   local width = Dashboard.sensorFoldWidth()
-  local font  = Theme.font.tiny
+  local font  = Dashboard.sensorRowFont()
   local h     = Theme.fontHeight(font)
 
   local out, line = {}, nil
@@ -4701,26 +4726,37 @@ local function sensorMapRows()
   -- nothing. That leaves no way to tell it is working without pulling the card,
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
-  local summary, detail = assetRows()
+  local summary, artHeader, detail = assetRows()
   local where, verdict = FlightLog.status()
   local profile = Profiles.current()
   local rfWhere, rfVerdict, rfStatus = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  local rows = { summary, {
+  -- The flight controller's flight count rides in the RF Tool row's value
+  -- cell when it is good, and the totals take a line of their own only when
+  -- they are not. Two rows that said "connected" and "ok" about the same link
+  -- were a row the roles needed, and a count can only come over a link that
+  -- is up, so it says "connected" better than the word did. A failure keeps
+  -- its own row: "no usable reply" is not the same kind of thing as a count
+  -- and should not sit in its cell.
+  local rfValue  = rfVerdict
+  local statsRow = nil
+  if statsStatus == "ok" then
+    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+  elseif RF2.available() then
+    statsRow = { label = "  fc stats", sensor = statsText,
+                 value = statsVerdict, status = statsStatus }
+  end
+
+  local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
     -- distinguish "not installed" from "installed but never registered" from
     -- "registered but the FC never handshaked".
     label = "-- RF TOOL --",
     sensor = rfWhere,
-    value = rfVerdict,
+    value = rfValue,
     status = rfStatus,
     important = true,
-  }, {
-    label = "  fc stats",
-    sensor = statsText,
-    value = statsVerdict,
-    status = statsStatus,
   }, {
     -- What the widget thinks it is bolted to. It decides which readings are
     -- plausible, what headspeed counts as flying, and when the ESC is too hot,
@@ -4746,17 +4782,19 @@ local function sensorMapRows()
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
-    -- Elapsed, then whichever second figure is worth the space. On the
-    -- ground that is the 20s a flight has to reach to be logged; in the air
-    -- it is how long is left, which is the only number anyone wants mid-air.
-    -- A separate row for it pushed the governor off the first page, and the
-    -- roles are what this screen is consulted for.
-    value = string.format("%d:%02d  %s",
-                          math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60),
-                          FlightTime.seconds
-                            and ("left " .. FlightTime.clock())
-                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
+    -- Whichever figure is worth the cell. Until there is an estimate: the
+    -- elapsed time, so the flight can be seen counting, and the 20s it has
+    -- to reach to be logged. Once there is one: how long is left, which is
+    -- the only number anyone wants mid-air - elapsed is on the dashboard
+    -- header anyway. Both at once was the widest string on the screen and
+    -- did not fit the cell at the larger font. A separate row pushed the
+    -- governor off the first page.
+    value = FlightTime.seconds
+            and ("left " .. FlightTime.clock())
+            or string.format("%d:%02d min %ds",
+                             math.floor(State.flightSeconds / 60),
+                             math.floor(State.flightSeconds % 60),
+                             FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
 
@@ -4772,6 +4810,8 @@ local function sensorMapRows()
   -- switched off in sensors.cfg is left in place too: that is a decision
   -- somebody made and may want to check, not a gap.
   local folded = {}
+  if statsRow then table.insert(rows, 2, statsRow) end
+
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then
       folded[#folded + 1] = r.label
@@ -4784,6 +4824,18 @@ local function sensorMapRows()
     end
   end
   for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+
+  -- The artwork summary led the list from when a missing PNG was the open
+  -- problem. With both files loading it is a row saying "2 ok" above the
+  -- roles, which is a row the roles needed. So it leads only when it has
+  -- something to report, and otherwise heads its own detail block at the
+  -- bottom, where it is still one scroll away.
+  if summary.status ~= "ok" then
+    table.insert(rows, 1, summary)
+    rows[#rows + 1] = artHeader
+  else
+    rows[#rows + 1] = summary
+  end
   for _, r in ipairs(detail) do rows[#rows + 1] = r end
 
   local note, bad = nil, false

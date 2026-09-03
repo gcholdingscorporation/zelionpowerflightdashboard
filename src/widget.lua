@@ -164,12 +164,12 @@ local function assetRows()
     status = (bad == 0) and "ok" or "insane",
     important = true,
   }
-  detail[#detail + 1] = { label = "-- ARTWORK DETAIL --",
-                          sensor = Host.widgetDirSource, status = "ok",
-                          important = true }
-  -- The header belongs above the block it heads.
-  table.insert(detail, 1, table.remove(detail))
-  return summary, detail
+  -- The block's own header, for when the summary has gone to the top of the
+  -- list and is not there to head it. Carries how the folder was found, which
+  -- is only worth reading when the folder is the problem.
+  local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
+                   status = "ok", important = true }
+  return summary, header, detail
 end
 
 -- Wraps the folded role names across as few rows as they fit in, measured
@@ -183,7 +183,7 @@ local function foldRows(names)
   if #names == 0 then return {} end
 
   local width = Dashboard.sensorFoldWidth()
-  local font  = Theme.font.tiny
+  local font  = Dashboard.sensorRowFont()
   local h     = Theme.fontHeight(font)
 
   local out, line = {}, nil
@@ -226,26 +226,37 @@ local function sensorMapRows()
   -- nothing. That leaves no way to tell it is working without pulling the card,
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
-  local summary, detail = assetRows()
+  local summary, artHeader, detail = assetRows()
   local where, verdict = FlightLog.status()
   local profile = Profiles.current()
   local rfWhere, rfVerdict, rfStatus = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  local rows = { summary, {
+  -- The flight controller's flight count rides in the RF Tool row's value
+  -- cell when it is good, and the totals take a line of their own only when
+  -- they are not. Two rows that said "connected" and "ok" about the same link
+  -- were a row the roles needed, and a count can only come over a link that
+  -- is up, so it says "connected" better than the word did. A failure keeps
+  -- its own row: "no usable reply" is not the same kind of thing as a count
+  -- and should not sit in its cell.
+  local rfValue  = rfVerdict
+  local statsRow = nil
+  if statsStatus == "ok" then
+    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+  elseif RF2.available() then
+    statsRow = { label = "  fc stats", sensor = statsText,
+                 value = statsVerdict, status = statsStatus }
+  end
+
+  local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
     -- distinguish "not installed" from "installed but never registered" from
     -- "registered but the FC never handshaked".
     label = "-- RF TOOL --",
     sensor = rfWhere,
-    value = rfVerdict,
+    value = rfValue,
     status = rfStatus,
     important = true,
-  }, {
-    label = "  fc stats",
-    sensor = statsText,
-    value = statsVerdict,
-    status = statsStatus,
   }, {
     -- What the widget thinks it is bolted to. It decides which readings are
     -- plausible, what headspeed counts as flying, and when the ESC is too hot,
@@ -271,17 +282,19 @@ local function sensorMapRows()
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
-    -- Elapsed, then whichever second figure is worth the space. On the
-    -- ground that is the 20s a flight has to reach to be logged; in the air
-    -- it is how long is left, which is the only number anyone wants mid-air.
-    -- A separate row for it pushed the governor off the first page, and the
-    -- roles are what this screen is consulted for.
-    value = string.format("%d:%02d  %s",
-                          math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60),
-                          FlightTime.seconds
-                            and ("left " .. FlightTime.clock())
-                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
+    -- Whichever figure is worth the cell. Until there is an estimate: the
+    -- elapsed time, so the flight can be seen counting, and the 20s it has
+    -- to reach to be logged. Once there is one: how long is left, which is
+    -- the only number anyone wants mid-air - elapsed is on the dashboard
+    -- header anyway. Both at once was the widest string on the screen and
+    -- did not fit the cell at the larger font. A separate row pushed the
+    -- governor off the first page.
+    value = FlightTime.seconds
+            and ("left " .. FlightTime.clock())
+            or string.format("%d:%02d min %ds",
+                             math.floor(State.flightSeconds / 60),
+                             math.floor(State.flightSeconds % 60),
+                             FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
 
@@ -297,6 +310,8 @@ local function sensorMapRows()
   -- switched off in sensors.cfg is left in place too: that is a decision
   -- somebody made and may want to check, not a gap.
   local folded = {}
+  if statsRow then table.insert(rows, 2, statsRow) end
+
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then
       folded[#folded + 1] = r.label
@@ -309,6 +324,18 @@ local function sensorMapRows()
     end
   end
   for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+
+  -- The artwork summary led the list from when a missing PNG was the open
+  -- problem. With both files loading it is a row saying "2 ok" above the
+  -- roles, which is a row the roles needed. So it leads only when it has
+  -- something to report, and otherwise heads its own detail block at the
+  -- bottom, where it is still one scroll away.
+  if summary.status ~= "ok" then
+    table.insert(rows, 1, summary)
+    rows[#rows + 1] = artHeader
+  else
+    rows[#rows + 1] = summary
+  end
   for _, r in ipairs(detail) do rows[#rows + 1] = r end
 
   local note, bad = nil, false
