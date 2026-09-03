@@ -386,6 +386,33 @@ H.test("safe mode's fonts are legal too", function()
   H.eq(ZD.Theme.fontClamps, 0)
 end)
 
+-- Safe mode is the screen nobody sees until the day it is the only screen
+-- there is, so it has to stand on its own. It is reached from a build that
+-- already raised once; assuming an earlier build left the palette behind is
+-- assuming the thing that just failed got far enough to do its job. Without
+-- its own Theme.build() every colour is nil and the last-resort screen is
+-- black text on a black rectangle.
+H.test("safe mode paints, even with the theme never built", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Theme.built = false
+  ZD.Theme.bg, ZD.Theme.ink, ZD.Theme.warn = nil, nil, nil
+  ZD.Dashboard.buildMinimal(800, 480)
+
+  local painted, distinct = 0, {}
+  for _, o in ipairs(Mock.lv.objects) do
+    local c = o.props.color
+    if c ~= nil then
+      painted = painted + 1
+      distinct[c] = true
+    end
+  end
+  H.truthy(painted > 0, "safe mode drew nothing with a colour")
+
+  local n = 0
+  for _ in pairs(distinct) do n = n + 1 end
+  H.truthy(n > 1, "safe mode drew every object in one colour - text is invisible")
+end)
+
 -- Text placement was tuned against a design mock-up whose "small" was 9pt.
 -- EdgeTX's SMLSIZE is 23px on a TX16S and XXLSIZE is 102px, so every panel had
 -- its header inside its own value and the standby diagnostics printed through

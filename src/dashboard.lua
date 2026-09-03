@@ -478,6 +478,12 @@ Dashboard.MIN_W, Dashboard.MIN_H = 440, 250
 -- already failed.
 function Dashboard.buildMinimal(w, h)
   if type(lvgl) ~= "table" then return end
+  -- The other two builders do this and this one did not. Theme.build() latches,
+  -- so on a radio it has already run in Widget.create() and this is free. It
+  -- matters for the one case that reaches here without it: every colour is nil,
+  -- and the last-resort screen draws black on black. A fallback that fails
+  -- silently is worse than no fallback.
+  Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
   Host.collect()
@@ -589,6 +595,18 @@ function Dashboard.buildSensorMap(w, h)
   local pad = compact and 6 or 12
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
 
+  -- The list is read standing still, in a workshop, with the radio at arm's
+  -- length - not in flight - and it was set in the smallest font EdgeTX has.
+  -- One size up is 23px against 17 on a TX16S and 17 against 12 on a TX15,
+  -- which is the difference between squinting and reading. It costs four rows
+  -- on both radios; the two rows folded away below pay most of that back.
+  --
+  -- The TX15 stays at the small size. At 480 wide, three columns at 17px
+  -- cannot hold "-- FLIGHT LOG --" beside "/LOGS/zeliondash.csv" beside
+  -- "no flight yet" - the role column alone comes up short - and clipping the
+  -- diagnostics screen to make it bigger defeats the purpose. Measured, not
+  -- assumed: the fit test below this layout tries every row on both radios.
+  local rowFont = compact and F.tiny or F.small
   local headerH = fh(F.small) + (compact and 4 or 8)
   label(pad, compact and 2 or 4, math.floor(w * 0.6),
         compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
@@ -597,27 +615,46 @@ function Dashboard.buildSensorMap(w, h)
                     F.tiny, Theme.dim, ALIGN_RIGHT)
   lvgl.hline({ x = 0, y = headerH, w = w, h = 1, color = Theme.rule })
 
-  local rowH    = fh(F.tiny) + (compact and 3 or 4)
+  local rowH    = fh(rowFont) + (compact and 3 or 4)
   local footerH = fh(F.tiny) + (compact and 4 or 8)
   local listTop = headerH + (compact and 3 or 6)
   SM.visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
+  -- The fold wraps against the row font, so the row builder has to be told
+  -- which one it is rather than assuming the smallest.
+  SM.rowFont = rowFont
 
   -- Three columns, not four. "how" is folded into the sensor cell as a
   -- suffix: it is worth knowing whether a binding came from the config file,
   -- a name match or a unit guess, but not worth a column of its own once
   -- every row costs a retained object.
+  -- Column split. The role column carries the longest fixed strings
+  -- ("-- FLIGHT LOG --", "Battery profile") and needs no more than that; the
+  -- sensor column carries free text - a craft name and api version, a profile
+  -- and its note, the arm source and timer - and needs everything the role
+  -- column can spare. At the larger font on the wide screen the split moves
+  -- left for exactly that reason. The value column is sized for "no flight
+  -- yet" and "0:30 min 20s", the longest things that land there.
   local colRole   = pad
-  local colSensor = math.floor(w * 0.36)
-  local sensorW   = math.floor(w * 0.34)
+  local colSensor = math.floor(w * (compact and 0.36 or 0.31))
+  local valueW    = math.floor(w * (compact and 0.25 or 0.22))
   local colValue  = w - pad
+  local sensorW   = colValue - valueW - colSensor - 8
+
+  -- A folded row has a list where a sensor name goes and nothing on the right,
+  -- so it borrows the value column's width. Kept here rather than in the row
+  -- builder: the builder decides what to say, this decides how much room there
+  -- is to say it in, and the wrap has to be measured against the real box.
+  SM.sensorW = sensorW
+  SM.wideW   = colValue - colSensor
 
   SM.rows = {}
   for i = 1, SM.visible do
     local y = listTop + (i - 1) * rowH
     SM.rows[i] = {
-      role   = label(colRole, y, colSensor - colRole - 4, "", F.tiny, Theme.ink),
-      sensor = label(colSensor, y, sensorW, "", F.tiny, Theme.dim),
-      value  = label(colValue - 120, y, 120, "", F.tiny, Theme.dim, ALIGN_RIGHT),
+      role   = label(colRole, y, colSensor - colRole - 4, "", rowFont, Theme.ink),
+      sensor = label(colSensor, y, sensorW, "", rowFont, Theme.dim),
+      value  = label(colValue - valueW, y, valueW, "", rowFont, Theme.dim,
+                     ALIGN_RIGHT),
     }
   end
 
@@ -658,7 +695,11 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
       if row.how then sensor = sensor .. " (" .. row.how .. ")" end
       setp(r.role,   { text = row.label or "",
                        color = row.important and Theme.steel or Theme.ink })
-      setp(r.sensor, { text = sensor, color = color })
+      -- Set every frame, not once at build: the same slot shows a folded row
+      -- on one scroll position and an ordinary role on the next, and a slot
+      -- left wide would run its sensor name through the value column.
+      setp(r.sensor, { text = sensor, color = color,
+                       w = row.wide and SM.wideW or SM.sensorW })
       setp(r.value,  { text = row.value or "", color = color })
     end
   end
@@ -666,6 +707,11 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
 end
 
 function Dashboard.sensorMapVisible() return SM.visible end
+
+-- How much room a folded row has for its list. The row builder wraps against
+-- this, so the wrap follows the screen rather than a guess about it.
+function Dashboard.sensorFoldWidth() return SM.wideW or 0 end
+function Dashboard.sensorRowFont()  return SM.rowFont or Theme.font.tiny end
 
 --------------------------------------------------------------------------
 -- Update

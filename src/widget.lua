@@ -70,16 +70,50 @@ end
 
 local HOW = { override = "cfg", name = "auto", unit = "guess" }
 
+-- Units on the diagnostics screen, not on the dashboard - the tiles carry
+-- their own headers and a unit twice is noise. Here it is the thing that
+-- catches a wrong binding: this screen exists to check that "Curr (guess)"
+-- grabbed a current sensor, and "42 V" says it did not where a bare "42"
+-- says nothing at all.
+--
+-- Written out per role rather than mapped back from the EdgeTX unit id. The
+-- ids are read from the host with a fallback, so a firmware that numbers them
+-- differently would print a confidently wrong unit - and a wrong unit on the
+-- screen you consult to find a wrong binding is the worst place for one.
+local SUFFIX = {
+  headspeed = "rpm", tailSpeed = "rpm",
+  packVoltage = "V", cellVoltage = "V", becVoltage = "V", txVoltage = "V",
+  batteryPercent = "%", throttle = "%", linkQuality = "%",
+  current = "A", capacity = "mAh", power = "W",
+  escTemperature = "°C", mcuTemperature = "°C",
+  rssi1 = "dBm", rssi2 = "dBm",
+}
+
 local function formatValue(row)
   if row.status == "unbound" then return "--" end
   if row.status == "stale"   then return "no data" end
   if row.status == "insane"  then return "out of range" end
   local v = row.value
   if v == nil then return "--" end
-  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
-    return string.format("%d", math.floor(v + 0.5))
+
+  -- A coded reading is shown as both. The dashboard prints ACTIVE and this
+  -- screen printed 4, so the screen you open when something is wrong told you
+  -- less than the one you were already looking at. The number stays because
+  -- this is the screen where a code the widget has no name for still has to
+  -- be readable.
+  if row.role == "governor" then
+    local name = State.GOV_STATES[math.floor(v)]
+    if name then return string.format("%d %s", math.floor(v), name) end
   end
-  return string.format("%.2f", v)
+
+  local text
+  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
+    text = string.format("%d", math.floor(v + 0.5))
+  else
+    text = string.format("%.2f", v)
+  end
+  local suffix = SUFFIX[row.role]
+  return suffix and (text .. " " .. suffix) or text
 end
 
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
@@ -130,12 +164,55 @@ local function assetRows()
     status = (bad == 0) and "ok" or "insane",
     important = true,
   }
-  detail[#detail + 1] = { label = "-- ARTWORK DETAIL --",
-                          sensor = Host.widgetDirSource, status = "ok",
-                          important = true }
-  -- The header belongs above the block it heads.
-  table.insert(detail, 1, table.remove(detail))
-  return summary, detail
+  -- The block's own header, for when the summary has gone to the top of the
+  -- list and is not there to head it. Carries how the folder was found, which
+  -- is only worth reading when the folder is the problem.
+  local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
+                   status = "ok", important = true }
+  return summary, header, detail
+end
+
+-- Wraps the folded role names across as few rows as they fit in, measured
+-- against the width the renderer actually gave them rather than a character
+-- count. EdgeTX's faces are not monospaced and the names run from "LQ" to
+-- "Battery profile", so a guessed budget either clips the list or wastes a
+-- line, and this screen is short of lines.
+--
+-- Returns an empty table when nothing folded, so the caller appends blindly.
+local function foldRows(names)
+  if #names == 0 then return {} end
+
+  local width = Dashboard.sensorFoldWidth()
+  local font  = Dashboard.sensorRowFont()
+  local h     = Theme.fontHeight(font)
+
+  local out, line = {}, nil
+  for _, name in ipairs(names) do
+    local candidate = line and (line .. ", " .. name) or name
+    -- The first name on a line always goes on it, however long: a name that
+    -- does not fit an empty row will not fit any row, and dropping it would
+    -- silently lose the role from a list whose whole job is to be complete.
+    if line and width > 0 and Host.textWidth(candidate, font, h) > width then
+      out[#out + 1] = line
+      line = name
+    else
+      line = candidate
+    end
+  end
+  if line then out[#out + 1] = line end
+
+  local rows = {}
+  for i, text in ipairs(out) do
+    rows[i] = {
+      -- Counted on the first line only. Repeating it down the block reads as
+      -- several separate findings rather than one list.
+      label  = (i == 1) and string.format("  %d unbound", #names) or "",
+      sensor = text,
+      wide   = true,
+      status = "folded",
+    }
+  end
+  return rows
 end
 
 local function sensorMapRows()
@@ -149,26 +226,37 @@ local function sensorMapRows()
   -- nothing. That leaves no way to tell it is working without pulling the card,
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
-  local summary, detail = assetRows()
+  local summary, artHeader, detail = assetRows()
   local where, verdict = FlightLog.status()
   local profile = Profiles.current()
   local rfWhere, rfVerdict, rfStatus = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  local rows = { summary, {
+  -- The flight controller's flight count rides in the RF Tool row's value
+  -- cell when it is good, and the totals take a line of their own only when
+  -- they are not. Two rows that said "connected" and "ok" about the same link
+  -- were a row the roles needed, and a count can only come over a link that
+  -- is up, so it says "connected" better than the word did. A failure keeps
+  -- its own row: "no usable reply" is not the same kind of thing as a count
+  -- and should not sit in its cell.
+  local rfValue  = rfVerdict
+  local statsRow = nil
+  if statsStatus == "ok" then
+    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+  elseif RF2.available() then
+    statsRow = { label = "  fc stats", sensor = statsText,
+                 value = statsVerdict, status = statsStatus }
+  end
+
+  local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
     -- distinguish "not installed" from "installed but never registered" from
     -- "registered but the FC never handshaked".
     label = "-- RF TOOL --",
     sensor = rfWhere,
-    value = rfVerdict,
+    value = rfValue,
     status = rfStatus,
     important = true,
-  }, {
-    label = "  fc stats",
-    sensor = statsText,
-    value = statsVerdict,
-    status = statsStatus,
   }, {
     -- What the widget thinks it is bolted to. It decides which readings are
     -- plausible, what headspeed counts as flying, and when the ESC is too hot,
@@ -194,26 +282,59 @@ local function sensorMapRows()
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
-    -- Elapsed, then whichever second figure is worth the space. On the
-    -- ground that is the 20s a flight has to reach to be logged; in the air
-    -- it is how long is left, which is the only number anyone wants mid-air.
-    -- A separate row for it pushed the governor off the first page, and the
-    -- roles are what this screen is consulted for.
-    value = string.format("%d:%02d  %s",
-                          math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60),
-                          FlightTime.seconds
-                            and ("left " .. FlightTime.clock())
-                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
+    -- Whichever figure is worth the cell. Until there is an estimate: the
+    -- elapsed time, so the flight can be seen counting, and the 20s it has
+    -- to reach to be logged. Once there is one: how long is left, which is
+    -- the only number anyone wants mid-air - elapsed is on the dashboard
+    -- header anyway. Both at once was the widest string on the screen and
+    -- did not fit the cell at the larger font. A separate row pushed the
+    -- governor off the first page.
+    value = FlightTime.seconds
+            and ("left " .. FlightTime.clock())
+            or string.format("%d:%02d min %ds",
+                             math.floor(State.flightSeconds / 60),
+                             math.floor(State.flightSeconds % 60),
+                             FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
 
+  -- A role that bound to nothing has no sensor, no reading and no status worth
+  -- a line of its own - only its name. There are usually ten of them, and as
+  -- full rows they spend more than half the first page saying "nothing here",
+  -- which pushed Governor onto the last visible line and the bound roles that
+  -- the screen is actually consulted for down with it.
+  --
+  -- Two things are deliberately NOT folded. An important role is left in place
+  -- and drawn amber, because an unbound Governor is a warning and burying the
+  -- one row that mattered in a list is how it stops being read. A role
+  -- switched off in sensors.cfg is left in place too: that is a decision
+  -- somebody made and may want to check, not a gap.
+  local folded = {}
+  if statsRow then table.insert(rows, 2, statsRow) end
+
   for _, r in ipairs(sensorRows) do
-    rows[#rows + 1] = {
-      label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
-      important = r.important, how = r.how and HOW[r.how] or nil,
-      value = formatValue(r),
-    }
+    if r.status == "unbound" and not r.off and not r.important then
+      folded[#folded + 1] = r.label
+    else
+      rows[#rows + 1] = {
+        label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
+        important = r.important, how = r.how and HOW[r.how] or nil,
+        value = formatValue(r),
+      }
+    end
+  end
+  for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+
+  -- The artwork summary led the list from when a missing PNG was the open
+  -- problem. With both files loading it is a row saying "2 ok" above the
+  -- roles, which is a row the roles needed. So it leads only when it has
+  -- something to report, and otherwise heads its own detail block at the
+  -- bottom, where it is still one scroll away.
+  if summary.status ~= "ok" then
+    table.insert(rows, 1, summary)
+    rows[#rows + 1] = artHeader
+  else
+    rows[#rows + 1] = summary
   end
   for _, r in ipairs(detail) do rows[#rows + 1] = r end
 

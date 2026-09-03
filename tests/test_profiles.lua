@@ -14,8 +14,12 @@ local function fresh(setup)
   local ZD = Loader.load()
   ZD.State.reloadModel()
   ZD.Alerts.reset()
-  Mock.advanceSeconds(0.2)
-  ZD.State.service(Mock.state.time)
+  -- Past the detection settle window. One reading is not a measurement, and
+  -- a radio sits with the pack connected for seconds before anything happens.
+  for _ = 1, 40 do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+  end
   return ZD
 end
 
@@ -104,7 +108,7 @@ H.test("changing model re-detects", function()
   H.eq(ZD.Profiles.current().id, "rotorflight")
   Mock.state.modelName = "LITTLE ONE"
   Mock.setSensor("Vbat", 7.9)
-  Mock.advanceSeconds(0.2); ZD.State.service(Mock.state.time)
+  run(ZD, 4)                            -- detection settles again
   H.eq(ZD.Profiles.current().id, "osf03", "the other heli on the bench")
 end)
 
@@ -236,6 +240,90 @@ H.test("cell voltage is chemistry and does not move with the aircraft", function
   local a = big_.Config.setting("alertCell")
   small_ = fresh(small)
   H.eq(small_.Config.setting("alertCell"), a, "3.4V is 3.4V on any pack")
+end)
+
+H.group("profiles: a decision made on one bad reading")
+
+-- Found in the field. A 12S M7R came up reading low for a moment, latched as
+-- a 200-size, and then spent the flight rejecting its own pack voltage and
+-- capacity as out of range - the windows doing exactly their job, aimed at
+-- the wrong aircraft.
+
+H.test("a low reading during power-up does not decide the aircraft", function()
+  local ZD
+  Mock.reset(); Mock.removeRf2()
+  Mock.addSensor("Hspd", 18, 0)
+  Mock.addSensor("Vbat", 1, 11.9)      -- the BEC rail, before the pack reports
+  Mock.install()
+  ZD = Loader.load(); ZD.State.reloadModel()
+  run(ZD, 0.5)
+  H.nilv(ZD.Profiles.current(), "nothing decided on half a second")
+
+  Mock.setSensor("Vbat", 49.6)          -- the pack, once it is really talking
+  run(ZD, 5)
+  H.eq(ZD.Profiles.current().id, "rotorflight",
+       "the peak is the honest figure, not the first sample")
+end)
+
+H.test("the peak wins even if the low reading comes back", function()
+  local ZD
+  Mock.reset(); Mock.removeRf2()
+  Mock.addSensor("Hspd", 18, 0)
+  Mock.addSensor("Vbat", 1, 49.6)
+  Mock.install()
+  ZD = Loader.load(); ZD.State.reloadModel()
+  run(ZD, 1)
+  Mock.setSensor("Vbat", 8.0)           -- a dropout mid-settle
+  run(ZD, 5)
+  H.eq(ZD.Profiles.current().id, "rotorflight",
+       "a pack coming up can read too low, never too high")
+end)
+
+H.group("profiles: noticing it got it wrong")
+
+H.test("a profile that keeps rejecting real readings gives up", function()
+  -- The symptom in the field was a dashboard quietly showing "out of range"
+  -- for an aircraft that was working perfectly. Nothing else notices: the
+  -- windows are silent by design.
+  local ZD = fresh(small)
+  H.eq(ZD.Profiles.current().id, "osf03", "wrongly, as it happens")
+
+  -- The real aircraft: a 12S pack, well past the small profile's 13.5V.
+  Mock.setSensor("Vbat", 49.6)
+  run(ZD, 5)
+
+  H.eq(ZD.Profiles.current().id, "rotorflight", "corrected itself")
+  H.truthy(ZD.State.valid("packVoltage"), "and the reading is accepted again")
+end)
+
+H.test("it says so afterwards rather than hiding the correction", function()
+  local ZD = fresh(small)
+  Mock.setSensor("Vbat", 49.6)
+  run(ZD, 5)
+  H.eq(ZD.Profiles.how(), "auto*",
+       "a stretch of missing readings deserves an explanation")
+end)
+
+H.test("one glitched frame does not undo a correct decision", function()
+  -- Which is the whole reason the windows exist. Rejections have to be
+  -- consecutive: two seconds of them at 10 Hz is a mismatch, not a glitch.
+  local ZD = fresh(small)
+  Mock.setSensor("Vbat", 49.6)
+  run(ZD, 0.2)                          -- a couple of bad frames
+  Mock.setSensor("Vbat", 7.9)
+  run(ZD, 3)
+  H.eq(ZD.Profiles.current().id, "osf03", "still the small heli")
+end)
+
+H.test("a profile the pilot set is never second-guessed", function()
+  -- They may be deliberately clamping an aircraft this would classify
+  -- differently, and overriding that would be the widget arguing back.
+  local ZD = fresh(small)
+  ZD.Profiles.set(ZD.Profiles.SMALL)
+  Mock.setSensor("Vbat", 49.6)
+  run(ZD, 5)
+  H.eq(ZD.Profiles.current().id, "osf03", "their choice stands")
+  H.eq(ZD.Profiles.how(), "set")
 end)
 
 end

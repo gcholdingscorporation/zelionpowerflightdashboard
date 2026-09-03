@@ -8,6 +8,10 @@ OMPHOBBY on 2S/3S and a Rotorflight M7R on 12S: sensor binding, arming from
 ARM flags, a switch and the rotor, alerts firing in the air, the flight log,
 the aircraft profile, and RF Tool reading the flight controller's own totals.
 
+![ZelionDash on a TX16S Mk3](docs/screens/tx16s-dashboard.png)
+
+More screens, including the TX15, are in [docs/screens.md](docs/screens.md).
+
 ## Requirements
 
 - EdgeTX 2.11 or newer
@@ -108,9 +112,21 @@ Cell voltage is deliberately *not* in there: a LiPo cell is in trouble at
 3.40 V whether it is one of two or one of fourteen.
 
 **Auto** goes on pack voltage — 6S is 18 V flat and 3S is 12.6 V full, so
-nothing lands in the gap. It decides once and then holds, so a pack sagging
-across the boundary can't reclassify the aircraft mid-flight. It re-decides
-when you change model.
+nothing lands in the gap. It watches for three seconds and decides on the
+*highest* reading seen, because a pack coming up can read too low but never too
+high. It then holds, so a pack sagging across the boundary can't reclassify the
+aircraft mid-flight, and it re-decides when you change model.
+
+**It also notices when it got it wrong.** A profile that keeps rejecting
+readings the role itself accepts is a wrong profile, so after two seconds of
+that it drops the decision and detects again. The sensor map then shows `auto*`
+rather than `auto`, because a stretch of readings that went missing deserves an
+explanation.
+
+That path exists because it happened: a 12S M7R came up reading low for a
+moment, latched as a 200-size, and spent the flight rejecting its own pack
+voltage and capacity as out of range — the windows doing exactly their job,
+aimed at the wrong aircraft.
 
 Note the split is really by size and pack rather than by firmware — Rotorflight
 runs 200-size helis too. A Rotorflight 200 wants profile `2`, and Auto picks
@@ -119,6 +135,8 @@ that correctly.
 Anything you set in `sensors.cfg` beats the profile.
 
 ## Sensor diagnostics
+
+![The sensor map](docs/screens/tx16s-sensormap.png)
 
 Turn on **Show Sensor Map** in the widget settings. It lists every telemetry **role** the dashboard knows
 about, which sensor on your model got bound to it, and how that binding
@@ -328,7 +346,14 @@ Requires Lua 5.4 on the desktop (`apt install lua5.4`).
 ```sh
 lua5.4 tools/build.lua    # src/*.lua  ->  dist/WIDGETS/ZelionDash/main.lua
 lua5.4 tests/run.lua      # run the test suite
+tools/make_screens.sh     # redraw docs/screens/*.png from the code
 ```
+
+The screenshots are generated, not photographed: `tools/dump_screen.lua` builds
+a real screen through the widget's own layout against the LVGL mock and dumps
+every object, and `tools/render_screen.py` draws that dump at true resolution
+with EdgeTX's own font line heights. Rerun it after any layout change, or the
+pictures in this README start lying. Needs `python3` with Pillow.
 
 ### Layout
 
@@ -384,8 +409,62 @@ frame-rate analyser for the EdgeTX UI, which began here and now lives in its
 own repository. If this dashboard, or any other widget, is costing you frames,
 that is the tool that will tell you so and measure what removing it buys.
 
-## Credits
+## Credits and references
 
-Design informed by two excellent existing dashboards: the KRC Dashboard
-(Ben Ke and Thanh Tieu, adapted by Bert Krammer) and StacyDash (Kyle Stacy).
-No code from either is used here.
+No code from any project below is used here. Everything was written from
+scratch; these are the sources the behaviour was checked against, which is a
+different and — for a widget that runs unattended with a helicopter in the air
+— more important kind of debt.
+
+### Dashboards that shaped the design
+
+- **KRC Dashboard** — Ben Ke and Thanh Tieu, adapted by Bert Krammer. The
+  prior art for a full-screen heli telemetry widget on EdgeTX.
+- **StacyDash** — Kyle Stacy. The session min/max convention throughout this
+  dashboard is StacyDash's idea: a peak that happened while you were looking at
+  the helicopter is still on the screen when you look down.
+
+### EdgeTX
+
+Read from the [EdgeTX source](https://github.com/EdgeTX/edgetx) at v2.11,
+because the Lua API reference does not go deep enough in the places that
+actually broke things:
+
+- `radio/src/lua/api_model.cpp` — `model.setTimer`'s real field list, and the
+  fact that its `value` field writes `timersStates[idx].val`, the *running*
+  value. That single detail is what makes an EdgeTX timer drivable from a
+  script, and it is what the time-remaining feature is built on.
+- `radio/src/gui/colorlcd/fonts.h`, `radio/src/fonts/CMakeLists.txt` — font
+  flags are an **enumerated index, not a bitfield**. `XXLSIZE + BOLD` is index
+  7, past the end of a 7-entry table, and puts the radio into emergency mode.
+- `radio/src/fonts/lvgl/{lrg,std,sml}/lv_font_en_*.c` — the real line heights
+  per font set, which `tools/render_screen.py` draws with so the generated
+  screenshots are the size the radio actually produces.
+- The `string` library is registered as a plain table with no metatable, so
+  `s:gsub(...)` raises on the radio while working everywhere else. There is a
+  build-time scan for it in `tests/test_build.lua` because nothing else catches
+  it.
+- FatFs result codes behind `mkdir` (0 OK, 6 invalid path, 8 exists), and
+  `io.open` raising rather than returning nil for a path inside a directory
+  that does not exist.
+
+### Rotorflight
+
+Read from the [Rotorflight source](https://github.com/rotorflight):
+
+- `src/main/sensors/smartfuel.c` — the Smart Fuel state-of-charge modes
+  (OFF / VOLTAGE / CURRENT / COMBINED) and the sigmoid used in VOLTAGE mode.
+  The widget's own fallback curve is deliberately the same one, so the number
+  reads the same whether the flight controller computed it or the widget did.
+- Governor state codes 0–9 (`OFF`, `IDLE`, `SPOOLUP`, `RECOVERY`, `ACTIVE`,
+  `THR-OFF`, `LOST-HS`, `AUTOROT`, `BAILOUT`, `BYPASS`).
+- The CRSF custom telemetry sensor set, including `Bat%` at sensor id 0x1014.
+- **RF Tool** and its `rf2` global — `registerWidget`, `useApi`, `apiVersion`,
+  `modelName` — with `MSP_FLIGHT_STATS` requiring MSP API 12.09 or newer.
+  Rotorflight's own `RfStats` example widget is the model for how a third-party
+  widget is expected to register.
+
+### Protocol
+
+- **CRSF / ExpressLRS** telemetry frame and sensor naming conventions, which
+  are what the role resolver's candidate names are drawn from.

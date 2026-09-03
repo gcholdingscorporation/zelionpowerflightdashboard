@@ -842,8 +842,14 @@ function Roles.isSane(role, value)
   local P = ZD.Profiles
   local w = P and P.window(role)
   if w then
-    if w.min and v < w.min then return false end
-    if w.max and v > w.max then return false end
+    if (w.min and v < w.min) or (w.max and v > w.max) then
+      -- Rejected by the aircraft profile, not by the role. Told to the profile
+      -- so it can notice it is wrong: keep doing this to readings the role
+      -- itself accepts and the aircraft is not the one it thinks.
+      P.noteRejection(role)
+      return false
+    end
+    P.noteAccept(role)
   end
   return true
 end
@@ -1082,6 +1088,7 @@ do
 return function(ZD)
 
 local Config = ZD.Config
+local Host   = ZD.Host
 
 local Profiles = {}
 ZD.Profiles = Profiles
@@ -1095,7 +1102,7 @@ Profiles.defs = {
   [Profiles.LARGE] = {
     id    = "rotorflight",
     label = "Rotorflight",
-    note  = "6S 1800mAh and up",
+    note  = "6S and up",
     windows = {
       headspeed   = { max =   4000 },   -- 700-size turns 1500-2200
       packVoltage = { max =     72 },   -- 14S at an implausible 5.1V/cell
@@ -1110,7 +1117,7 @@ Profiles.defs = {
   [Profiles.SMALL] = {
     id    = "osf03",
     label = "OMPHOBBY OSF03",
-    note  = "200-size, 2S-3S",
+    note  = "2S-3S",
     windows = {
       headspeed   = { max =  12000 },   -- 200-size flies around 5000
       packVoltage = { max =   13.5 },   -- 3S at 4.5V/cell
@@ -1133,21 +1140,74 @@ Profiles.AUTO_VOLTS = 15
 Profiles.selected = Profiles.AUTO   -- what the widget option says
 Profiles.detected = nil             -- what auto-detection settled on
 
--- Auto-detection latches. A pack reading that dips through the boundary during
--- a brownout must not reclassify the aircraft mid-flight and silently move
--- every threshold underneath the pilot.
-function Profiles.observe(volts, ok)
-  if not ok then return end
+-- Watch the pack for this long before deciding, and decide on the HIGHEST
+-- reading seen rather than the first.
+--
+-- Deciding on the first cost a real flight: a 12S M7R came up reading low for
+-- a moment, latched as a 200-size, and then spent the flight rejecting its own
+-- pack voltage and capacity as out of range. One sample is not a measurement,
+-- and the error is one-directional - a pack coming up can read too low, never
+-- too high - so the peak is the honest figure.
+Profiles.SETTLE = Host.seconds(3)
+
+local firstSeen, peakVolts = nil, nil
+
+function Profiles.observe(volts, ok, now)
   if Profiles.detected ~= nil then return end
+  if not ok then return end
   volts = tonumber(volts)
   if volts == nil or volts <= 0 then return end
+
+  now = now or Host.now()
+  if firstSeen == nil then firstSeen = now end
+  if peakVolts == nil or volts > peakVolts then peakVolts = volts end
+  if (now - firstSeen) < Profiles.SETTLE then return end
+
   Profiles.detected =
-    (volts >= Profiles.AUTO_VOLTS) and Profiles.LARGE or Profiles.SMALL
+    (peakVolts >= Profiles.AUTO_VOLTS) and Profiles.LARGE or Profiles.SMALL
+end
+
+-- A profile that keeps rejecting readings the role itself accepts is a wrong
+-- profile. Nothing else notices: the windows do their job silently, and the
+-- symptom is a dashboard quietly showing "out of range" for an aircraft that
+-- is working perfectly.
+--
+-- Consecutive, so a single glitched frame - which is what the windows are for
+-- in the first place - does not undo a correct decision. Two seconds of
+-- continuous rejection at 10 Hz is a mismatch, not a glitch.
+Profiles.REJECTS_BEFORE_REDETECT = 20
+
+-- Counted per role, not globally. A service pass samples every role in turn,
+-- so one shared counter is reset by whichever role happens to be fine a
+-- microsecond after the wrong one was rejected - it can never accumulate, and
+-- the self-correction never fires. The streak has to belong to the reading
+-- that keeps being refused.
+local rejectStreak = {}
+
+function Profiles.noteRejection(role)
+  -- Only ever second-guesses its own inference. A pilot who set the option
+  -- meant it, and may be deliberately clamping an aircraft this widget would
+  -- classify differently.
+  if Profiles.selected ~= Profiles.AUTO then return end
+  if Profiles.detected == nil then return end
+  local n = (rejectStreak[role] or 0) + 1
+  rejectStreak[role] = n
+  if n >= Profiles.REJECTS_BEFORE_REDETECT then
+    Profiles.redetections = (Profiles.redetections or 0) + 1
+    Profiles.reset()
+  end
+end
+
+function Profiles.noteAccept(role)
+  rejectStreak[role] = 0
 end
 
 -- Cleared on model change: the next model is quite possibly the other heli.
+-- Also used to abandon a decision the readings have disproved.
 function Profiles.reset()
   Profiles.detected = nil
+  firstSeen, peakVolts = nil, nil
+  rejectStreak = {}
 end
 
 function Profiles.set(n)
@@ -1155,7 +1215,7 @@ function Profiles.set(n)
   if n ~= Profiles.LARGE and n ~= Profiles.SMALL then n = Profiles.AUTO end
   if n ~= Profiles.selected then
     Profiles.selected = n
-    Profiles.detected = nil
+    Profiles.reset()
   end
 end
 
@@ -1176,9 +1236,17 @@ end
 -- alert thresholds, so how it was chosen has to be as visible as what it is.
 function Profiles.how()
   if Profiles.selected ~= Profiles.AUTO then return "set" end
-  if Profiles.detected ~= nil then return "auto" end
+  if Profiles.detected ~= nil then
+    -- Say so when the first answer was wrong. A profile that silently
+    -- corrected itself mid-flight is a thing the pilot should be able to see,
+    -- because it explains a stretch of readings that went missing.
+    if (Profiles.redetections or 0) > 0 then return "auto*" end
+    return "auto"
+  end
   return "waiting"
 end
+
+Profiles.redetections = 0
 
 function Profiles.label()
   local p = Profiles.current()
@@ -3997,6 +4065,12 @@ Dashboard.MIN_W, Dashboard.MIN_H = 440, 250
 -- already failed.
 function Dashboard.buildMinimal(w, h)
   if type(lvgl) ~= "table" then return end
+  -- The other two builders do this and this one did not. Theme.build() latches,
+  -- so on a radio it has already run in Widget.create() and this is free. It
+  -- matters for the one case that reaches here without it: every colour is nil,
+  -- and the last-resort screen draws black on black. A fallback that fails
+  -- silently is worse than no fallback.
+  Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
   Host.collect()
@@ -4108,6 +4182,18 @@ function Dashboard.buildSensorMap(w, h)
   local pad = compact and 6 or 12
   rectangle(0, 0, w, h, Theme.bg, true, 0, 0)
 
+  -- The list is read standing still, in a workshop, with the radio at arm's
+  -- length - not in flight - and it was set in the smallest font EdgeTX has.
+  -- One size up is 23px against 17 on a TX16S and 17 against 12 on a TX15,
+  -- which is the difference between squinting and reading. It costs four rows
+  -- on both radios; the two rows folded away below pay most of that back.
+  --
+  -- The TX15 stays at the small size. At 480 wide, three columns at 17px
+  -- cannot hold "-- FLIGHT LOG --" beside "/LOGS/zeliondash.csv" beside
+  -- "no flight yet" - the role column alone comes up short - and clipping the
+  -- diagnostics screen to make it bigger defeats the purpose. Measured, not
+  -- assumed: the fit test below this layout tries every row on both radios.
+  local rowFont = compact and F.tiny or F.small
   local headerH = fh(F.small) + (compact and 4 or 8)
   label(pad, compact and 2 or 4, math.floor(w * 0.6),
         compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
@@ -4116,27 +4202,46 @@ function Dashboard.buildSensorMap(w, h)
                     F.tiny, Theme.dim, ALIGN_RIGHT)
   lvgl.hline({ x = 0, y = headerH, w = w, h = 1, color = Theme.rule })
 
-  local rowH    = fh(F.tiny) + (compact and 3 or 4)
+  local rowH    = fh(rowFont) + (compact and 3 or 4)
   local footerH = fh(F.tiny) + (compact and 4 or 8)
   local listTop = headerH + (compact and 3 or 6)
   SM.visible = math.max(1, math.floor((h - listTop - footerH) / rowH))
+  -- The fold wraps against the row font, so the row builder has to be told
+  -- which one it is rather than assuming the smallest.
+  SM.rowFont = rowFont
 
   -- Three columns, not four. "how" is folded into the sensor cell as a
   -- suffix: it is worth knowing whether a binding came from the config file,
   -- a name match or a unit guess, but not worth a column of its own once
   -- every row costs a retained object.
+  -- Column split. The role column carries the longest fixed strings
+  -- ("-- FLIGHT LOG --", "Battery profile") and needs no more than that; the
+  -- sensor column carries free text - a craft name and api version, a profile
+  -- and its note, the arm source and timer - and needs everything the role
+  -- column can spare. At the larger font on the wide screen the split moves
+  -- left for exactly that reason. The value column is sized for "no flight
+  -- yet" and "0:30 min 20s", the longest things that land there.
   local colRole   = pad
-  local colSensor = math.floor(w * 0.36)
-  local sensorW   = math.floor(w * 0.34)
+  local colSensor = math.floor(w * (compact and 0.36 or 0.31))
+  local valueW    = math.floor(w * (compact and 0.25 or 0.22))
   local colValue  = w - pad
+  local sensorW   = colValue - valueW - colSensor - 8
+
+  -- A folded row has a list where a sensor name goes and nothing on the right,
+  -- so it borrows the value column's width. Kept here rather than in the row
+  -- builder: the builder decides what to say, this decides how much room there
+  -- is to say it in, and the wrap has to be measured against the real box.
+  SM.sensorW = sensorW
+  SM.wideW   = colValue - colSensor
 
   SM.rows = {}
   for i = 1, SM.visible do
     local y = listTop + (i - 1) * rowH
     SM.rows[i] = {
-      role   = label(colRole, y, colSensor - colRole - 4, "", F.tiny, Theme.ink),
-      sensor = label(colSensor, y, sensorW, "", F.tiny, Theme.dim),
-      value  = label(colValue - 120, y, 120, "", F.tiny, Theme.dim, ALIGN_RIGHT),
+      role   = label(colRole, y, colSensor - colRole - 4, "", rowFont, Theme.ink),
+      sensor = label(colSensor, y, sensorW, "", rowFont, Theme.dim),
+      value  = label(colValue - valueW, y, valueW, "", rowFont, Theme.dim,
+                     ALIGN_RIGHT),
     }
   end
 
@@ -4177,7 +4282,11 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
       if row.how then sensor = sensor .. " (" .. row.how .. ")" end
       setp(r.role,   { text = row.label or "",
                        color = row.important and Theme.steel or Theme.ink })
-      setp(r.sensor, { text = sensor, color = color })
+      -- Set every frame, not once at build: the same slot shows a folded row
+      -- on one scroll position and an ordinary role on the next, and a slot
+      -- left wide would run its sensor name through the value column.
+      setp(r.sensor, { text = sensor, color = color,
+                       w = row.wide and SM.wideW or SM.sensorW })
       setp(r.value,  { text = row.value or "", color = color })
     end
   end
@@ -4185,6 +4294,11 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
 end
 
 function Dashboard.sensorMapVisible() return SM.visible end
+
+-- How much room a folded row has for its list. The row builder wraps against
+-- this, so the wrap follows the screen rather than a guess about it.
+function Dashboard.sensorFoldWidth() return SM.wideW or 0 end
+function Dashboard.sensorRowFont()  return SM.rowFont or Theme.font.tiny end
 
 --------------------------------------------------------------------------
 -- Update
@@ -4456,16 +4570,50 @@ end
 
 local HOW = { override = "cfg", name = "auto", unit = "guess" }
 
+-- Units on the diagnostics screen, not on the dashboard - the tiles carry
+-- their own headers and a unit twice is noise. Here it is the thing that
+-- catches a wrong binding: this screen exists to check that "Curr (guess)"
+-- grabbed a current sensor, and "42 V" says it did not where a bare "42"
+-- says nothing at all.
+--
+-- Written out per role rather than mapped back from the EdgeTX unit id. The
+-- ids are read from the host with a fallback, so a firmware that numbers them
+-- differently would print a confidently wrong unit - and a wrong unit on the
+-- screen you consult to find a wrong binding is the worst place for one.
+local SUFFIX = {
+  headspeed = "rpm", tailSpeed = "rpm",
+  packVoltage = "V", cellVoltage = "V", becVoltage = "V", txVoltage = "V",
+  batteryPercent = "%", throttle = "%", linkQuality = "%",
+  current = "A", capacity = "mAh", power = "W",
+  escTemperature = "°C", mcuTemperature = "°C",
+  rssi1 = "dBm", rssi2 = "dBm",
+}
+
 local function formatValue(row)
   if row.status == "unbound" then return "--" end
   if row.status == "stale"   then return "no data" end
   if row.status == "insane"  then return "out of range" end
   local v = row.value
   if v == nil then return "--" end
-  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
-    return string.format("%d", math.floor(v + 0.5))
+
+  -- A coded reading is shown as both. The dashboard prints ACTIVE and this
+  -- screen printed 4, so the screen you open when something is wrong told you
+  -- less than the one you were already looking at. The number stays because
+  -- this is the screen where a code the widget has no name for still has to
+  -- be readable.
+  if row.role == "governor" then
+    local name = State.GOV_STATES[math.floor(v)]
+    if name then return string.format("%d %s", math.floor(v), name) end
   end
-  return string.format("%.2f", v)
+
+  local text
+  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
+    text = string.format("%d", math.floor(v + 0.5))
+  else
+    text = string.format("%.2f", v)
+  end
+  local suffix = SUFFIX[row.role]
+  return suffix and (text .. " " .. suffix) or text
 end
 
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
@@ -4516,12 +4664,55 @@ local function assetRows()
     status = (bad == 0) and "ok" or "insane",
     important = true,
   }
-  detail[#detail + 1] = { label = "-- ARTWORK DETAIL --",
-                          sensor = Host.widgetDirSource, status = "ok",
-                          important = true }
-  -- The header belongs above the block it heads.
-  table.insert(detail, 1, table.remove(detail))
-  return summary, detail
+  -- The block's own header, for when the summary has gone to the top of the
+  -- list and is not there to head it. Carries how the folder was found, which
+  -- is only worth reading when the folder is the problem.
+  local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
+                   status = "ok", important = true }
+  return summary, header, detail
+end
+
+-- Wraps the folded role names across as few rows as they fit in, measured
+-- against the width the renderer actually gave them rather than a character
+-- count. EdgeTX's faces are not monospaced and the names run from "LQ" to
+-- "Battery profile", so a guessed budget either clips the list or wastes a
+-- line, and this screen is short of lines.
+--
+-- Returns an empty table when nothing folded, so the caller appends blindly.
+local function foldRows(names)
+  if #names == 0 then return {} end
+
+  local width = Dashboard.sensorFoldWidth()
+  local font  = Dashboard.sensorRowFont()
+  local h     = Theme.fontHeight(font)
+
+  local out, line = {}, nil
+  for _, name in ipairs(names) do
+    local candidate = line and (line .. ", " .. name) or name
+    -- The first name on a line always goes on it, however long: a name that
+    -- does not fit an empty row will not fit any row, and dropping it would
+    -- silently lose the role from a list whose whole job is to be complete.
+    if line and width > 0 and Host.textWidth(candidate, font, h) > width then
+      out[#out + 1] = line
+      line = name
+    else
+      line = candidate
+    end
+  end
+  if line then out[#out + 1] = line end
+
+  local rows = {}
+  for i, text in ipairs(out) do
+    rows[i] = {
+      -- Counted on the first line only. Repeating it down the block reads as
+      -- several separate findings rather than one list.
+      label  = (i == 1) and string.format("  %d unbound", #names) or "",
+      sensor = text,
+      wide   = true,
+      status = "folded",
+    }
+  end
+  return rows
 end
 
 local function sensorMapRows()
@@ -4535,26 +4726,37 @@ local function sensorMapRows()
   -- nothing. That leaves no way to tell it is working without pulling the card,
   -- so it reports itself here: how it decided the heli was flying, how long,
   -- and whether the last write landed.
-  local summary, detail = assetRows()
+  local summary, artHeader, detail = assetRows()
   local where, verdict = FlightLog.status()
   local profile = Profiles.current()
   local rfWhere, rfVerdict, rfStatus = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  local rows = { summary, {
+  -- The flight controller's flight count rides in the RF Tool row's value
+  -- cell when it is good, and the totals take a line of their own only when
+  -- they are not. Two rows that said "connected" and "ok" about the same link
+  -- were a row the roles needed, and a count can only come over a link that
+  -- is up, so it says "connected" better than the word did. A failure keeps
+  -- its own row: "no usable reply" is not the same kind of thing as a count
+  -- and should not sit in its cell.
+  local rfValue  = rfVerdict
+  local statsRow = nil
+  if statsStatus == "ok" then
+    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+  elseif RF2.available() then
+    statsRow = { label = "  fc stats", sensor = statsText,
+                 value = statsVerdict, status = statsStatus }
+  end
+
+  local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
     -- distinguish "not installed" from "installed but never registered" from
     -- "registered but the FC never handshaked".
     label = "-- RF TOOL --",
     sensor = rfWhere,
-    value = rfVerdict,
+    value = rfValue,
     status = rfStatus,
     important = true,
-  }, {
-    label = "  fc stats",
-    sensor = statsText,
-    value = statsVerdict,
-    status = statsStatus,
   }, {
     -- What the widget thinks it is bolted to. It decides which readings are
     -- plausible, what headspeed counts as flying, and when the ESC is too hot,
@@ -4580,26 +4782,59 @@ local function sensorMapRows()
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
-    -- Elapsed, then whichever second figure is worth the space. On the
-    -- ground that is the 20s a flight has to reach to be logged; in the air
-    -- it is how long is left, which is the only number anyone wants mid-air.
-    -- A separate row for it pushed the governor off the first page, and the
-    -- roles are what this screen is consulted for.
-    value = string.format("%d:%02d  %s",
-                          math.floor(State.flightSeconds / 60),
-                          math.floor(State.flightSeconds % 60),
-                          FlightTime.seconds
-                            and ("left " .. FlightTime.clock())
-                            or string.format("min %ds", FlightLog.MIN_SECONDS)),
+    -- Whichever figure is worth the cell. Until there is an estimate: the
+    -- elapsed time, so the flight can be seen counting, and the 20s it has
+    -- to reach to be logged. Once there is one: how long is left, which is
+    -- the only number anyone wants mid-air - elapsed is on the dashboard
+    -- header anyway. Both at once was the widest string on the screen and
+    -- did not fit the cell at the larger font. A separate row pushed the
+    -- governor off the first page.
+    value = FlightTime.seconds
+            and ("left " .. FlightTime.clock())
+            or string.format("%d:%02d min %ds",
+                             math.floor(State.flightSeconds / 60),
+                             math.floor(State.flightSeconds % 60),
+                             FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   } }
 
+  -- A role that bound to nothing has no sensor, no reading and no status worth
+  -- a line of its own - only its name. There are usually ten of them, and as
+  -- full rows they spend more than half the first page saying "nothing here",
+  -- which pushed Governor onto the last visible line and the bound roles that
+  -- the screen is actually consulted for down with it.
+  --
+  -- Two things are deliberately NOT folded. An important role is left in place
+  -- and drawn amber, because an unbound Governor is a warning and burying the
+  -- one row that mattered in a list is how it stops being read. A role
+  -- switched off in sensors.cfg is left in place too: that is a decision
+  -- somebody made and may want to check, not a gap.
+  local folded = {}
+  if statsRow then table.insert(rows, 2, statsRow) end
+
   for _, r in ipairs(sensorRows) do
-    rows[#rows + 1] = {
-      label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
-      important = r.important, how = r.how and HOW[r.how] or nil,
-      value = formatValue(r),
-    }
+    if r.status == "unbound" and not r.off and not r.important then
+      folded[#folded + 1] = r.label
+    else
+      rows[#rows + 1] = {
+        label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
+        important = r.important, how = r.how and HOW[r.how] or nil,
+        value = formatValue(r),
+      }
+    end
+  end
+  for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+
+  -- The artwork summary led the list from when a missing PNG was the open
+  -- problem. With both files loading it is a row saying "2 ok" above the
+  -- roles, which is a row the roles needed. So it leads only when it has
+  -- something to report, and otherwise heads its own detail block at the
+  -- bottom, where it is still one scroll away.
+  if summary.status ~= "ok" then
+    table.insert(rows, 1, summary)
+    rows[#rows + 1] = artHeader
+  else
+    rows[#rows + 1] = summary
   end
   for _, r in ipairs(detail) do rows[#rows + 1] = r end
 
