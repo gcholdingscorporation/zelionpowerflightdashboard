@@ -409,8 +409,62 @@ frame-rate analyser for the EdgeTX UI, which began here and now lives in its
 own repository. If this dashboard, or any other widget, is costing you frames,
 that is the tool that will tell you so and measure what removing it buys.
 
-## Credits
+## Credits and references
 
-Design informed by two excellent existing dashboards: the KRC Dashboard
-(Ben Ke and Thanh Tieu, adapted by Bert Krammer) and StacyDash (Kyle Stacy).
-No code from either is used here.
+No code from any project below is used here. Everything was written from
+scratch; these are the sources the behaviour was checked against, which is a
+different and — for a widget that runs unattended with a helicopter in the air
+— more important kind of debt.
+
+### Dashboards that shaped the design
+
+- **KRC Dashboard** — Ben Ke and Thanh Tieu, adapted by Bert Krammer. The
+  prior art for a full-screen heli telemetry widget on EdgeTX.
+- **StacyDash** — Kyle Stacy. The session min/max convention throughout this
+  dashboard is StacyDash's idea: a peak that happened while you were looking at
+  the helicopter is still on the screen when you look down.
+
+### EdgeTX
+
+Read from the [EdgeTX source](https://github.com/EdgeTX/edgetx) at v2.11,
+because the Lua API reference does not go deep enough in the places that
+actually broke things:
+
+- `radio/src/lua/api_model.cpp` — `model.setTimer`'s real field list, and the
+  fact that its `value` field writes `timersStates[idx].val`, the *running*
+  value. That single detail is what makes an EdgeTX timer drivable from a
+  script, and it is what the time-remaining feature is built on.
+- `radio/src/gui/colorlcd/fonts.h`, `radio/src/fonts/CMakeLists.txt` — font
+  flags are an **enumerated index, not a bitfield**. `XXLSIZE + BOLD` is index
+  7, past the end of a 7-entry table, and puts the radio into emergency mode.
+- `radio/src/fonts/lvgl/{lrg,std,sml}/lv_font_en_*.c` — the real line heights
+  per font set, which `tools/render_screen.py` draws with so the generated
+  screenshots are the size the radio actually produces.
+- The `string` library is registered as a plain table with no metatable, so
+  `s:gsub(...)` raises on the radio while working everywhere else. There is a
+  build-time scan for it in `tests/test_build.lua` because nothing else catches
+  it.
+- FatFs result codes behind `mkdir` (0 OK, 6 invalid path, 8 exists), and
+  `io.open` raising rather than returning nil for a path inside a directory
+  that does not exist.
+
+### Rotorflight
+
+Read from the [Rotorflight source](https://github.com/rotorflight):
+
+- `src/main/sensors/smartfuel.c` — the Smart Fuel state-of-charge modes
+  (OFF / VOLTAGE / CURRENT / COMBINED) and the sigmoid used in VOLTAGE mode.
+  The widget's own fallback curve is deliberately the same one, so the number
+  reads the same whether the flight controller computed it or the widget did.
+- Governor state codes 0–9 (`OFF`, `IDLE`, `SPOOLUP`, `RECOVERY`, `ACTIVE`,
+  `THR-OFF`, `LOST-HS`, `AUTOROT`, `BAILOUT`, `BYPASS`).
+- The CRSF custom telemetry sensor set, including `Bat%` at sensor id 0x1014.
+- **RF Tool** and its `rf2` global — `registerWidget`, `useApi`, `apiVersion`,
+  `modelName` — with `MSP_FLIGHT_STATS` requiring MSP API 12.09 or newer.
+  Rotorflight's own `RfStats` example widget is the model for how a third-party
+  widget is expected to register.
+
+### Protocol
+
+- **CRSF / ExpressLRS** telemetry frame and sensor naming conventions, which
+  are what the role resolver's candidate names are drawn from.
