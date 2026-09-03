@@ -617,6 +617,13 @@ function Dashboard.buildSensorMap(w, h)
   local sensorW   = math.floor(w * 0.34)
   local colValue  = w - pad
 
+  -- A folded row has a list where a sensor name goes and nothing on the right,
+  -- so it borrows the value column's width. Kept here rather than in the row
+  -- builder: the builder decides what to say, this decides how much room there
+  -- is to say it in, and the wrap has to be measured against the real box.
+  SM.sensorW = sensorW
+  SM.wideW   = colValue - colSensor
+
   SM.rows = {}
   for i = 1, SM.visible do
     local y = listTop + (i - 1) * rowH
@@ -664,7 +671,11 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
       if row.how then sensor = sensor .. " (" .. row.how .. ")" end
       setp(r.role,   { text = row.label or "",
                        color = row.important and Theme.steel or Theme.ink })
-      setp(r.sensor, { text = sensor, color = color })
+      -- Set every frame, not once at build: the same slot shows a folded row
+      -- on one scroll position and an ordinary role on the next, and a slot
+      -- left wide would run its sensor name through the value column.
+      setp(r.sensor, { text = sensor, color = color,
+                       w = row.wide and SM.wideW or SM.sensorW })
       setp(r.value,  { text = row.value or "", color = color })
     end
   end
@@ -672,6 +683,10 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
 end
 
 function Dashboard.sensorMapVisible() return SM.visible end
+
+-- How much room a folded row has for its list. The row builder wraps against
+-- this, so the wrap follows the screen rather than a guess about it.
+function Dashboard.sensorFoldWidth() return SM.wideW or 0 end
 
 --------------------------------------------------------------------------
 -- Update

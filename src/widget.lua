@@ -70,16 +70,50 @@ end
 
 local HOW = { override = "cfg", name = "auto", unit = "guess" }
 
+-- Units on the diagnostics screen, not on the dashboard - the tiles carry
+-- their own headers and a unit twice is noise. Here it is the thing that
+-- catches a wrong binding: this screen exists to check that "Curr (guess)"
+-- grabbed a current sensor, and "42 V" says it did not where a bare "42"
+-- says nothing at all.
+--
+-- Written out per role rather than mapped back from the EdgeTX unit id. The
+-- ids are read from the host with a fallback, so a firmware that numbers them
+-- differently would print a confidently wrong unit - and a wrong unit on the
+-- screen you consult to find a wrong binding is the worst place for one.
+local SUFFIX = {
+  headspeed = "rpm", tailSpeed = "rpm",
+  packVoltage = "V", cellVoltage = "V", becVoltage = "V", txVoltage = "V",
+  batteryPercent = "%", throttle = "%", linkQuality = "%",
+  current = "A", capacity = "mAh", power = "W",
+  escTemperature = "°C", mcuTemperature = "°C",
+  rssi1 = "dBm", rssi2 = "dBm",
+}
+
 local function formatValue(row)
   if row.status == "unbound" then return "--" end
   if row.status == "stale"   then return "no data" end
   if row.status == "insane"  then return "out of range" end
   local v = row.value
   if v == nil then return "--" end
-  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
-    return string.format("%d", math.floor(v + 0.5))
+
+  -- A coded reading is shown as both. The dashboard prints ACTIVE and this
+  -- screen printed 4, so the screen you open when something is wrong told you
+  -- less than the one you were already looking at. The number stays because
+  -- this is the screen where a code the widget has no name for still has to
+  -- be readable.
+  if row.role == "governor" then
+    local name = State.GOV_STATES[math.floor(v)]
+    if name then return string.format("%d %s", math.floor(v), name) end
   end
-  return string.format("%.2f", v)
+
+  local text
+  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
+    text = string.format("%d", math.floor(v + 0.5))
+  else
+    text = string.format("%.2f", v)
+  end
+  local suffix = SUFFIX[row.role]
+  return suffix and (text .. " " .. suffix) or text
 end
 
 -- Appended to the diagnostics list. Answers, from the radio itself, what is
@@ -136,6 +170,49 @@ local function assetRows()
   -- The header belongs above the block it heads.
   table.insert(detail, 1, table.remove(detail))
   return summary, detail
+end
+
+-- Wraps the folded role names across as few rows as they fit in, measured
+-- against the width the renderer actually gave them rather than a character
+-- count. EdgeTX's faces are not monospaced and the names run from "LQ" to
+-- "Battery profile", so a guessed budget either clips the list or wastes a
+-- line, and this screen is short of lines.
+--
+-- Returns an empty table when nothing folded, so the caller appends blindly.
+local function foldRows(names)
+  if #names == 0 then return {} end
+
+  local width = Dashboard.sensorFoldWidth()
+  local font  = Theme.font.tiny
+  local h     = Theme.fontHeight(font)
+
+  local out, line = {}, nil
+  for _, name in ipairs(names) do
+    local candidate = line and (line .. ", " .. name) or name
+    -- The first name on a line always goes on it, however long: a name that
+    -- does not fit an empty row will not fit any row, and dropping it would
+    -- silently lose the role from a list whose whole job is to be complete.
+    if line and width > 0 and Host.textWidth(candidate, font, h) > width then
+      out[#out + 1] = line
+      line = name
+    else
+      line = candidate
+    end
+  end
+  if line then out[#out + 1] = line end
+
+  local rows = {}
+  for i, text in ipairs(out) do
+    rows[i] = {
+      -- Counted on the first line only. Repeating it down the block reads as
+      -- several separate findings rather than one list.
+      label  = (i == 1) and string.format("  %d unbound", #names) or "",
+      sensor = text,
+      wide   = true,
+      status = "folded",
+    }
+  end
+  return rows
 end
 
 local function sensorMapRows()
@@ -208,13 +285,30 @@ local function sensorMapRows()
     status = State.armed and "ok" or "unbound",
   } }
 
+  -- A role that bound to nothing has no sensor, no reading and no status worth
+  -- a line of its own - only its name. There are usually ten of them, and as
+  -- full rows they spend more than half the first page saying "nothing here",
+  -- which pushed Governor onto the last visible line and the bound roles that
+  -- the screen is actually consulted for down with it.
+  --
+  -- Two things are deliberately NOT folded. An important role is left in place
+  -- and drawn amber, because an unbound Governor is a warning and burying the
+  -- one row that mattered in a list is how it stops being read. A role
+  -- switched off in sensors.cfg is left in place too: that is a decision
+  -- somebody made and may want to check, not a gap.
+  local folded = {}
   for _, r in ipairs(sensorRows) do
-    rows[#rows + 1] = {
-      label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
-      important = r.important, how = r.how and HOW[r.how] or nil,
-      value = formatValue(r),
-    }
+    if r.status == "unbound" and not r.off and not r.important then
+      folded[#folded + 1] = r.label
+    else
+      rows[#rows + 1] = {
+        label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
+        important = r.important, how = r.how and HOW[r.how] or nil,
+        value = formatValue(r),
+      }
+    end
   end
+  for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
   for _, r in ipairs(detail) do rows[#rows + 1] = r end
 
   local note, bad = nil, false
