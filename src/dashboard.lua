@@ -478,6 +478,12 @@ Dashboard.MIN_W, Dashboard.MIN_H = 440, 250
 -- already failed.
 function Dashboard.buildMinimal(w, h)
   if type(lvgl) ~= "table" then return end
+  -- The other two builders do this and this one did not. Theme.build() latches,
+  -- so on a radio it has already run in Widget.create() and this is free. It
+  -- matters for the one case that reaches here without it: every colour is nil,
+  -- and the last-resort screen draws black on black. A fallback that fails
+  -- silently is worse than no fallback.
+  Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
   Host.collect()

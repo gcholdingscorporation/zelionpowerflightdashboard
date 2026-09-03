@@ -8,6 +8,10 @@ OMPHOBBY on 2S/3S and a Rotorflight M7R on 12S: sensor binding, arming from
 ARM flags, a switch and the rotor, alerts firing in the air, the flight log,
 the aircraft profile, and RF Tool reading the flight controller's own totals.
 
+![ZelionDash on a TX16S Mk3](docs/screens/tx16s-dashboard.png)
+
+More screens, including the TX15, are in [docs/screens.md](docs/screens.md).
+
 ## Requirements
 
 - EdgeTX 2.11 or newer
@@ -131,6 +135,8 @@ that correctly.
 Anything you set in `sensors.cfg` beats the profile.
 
 ## Sensor diagnostics
+
+![The sensor map](docs/screens/tx16s-sensormap.png)
 
 Turn on **Show Sensor Map** in the widget settings. It lists every telemetry **role** the dashboard knows
 about, which sensor on your model got bound to it, and how that binding
@@ -340,7 +346,14 @@ Requires Lua 5.4 on the desktop (`apt install lua5.4`).
 ```sh
 lua5.4 tools/build.lua    # src/*.lua  ->  dist/WIDGETS/ZelionDash/main.lua
 lua5.4 tests/run.lua      # run the test suite
+tools/make_screens.sh     # redraw docs/screens/*.png from the code
 ```
+
+The screenshots are generated, not photographed: `tools/dump_screen.lua` builds
+a real screen through the widget's own layout against the LVGL mock and dumps
+every object, and `tools/render_screen.py` draws that dump at true resolution
+with EdgeTX's own font line heights. Rerun it after any layout change, or the
+pictures in this README start lying. Needs `python3` with Pillow.
 
 ### Layout
 
