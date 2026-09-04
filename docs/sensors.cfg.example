@@ -20,10 +20,13 @@
 #
 # That is the answer to a wrong (guess) on the sensor map. Naming a different
 # sensor does NOT work when the sensor you want does not exist - a name the
-# firmware does not know falls through to the same guess that was wrong. On
-# ExpressLRS there is no Thr sensor, so throttle matches the first spare
-# percent sensor on the radio, which is usually TQly - the transmitter link
-# quality - and reads a confident, permanent THR 100%.
+# firmware does not know falls through to the same guess that was wrong.
+#
+# The guess is narrower than it was. A sensor that any role knows by name is
+# never handed to a different role as a guess: TQly is a link-quality sensor
+# and the widget knows it, so throttle no longer picks it up on a flight
+# controller that publishes no Thr. What "off" still refuses is a guess at a
+# percent sensor the widget has never heard of.
 #
 # Switching a role off is a decision, not a gap: the sensor map shows it as
 # "off" and it is not counted among the unresolved sensors.
