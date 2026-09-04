@@ -1386,13 +1386,38 @@ local function claimedNames()
   return claimed
 end
 
+-- Every sensor name any role knows, lowercased. A sensor on this list is
+-- never handed out as a unit guess for a different role: the widget knows
+-- what it is, and "what it is" is not the role asking.
+--
+-- Cost of not having this, twice over. Rotorflight publishes no Thr sensor
+-- unless it is switched on in the CRSF telemetry list, so throttle fell
+-- through to the unit pass, which found one spare percent sensor - TQly, the
+-- transmitter link quality - and showed THR 100% on a disarmed heli at 0 rpm.
+-- First on the OSF03, where "throttle = off" in sensors.cfg was the fix; then
+-- on the M7R, whose config section said it needed nothing because it
+-- "publishes a real throttle", until the day it did not. TQly is a linkQuality
+-- candidate by name. A resolver that can read that list has no business
+-- guessing it is a throttle.
+local knownNames = nil
+local function isKnownName(name)
+  if not knownNames then
+    knownNames = {}
+    for _, def in pairs(Roles.defs) do
+      for _, n in ipairs(def.names or {}) do knownNames[lower(n)] = true end
+    end
+  end
+  return knownNames[lower(name)] == true
+end
+
 local function bindByUnit(role, sensorList, claimed)
   local def = Roles.get(role)
   if not def or not def.unit then return nil end
   local match = nil
   for i = 1, #sensorList do
     local s = sensorList[i]
-    if s.unit == def.unit and not claimed[lower(s.name)] then
+    if s.unit == def.unit and not claimed[lower(s.name)]
+       and not isKnownName(s.name) then
       -- A second candidate makes this ambiguous. Bind nothing.
       if match then return nil end
       match = s

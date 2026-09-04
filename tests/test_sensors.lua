@@ -126,13 +126,30 @@ H.test("off leaves a role unbound instead of guessing", function()
   H.eq(ZD.State.status("throttle"), "unbound")
 end)
 
-H.test("without it, the guess is exactly the one being complained about", function()
-  -- Pins the behaviour the option exists to defeat. If the resolver stops
-  -- doing this, the option is dead weight and should go.
+H.test("a sensor another role knows by name is never a guess for throttle", function()
+  -- This test used to pin the opposite: TQly guessed as throttle, kept as a
+  -- reminder that "off" existed to defeat it. Then it happened in the field
+  -- on the second aircraft, the one whose config section said it needed no
+  -- override. A guess the widget can rule out by reading its own role table
+  -- is not a guess worth making.
   local ZD = fresh(function()
     elrs()
   end)
-  H.eq(ZD.Sensors.boundTo("throttle"), "TQly")
+  H.eq(ZD.Sensors.boundTo("throttle"), nil,
+       "TQly is a linkQuality candidate; the resolver knows what it is")
+  H.eq(ZD.State.status("throttle"), "unbound")
+end)
+
+H.test("a sensor nobody knows by name can still be guessed by unit", function()
+  -- The unit pass still has a job: an unfamiliar sensor with the right unit
+  -- and no competition. That is what makes "off" still worth having - it is
+  -- the only way to refuse a guess the widget cannot rule out by itself.
+  local ZD = fresh(function()
+    Mock.addSensor("Bat%", 13, 99)
+    Mock.addSensor("RQly", 13, 100)
+    Mock.addSensor("Thrtl", 13, 40)     -- not a name any role lists
+  end)
+  H.eq(ZD.Sensors.boundTo("throttle"), "Thrtl")
   H.eq(ZD.Sensors.howBound("throttle"), "unit")
 end)
 
@@ -157,11 +174,20 @@ H.test("the sensor map says off rather than showing a blank", function()
   H.truthy(byRole.throttle.off, "flagged as a deliberate choice")
 end)
 
+-- A percent sensor with a name no role lists, so the unit pass still guesses
+-- it for throttle. These tests are about "off", and need a guess to switch
+-- off; TQly no longer qualifies, since linkQuality knows it by name.
+local function guessableThrottle()
+  Mock.addSensor("Bat%", 13, 99)
+  Mock.addSensor("RQly", 13, 100)
+  Mock.addSensor("Thrtl", 13, 40)
+end
+
 H.test("switching a role off releases a binding it already had", function()
   local ZD = fresh(function()
-    elrs()
+    guessableThrottle()
   end)
-  H.eq(ZD.Sensors.boundTo("throttle"), "TQly", "bound before")
+  H.eq(ZD.Sensors.boundTo("throttle"), "Thrtl", "bound before")
   Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", "[*]\nthrottle = off\n")
   ZD.Config.load()
   ZD.Sensors.reload("Test Heli")
@@ -170,11 +196,11 @@ end)
 
 H.test("one model can switch a role off without affecting the others", function()
   local ZD = fresh(function()
-    elrs()
+    guessableThrottle()
     Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
       "[Other Heli]\nthrottle = off\n")
   end)
-  H.eq(ZD.Sensors.boundTo("throttle"), "TQly", "this model was not the one")
+  H.eq(ZD.Sensors.boundTo("throttle"), "Thrtl", "this model was not the one")
 end)
 
 H.group("sensors: missing vs zero")
