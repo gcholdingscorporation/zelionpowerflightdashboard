@@ -192,6 +192,39 @@ confirms the right sensor is bound.
 
 Thresholds are configurable; see `docs/sensors.cfg.example`.
 
+## When the pack goes away
+
+A connector that lets go in flight does not stop the telemetry. The flight
+controller keeps talking on the ESC's capacitors, or on a backup buffer, and
+the voltage walks down under it — 3.9 V per cell, then 3.3, then 2.4, then
+nothing. Every one of those is a number a real cell could show.
+
+Left alone, the dashboard recorded them as the flight's minimum and read them
+out as a flat battery. Both are wrong, and the second is worse than silence:
+it is the one alarm that matters saying something untrue.
+
+What gives a collapse away is not the size of any single step. It is that it
+never stops. Sag stops, and then recovers, because the pilot eases off. So a
+reading that is still falling is **shown but not trusted** — the tile stays
+live, because that is what a dashboard is for, while the flight's minimum and
+the low-cell alarm wait for the fall to stop. That wait is a fraction of a
+second of real sag, and forever for a decay.
+
+When the fall does not stop, **MAIN POWER LOST** sounds instead of the low-cell
+alarm, repeating every six seconds and reading out the BEC voltage where the
+aircraft has one — the buffer, counted down out loud. It is a flight alarm
+only: pulling the pack on the bench looks identical and is not an emergency.
+
+## Is this pack actually charged?
+
+Once per pack, on the ground, eight seconds after telemetry settles, the widget
+compares cell voltage against `cellFull` and says so if the pack is short. A
+half pack flies exactly like a full one for the first minute, which is the
+whole problem with finding out later.
+
+It is asked once and answered once, whichever way it goes. Plugging in the next
+pack asks again.
+
 ## Time remaining
 
 Set **Time Timer** in the widget settings to 1, 2 or 3 and ZelionDash drives
