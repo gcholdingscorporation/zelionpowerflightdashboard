@@ -1,0 +1,73 @@
+name: release
+
+# Publishes a GitHub release from main, by hand. Tags cannot be pushed from
+# every place changes are made, so the tag is created here, by the workflow,
+# with the repository's own token - and only after the same build and test
+# pass that runs on every push.
+#
+# The version is typed in, and the run refuses if it is not the version the
+# code says it is. Releasing "1.1.0" from a tree that still says 1.0.0 is the
+# mistake this exists to make impossible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 1.1.0. Must match tools/build.lua."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      V: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+
+      - name: The version being tagged is the version in the code
+        run: |
+          grep -Eq "VERSION *= *\"$V\"" tools/build.lua \
+            || { echo "::error::tools/build.lua does not say $V"; exit 1; }
+          grep -Eq "VERSION *= *\"$V\"" tools/loader.lua \
+            || { echo "::error::tools/loader.lua does not say $V"; exit 1; }
+          grep -Eq "VERSION *= *\"$V\"" dist/WIDGETS/ZelionDash/main.lua \
+            || { echo "::error::the built main.lua does not say $V"; exit 1; }
+          grep -q "ZelionDash-$V.zip" RELEASE_NOTES.md \
+            || { echo "::error::RELEASE_NOTES.md does not name ZelionDash-$V.zip"; exit 1; }
+
+      - name: Build
+        run: lua5.4 tools/build.lua
+
+      - name: dist/ is up to date with src/
+        run: |
+          if ! git diff --exit-code --stat -- dist/; then
+            echo "::error::dist/ is stale. Run 'lua5.4 tools/build.lua' and commit the result."
+            exit 1
+          fi
+
+      - name: Tests
+        run: lua5.4 tests/run.lua
+
+      # The same shape as the file a pilot copies by hand: a WIDGETS folder to
+      # merge onto the card. Nothing else - sensors.cfg is per-radio and does
+      # not belong in a download everyone gets.
+      - name: Package
+        run: (cd dist && zip -r "../ZelionDash-$V.zip" WIDGETS) && ls -l "ZelionDash-$V.zip"
+
+      # gh creates the tag at the commit being released. It refuses if the tag
+      # already exists, which is the guard against publishing a version twice.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$V" "ZelionDash-$V.zip" \
+            --title "ZelionDash $V" \
+            --notes-file RELEASE_NOTES.md \
+            --target "$GITHUB_SHA"
