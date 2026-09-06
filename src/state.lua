@@ -134,6 +134,25 @@ State.supplyCollapsed = false
 -- reading, and by disarming - a normal unplug on the bench is not an emergency.
 State.powerLost = false
 
+-- Widen a slot's recorded range to include one reading.
+--
+-- Written out three times before this - in sampleRole, derivePower and
+-- deriveFuel - identically apart from the variable name, and already starting
+-- to drift as guards were added to one copy and not the others. The callers
+-- keep their own guards, because what disqualifies a reading differs: a live
+-- role can be untrusted while it is still falling, and a derived one cannot be.
+local function recordExtreme(s, value)
+  if not s.hasExtremes then
+    s.min, s.max, s.hasExtremes = value, value, true
+    return
+  end
+  -- Two independent tests, not a chain. Chaining them is equivalent only while
+  -- min never exceeds max, which is true here but is a thing a reader would
+  -- have to stop and prove.
+  if value > s.max then s.max = value end
+  if value < s.min then s.min = value end
+end
+
 local function blank()
   return { value = nil, valid = false, status = "unbound",
            min = nil, max = nil, hasExtremes = false }
@@ -493,15 +512,7 @@ local function sampleRole(role, now)
   -- on the screen because the screen should be live; it is not in the record
   -- because the record outlives the moment.
   if not trusted then return end
-
-  if not s.hasExtremes then
-    s.min = value
-    s.max = value
-    s.hasExtremes = true
-  else
-    if value > s.max then s.max = value end
-    if value < s.min then s.min = value end
-  end
+  recordExtreme(s, value)
 end
 
 -- Power is published by some stacks and absent from others. When absent,
@@ -519,12 +530,7 @@ local function derivePower()
   s.valid  = true
   s.status = "derived"
   if State.holdActive then return end
-  if not s.hasExtremes then
-    s.min, s.max, s.hasExtremes = watts, watts, true
-  else
-    if watts > s.max then s.max = watts end
-    if watts < s.min then s.min = watts end
-  end
+  recordExtreme(s, watts)
 end
 
 -- Rotorflight computes the state of charge on the flight controller - the
@@ -586,12 +592,7 @@ local function deriveFuel()
   s.valid  = true
   s.status = "derived"
   if State.holdActive then return end
-  if not s.hasExtremes then
-    s.min, s.max, s.hasExtremes = pct, pct, true
-  else
-    if pct > s.max then s.max = pct end
-    if pct < s.min then s.min = pct end
-  end
+  recordExtreme(s, pct)
 end
 
 local function updateFlightTimer(now)

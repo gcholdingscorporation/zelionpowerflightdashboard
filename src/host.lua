@@ -26,9 +26,7 @@ local getTimeFn        = g("getTime")
 local getValueFn       = g("getValue")
 local getFieldInfoFn   = g("getFieldInfo")
 local getSourceValueFn = g("getSourceValue")
-local getSourceNameFn  = g("getSourceName")
 local getVersionFn     = g("getVersion")
-local getRSSIFn        = g("getRSSI")
 local modelTbl         = g("model")
 local ioTbl            = g("io")
 local dirTbl           = g("dir")
@@ -81,12 +79,6 @@ Host.radioName     = tostring(radioName or "unknown")
 Host.versionString = tostring(versionString or "")
 
 -- Lowercased once so callers can do plain substring tests.
-Host.radioTag = string.lower(Host.radioName .. " " .. Host.versionString)
-
-function Host.radioMatches(pattern)
-  return string.find(Host.radioTag, pattern, 1, true) ~= nil
-end
-
 --------------------------------------------------------------------------
 -- Source reads
 --------------------------------------------------------------------------
@@ -133,20 +125,6 @@ function Host.read(source)
   if not ok or v == nil then return nil, false, false end
   if type(v) == "table" then v = v.value end
   return tonumber(v), true, true
-end
-
-function Host.sourceName(id)
-  if not getSourceNameFn then return nil end
-  local ok, name = pcall(getSourceNameFn, id)
-  if not ok then return nil end
-  return name and tostring(name) or nil
-end
-
-function Host.rssi()
-  if not getRSSIFn then return nil end
-  local ok, v = pcall(getRSSIFn)
-  if not ok then return nil end
-  return tonumber(v)
 end
 
 -- The radio's RTC. A flight log with no date is a list of numbers in an
@@ -322,8 +300,6 @@ function Host.widgetDir()
   Host.widgetDirSource = "fallback"
   return resolvedWidgetDir
 end
-
-function Host.widgetDirCandidates() return WIDGET_DIR_CANDIDATES end
 
 --------------------------------------------------------------------------
 -- Directory listing and image probing (diagnostics)

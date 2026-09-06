@@ -226,102 +226,105 @@ local function foldRows(names)
   return rows
 end
 
-local function sensorMapRows()
-  local sensorRows, bound = Sensors.report(), 0
-  for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
-
-  -- Roles first: they are what the screen is consulted for. Two status lines
-  -- above them, the artwork detail below.
-  --
-  -- The flight log is silent by design - it writes once, at landing, and says
-  -- nothing. That leaves no way to tell it is working without pulling the card,
-  -- so it reports itself here: how it decided the heli was flying, how long,
-  -- and whether the last write landed.
-  local summary, artHeader, detail = assetRows()
-  local where, verdict = FlightLog.status()
-  local profile = Profiles.current()
-  local rfWhere, rfVerdict, rfStatus = RF2.status()
+-- The status block: what the widget knows about itself, above the roles it
+-- resolved. Each builder returns a row or nil, and nil rows are simply not
+-- added - which is what lets RF Tool's stats line and the config line come and
+-- go without anything downstream counting positions.
+--
+-- It was one function with the rows written inline and then spliced in with
+-- table.insert(rows, statsRow and 3 or 2, cfgRow). That arithmetic is the kind
+-- that is right until a third optional row exists.
+local function rfToolRows()
+  local where, verdict, status = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  -- The flight controller's flight count rides in the RF Tool row's value
-  -- cell when it is good, and the totals take a line of their own only when
-  -- they are not. Two rows that said "connected" and "ok" about the same link
-  -- were a row the roles needed, and a count can only come over a link that
-  -- is up, so it says "connected" better than the word did. A failure keeps
-  -- its own row: "no usable reply" is not the same kind of thing as a count
-  -- and should not sit in its cell.
-  local rfValue  = rfVerdict
-  local statsRow = nil
+
+  -- The flight controller's flight count rides in the RF Tool row's value cell
+  -- when it is good, and the totals take a line of their own only when they are
+  -- not. Two rows saying "connected" and "ok" about the same link were a row
+  -- the roles needed, and a count can only come over a link that is up, so it
+  -- says "connected" better than the word did. A failure keeps its own row:
+  -- "no usable reply" is not a count and should not sit in a count's cell.
+  local stats = nil
   if statsStatus == "ok" then
-    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+    verdict = string.format("%d flights", RF2.totalFlights or 0)
   elseif RF2.available() then
-    statsRow = { label = "  fc stats", sensor = statsText,
-                 value = statsVerdict, status = statsStatus }
+    stats = { label = "  fc stats", sensor = statsText,
+              value = statsVerdict, status = statsStatus }
   end
 
-  -- Only when there is a file. Absence is the normal case - everything
-  -- auto-detects - and a row saying so every time would be a row spent on
-  -- nothing. Present, it answers the question the file raises: did any of it
-  -- apply to THIS model?
-  local cfgRow = nil
-  if Config.present then
-    local applied, count = Config.appliedFor(Host.modelName())
-    local where = (#applied > 0)
-                  and ("[" .. table.concat(applied, "] + [") .. "]")
-                  or "no section for this model"
-    cfgRow = {
-      label = "-- CONFIG --",
-      sensor = where,
-      value = string.format("%d override%s", count, count == 1 and "" or "s"),
-      -- Amber when the file exists and none of it reached this model. Not an
-      -- error - the sections may all belong to other helicopters - but it is
-      -- the one state where a pilot's overrides are silently doing nothing.
-      status = (count > 0) and "ok" or "unbound",
-      important = true,
-    }
-  end
+  -- Optional, and silent either way. Without this the only outward sign of RF
+  -- Tool was the footer quietly showing the FC's craft name, which cannot
+  -- distinguish "not installed" from "installed but never registered" from
+  -- "registered but the FC never handshaked".
+  return { label = "-- RF TOOL --", sensor = where, value = verdict,
+           status = status, important = true },
+         stats
+end
 
-  local rows = { {
-    -- Optional, and silent either way. Without this the only outward sign of
-    -- RF Tool was the footer quietly showing the FC's craft name, which cannot
-    -- distinguish "not installed" from "installed but never registered" from
-    -- "registered but the FC never handshaked".
-    label = "-- RF TOOL --",
-    sensor = rfWhere,
-    value = rfValue,
-    status = rfStatus,
+-- Only when there is a file. Absence is the normal case - everything
+-- auto-detects - and a row saying so every time would be a row spent on
+-- nothing. Present, it answers the question the file raises: did any of it
+-- apply to THIS model?
+local function configRow()
+  if not Config.present then return nil end
+  local applied, count = Config.appliedFor(Host.modelName())
+  return {
+    label = "-- CONFIG --",
+    sensor = (#applied > 0)
+             and ("[" .. table.concat(applied, "] + [") .. "]")
+             or "no section for this model",
+    value = string.format("%d override%s", count, count == 1 and "" or "s"),
+    -- Amber when the file exists and none of it reached this model. Not an
+    -- error - the sections may all belong to other helicopters - but it is the
+    -- one state where a pilot's overrides are silently doing nothing.
+    status = (count > 0) and "ok" or "unbound",
     important = true,
-  }, {
-    -- What the widget thinks it is bolted to. It decides which readings are
-    -- plausible, what headspeed counts as flying, and when the ESC is too hot,
-    -- so a wrong profile is quiet and consequential.
+  }
+end
+
+-- What the widget thinks it is bolted to. It decides which readings are
+-- plausible, what headspeed counts as flying, and when the ESC is too hot, so
+-- a wrong profile is quiet and consequential.
+local function profileRow()
+  local p = Profiles.current()
+  return {
     label = "-- PROFILE --",
-    sensor = Profiles.label() .. (profile and ("  " .. profile.note) or ""),
+    sensor = Profiles.label() .. (p and ("  " .. p.note) or ""),
     value = Profiles.how(),
-    status = profile and "ok" or "unbound",
+    status = p and "ok" or "unbound",
     important = true,
-  }, {
+  }
+end
+
+-- The flight log is silent by design: it writes once, at landing, and says
+-- nothing. That leaves no way to tell it is working without pulling the card,
+-- so it reports itself here - where it writes, how many records are in the
+-- file, and whether the last write landed.
+local function flightLogRows()
+  local where, verdict = FlightLog.status()
+  local logRow = {
     label = "-- FLIGHT LOG --",
     sensor = where,
     value = verdict,
     status = FlightLog.lastError and "insane"
              or (FlightLog.written > 0 and "ok" or "unbound"),
     important = true,
-  }, {
-    -- The line that says whether a flight is even being detected. Without a
-    -- flight there is nothing to write, and "no file appeared" reads exactly
-    -- the same either way.
+  }
+
+  -- The line that says whether a flight is even being detected. Without a
+  -- flight there is nothing to write, and "no file appeared" reads exactly the
+  -- same either way.
+  local flightRow = {
     label = "  flight",
     sensor = (State.armed and ("FLYING, from " .. State.armSource)
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
     -- Whichever figure is worth the cell. Until there is an estimate: the
-    -- elapsed time, so the flight can be seen counting, and the 20s it has
-    -- to reach to be logged. Once there is one: how long is left, which is
-    -- the only number anyone wants mid-air - elapsed is on the dashboard
-    -- header anyway. Both at once was the widest string on the screen and
-    -- did not fit the cell at the larger font. A separate row pushed the
-    -- governor off the first page.
+    -- elapsed time, so the flight can be seen counting, and the 20s it has to
+    -- reach to be logged. Once there is one: how long is left, which is the
+    -- only number anyone wants mid-air - elapsed is on the dashboard header
+    -- anyway. Both at once was the widest string on the screen.
     value = FlightTime.seconds
             and ("left " .. FlightTime.clock())
             or string.format("%d:%02d min %ds",
@@ -329,60 +332,73 @@ local function sensorMapRows()
                              math.floor(State.flightSeconds % 60),
                              FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
-  } }
+  }
+  return logRow, flightRow
+end
+
+-- The footer line: a config fault outranks everything, since a bad config
+-- explains every other oddity on the screen.
+local function footerNote()
+  if #Config.problems > 0 then
+    return "cfg: " .. Config.problems[1], true
+  end
+  local note = (State.armed and "ARMED" or "disarmed") .. "  " ..
+               (RF2.craftName or Host.modelName())
+  if #Sensors.unresolved > 0 then
+    note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
+  end
+  return note, false
+end
+
+local function sensorMapRows()
+  local sensorRows, bound = Sensors.report(), 0
+  for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
+
+  local rows = {}
+  local function add(row) if row then rows[#rows + 1] = row end end
+
+  local rfRow, statsRow = rfToolRows()
+  local logRow, flightRow = flightLogRows()
+  add(rfRow); add(statsRow); add(configRow()); add(profileRow())
+  add(logRow); add(flightRow)
 
   -- A role that bound to nothing has no sensor, no reading and no status worth
   -- a line of its own - only its name. There are usually ten of them, and as
-  -- full rows they spend more than half the first page saying "nothing here",
-  -- which pushed Governor onto the last visible line and the bound roles that
-  -- the screen is actually consulted for down with it.
+  -- full rows they spend more than half the first page saying "nothing here".
   --
-  -- Two things are deliberately NOT folded. An important role is left in place
-  -- and drawn amber, because an unbound Governor is a warning and burying the
-  -- one row that mattered in a list is how it stops being read. A role
-  -- switched off in sensors.cfg is left in place too: that is a decision
-  -- somebody made and may want to check, not a gap.
+  -- Two things deliberately do NOT fold. An important role is left in place and
+  -- drawn amber, because an unbound Governor is a warning and burying the one
+  -- row that mattered in a list is how it stops being read. A role switched off
+  -- in sensors.cfg is left alone too: that is a decision somebody made and may
+  -- want to check, not a gap.
   local folded = {}
-  if statsRow then table.insert(rows, 2, statsRow) end
-  -- Above the roles it explains, below RF Tool which is about the link.
-  if cfgRow then table.insert(rows, statsRow and 3 or 2, cfgRow) end
-
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then
       folded[#folded + 1] = r.label
     else
-      rows[#rows + 1] = {
+      add({
         label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
         important = r.important, how = r.how and HOW[r.how] or nil,
         value = formatValue(r),
-      }
+      })
     end
   end
-  for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+  for _, line in ipairs(foldRows(folded)) do add(line) end
 
   -- The artwork summary led the list from when a missing PNG was the open
-  -- problem. With both files loading it is a row saying "2 ok" above the
-  -- roles, which is a row the roles needed. So it leads only when it has
-  -- something to report, and otherwise heads its own detail block at the
-  -- bottom, where it is still one scroll away.
+  -- problem. With both files loading it is a row saying "2 ok" above the roles,
+  -- which is a row the roles needed. So it leads only when it has something to
+  -- report, and otherwise heads its own detail block at the bottom.
+  local summary, artHeader, detail = assetRows()
   if summary.status ~= "ok" then
     table.insert(rows, 1, summary)
-    rows[#rows + 1] = artHeader
+    add(artHeader)
   else
-    rows[#rows + 1] = summary
+    add(summary)
   end
-  for _, r in ipairs(detail) do rows[#rows + 1] = r end
+  for _, r in ipairs(detail) do add(r) end
 
-  local note, bad = nil, false
-  if #Config.problems > 0 then
-    note, bad = "cfg: " .. Config.problems[1], true
-  else
-    note = (State.armed and "ARMED" or "disarmed") .. "  " ..
-           (RF2.craftName or Host.modelName())
-    if #Sensors.unresolved > 0 then
-      note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
-    end
-  end
+  local note, bad = footerNote()
   return rows, bound, note, bad
 end
 

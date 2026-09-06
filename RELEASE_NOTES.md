@@ -1,42 +1,53 @@
-One fix, reported from the field: the widget announced "3.40 volts" when
-switching to a model, from a helicopter that was not powered on.
+Housekeeping. No behaviour change — every one of the 308 tests passes unaltered,
+which is the point: this is a shape change, not a functional one.
 
 ## Install
 
-Download `ZelionDash-1.3.1.zip`, unzip it, and copy the `WIDGETS` folder onto
-the radio's storage, merging with the one already there. **Delete `main.luac`**
-next to the `main.lua` you replaced — the sensor map header will read
-`ZELIONDASH 1.3.1` once the new file is running.
+Download `ZelionDash-1.3.2.zip`, unzip it, and copy the `WIDGETS` folder onto
+the radio's storage. **Delete `main.luac`** next to the `main.lua` you replaced.
 
-## A phantom low-cell callout on every model change
+The version bump exists so the file on the card and the version on the sensor
+map stay in one-to-one correspondence. Nothing on screen changes.
 
-Two faults stacked into one convincing lie.
+## Dead code removed
 
-**The Test Alert option fired on every model switch.** It is meant to be
-edge-triggered: switch it on, hear one alert. The memory of its previous state
-lived on the module rather than on the widget, and module state does not
-survive the widget being rebuilt — which is exactly what changing model does.
-So an option left switched on read as a fresh off-to-on transition every single
-time, and the widget sounded a test alert on each switch to that model.
+Eight definitions with no callers anywhere in the widget, the tools or the
+tests: `Dashboard.assetDir`, `Dashboard.sensorMapVisible`, `Host.radioMatches`,
+`Host.sourceName`, `Host.rssi`, `Host.widgetDirCandidates`, and two unused
+formatters in the renderer. Three of those were dead *chains* — the resolved
+EdgeTX function and its only consumer — so `getSourceName` and `getRSSI` are no
+longer looked up at all.
 
-**And the test invented a voltage.** With no telemetry it fell back to speaking
-the low-cell alert threshold itself. So a test with nothing connected sounded
-exactly like the real low-cell alarm: the right voice, a plausible number, for
-a reading nobody had.
+## One writer for session extremes
 
-Together: change to that model, and a helicopter sitting unpowered on the bench
-appeared to report a flat cell.
+Widening a recorded min/max was written out three times, in `sampleRole`,
+`derivePower` and `deriveFuel`, identically apart from the variable name. The
+copies had already begun to drift as guards were added to one and not the
+others. There is now one `recordExtreme`, and the callers keep their own guards
+because what disqualifies a reading genuinely differs between them.
 
-The memory now lives on the widget and is seeded from the option as found, so
-an option already on is a state rather than a transition. The test speaks the
-live cell voltage and says **nothing** when there is not one — the buzz alone
-proves the alert path works without asserting a reading that does not exist.
+## The sensor map row builder, taken apart
 
-Toggling the option off and on still sounds one alert, as it always did.
+`sensorMapRows` had grown to 168 lines doing five jobs, and spliced its optional
+rows in by position — `table.insert(rows, statsRow and 3 or 2, cfgRow)`. That
+arithmetic is right until a third optional row exists.
 
-## Tests
+It is now 51 lines over five named builders, each returning a row or nil, with
+nil rows simply not added. Nothing counts positions any more. A shadowed local
+went with it.
 
-308, up from 307. The model switch is reproduced in a test that fails without
-the fix. One existing test had to be rewritten: it asserted the fallback
-threshold was spoken, which was pinning the bug rather than the behaviour.
-Three mutations were run against the fix and all three are caught.
+## What was looked at and left alone
+
+A line-level pass flagged the `== true` and `~= false` comparisons as
+redundant. They are not: `powerLost`, `linkConnected` and the sensor flags are
+genuinely three-state, and nil is not false. Collapsing them would have been a
+bug, so they stand.
+
+The comment density — around 30% of the source — was also left alone. Those
+comments carry the hardware findings this widget was built out of, and the
+count of them is not the measure of anything.
+
+## Net
+
+3232 lines of code to 3203. The line count is not the story; the longest
+function going from 168 lines to 51 is.
