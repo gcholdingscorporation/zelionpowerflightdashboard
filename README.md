@@ -3,10 +3,12 @@
 An RC helicopter telemetry dashboard widget for EdgeTX, targeting Rotorflight
 electric setups on the RadioMaster TX16S Mk3 and TX15.
 
-**Status: flying.** Verified on a TX16S Mk3 and a TX15, across a 200-size
-OMPHOBBY on 2S/3S and a Rotorflight M7R on 12S: sensor binding, arming from
-ARM flags, a switch and the rotor, alerts firing in the air, the flight log,
-the aircraft profile, and RF Tool reading the flight controller's own totals.
+**Status: flying.** Verified on a TX16S Mk3 and a TX15, across three
+helicopters — a 200-size OMPHOBBY OSF03 on 3S, a Rotorflight OMPHOBBY M7R on
+12S, and an OMP M4 Max on 6S: sensor binding, arming from ARM flags, a switch
+and the rotor, alerts firing in the air, the flight log, the aircraft profile
+auto-detecting on all three, and RF Tool reading the flight controller's own
+totals.
 
 ![ZelionDash on a TX16S Mk3](docs/screens/tx16s-dashboard.png)
 
@@ -156,6 +158,27 @@ Roles the dashboard considers important are shown in bold, and turn amber when
 unbound. Use the scroll wheel to page through the list on the smaller screen.
 
 This is the first place to look when a panel reads `--`.
+
+**Roles that bound to nothing fold into one counted line**, so everything that
+did bind fits on the first page. The names are still listed — nothing is
+hidden. Two things never fold: an *important* role that is unbound keeps its
+own amber row, because that is a warning and a warning inside a list is a
+warning nobody reads; and a role you set to `off` in `sensors.cfg` stays put,
+because that is a decision you made rather than a gap.
+
+**Values carry their units**, and coded values carry their names — `Governor`
+reads `4 ACTIVE`, not `4`. This is the screen that exists to catch a binding
+that grabbed the wrong sensor, and `42 V` beside `Current` says so where a bare
+`42` says nothing.
+
+**The header names the build**, so "did I copy the new file across?" is a
+question you can answer by looking.
+
+**The flight log row counts the file**, not this session — `2 in log`. The row
+above it carries the flight controller's own lifetime total, so when the two
+agree, nothing was lost. The log keeps the most recent 200 flights; the flight
+controller's total never rolls, so on a well-used aircraft they will eventually
+part company.
 
 A `guess` that picked the wrong sensor is corrected in `sensors.cfg`, either by
 naming the right one or with `role = off` when there is no right one. Naming a

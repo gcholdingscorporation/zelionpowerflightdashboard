@@ -41,13 +41,20 @@ the helicopter is still there when you look down.
 filled it, and how that binding happened. This is the first place to look when
 a tile reads `--`.
 
+The header names the build, so which version a radio is running is something
+you read rather than infer.
+
 The rows above the roles are the ones worth reading first: whether RF Tool is
 talking and the flight controller's own lifetime flight count, which aircraft
-profile is active and how it was chosen, where the flight log is being written,
-and the live flight state — including which EdgeTX timer the time-remaining
-estimate is driving. Roles that bound to nothing fold into one counted line so
-they stop spending the first page; the artwork check sits at the bottom with
-its detail, and moves to the top only when a file failed to load.
+profile is active and how it was chosen, where the flight log is writing and
+how many records it holds, and the live flight state — including which EdgeTX
+timer the time-remaining estimate is driving. That log count is the file's, not
+the session's, so it can be read directly against the flight controller's total
+on the row above: when they agree, nothing was lost.
+
+Roles that bound to nothing fold into one counted line so they stop spending
+the first page; the artwork check sits at the bottom with its detail, and moves
+to the top only when a file failed to load.
 
 ![TX16S sensor map](screens/tx16s-sensormap.png)
 
