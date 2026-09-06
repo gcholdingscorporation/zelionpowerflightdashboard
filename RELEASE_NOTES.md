@@ -1,63 +1,72 @@
-Fixes from the first month of flying, and a sensor map you can read from arm's
-length. Verified in the air over four flights on a Rotorflight OMPHOBBY M7R on
-12S, with the earlier 1.0.0 verification on a TX15 and a 200-size OSF03 still
-standing.
+Two safety changes, both about the widget being honest when something has gone
+wrong. Verified across three aircraft on the bench and in the air: a Rotorflight
+OMPHOBBY M7R on 12S, an OMP M4 Max on 6S, and a 200-size OSF03 micro on 3S.
 
 ## Install
 
-Download `ZelionDash-1.1.0.zip`, unzip it, and copy the `WIDGETS` folder onto
+Download `ZelionDash-1.2.0.zip`, unzip it, and copy the `WIDGETS` folder onto
 the radio's storage, merging with the one already there.
 
-**If you had 1.0.0 installed, delete `main.luac`** next to the `main.lua` you
-just replaced. The radio otherwise keeps running the stale compiled copy, and
-nothing on screen will tell you so.
+**Delete `main.luac`** next to the `main.lua` you just replaced, or the radio
+keeps running the stale compiled copy and nothing on screen will tell you so.
 
-If you added `throttle = off` to `sensors.cfg` to stop the link-quality sensor
-being read as throttle, you can leave it or remove it. The widget no longer
-makes that guess on its own.
+## A pack that falls off is no longer read as a pack that is flat
 
-## Fixed
+A connector letting go in flight does not stop the telemetry. The flight
+controller keeps talking on the ESC's capacitors, or on a backup buffer, while
+the voltage walks down under it — 3.9 V per cell, then 3.3, then 2.4, then
+nothing. Every one of those is a number a real cell could show.
 
-- **The aircraft profile decided on one reading.** A 12S pack that came up
-  reading low for a moment was classified as a 200-size, and the widget then
-  rejected its own pack voltage and capacity as out of range for the rest of
-  the flight. Detection now watches for three seconds and decides on the
-  highest reading seen. A profile that keeps rejecting readings the role
-  itself accepts is abandoned and redetected.
-- **Throttle bound to the wrong sensor.** Rotorflight does not publish a
-  throttle sensor unless it is enabled in its CRSF telemetry list. Without one,
-  the widget guessed the only spare percent sensor - `TQly`, transmitter link
-  quality - and showed THR 100% on a disarmed heli. A sensor any role knows by
-  name is never handed to a different role as a guess now. Throttle shows as
-  unbound instead, which is the truth.
-- **Safe mode could draw black on black.** The last-resort screen was the only
-  one that did not build its own colour palette. Found by rendering it.
+They were being recorded as the flight's minimum and announced as a flat
+battery. The second is worse than silence: the one alarm that has to be trusted,
+saying something untrue.
 
-## Sensor map
+Judging each reading by how far it dropped does not work, and the tests say so.
+A decay does not arrive in one jump — 3.55, 2.95, 2.35, 1.75 — and every one of
+those steps passes for sag. Four "ordinary" readings later the flight minimum
+reads 1.75 V. A step rule is also secretly a rule about how fast your flight
+controller sends telemetry, since one service pass may carry 100 ms of change or
+500 ms of it.
 
-The diagnostics screen is where you go when a tile shows dashes, and it was
-spending more than half its first page on roles that had bound to nothing.
+What actually separates them is that a collapse never stops. Sag stops, and then
+recovers, because the pilot eases off. So a falling reading is now **shown but
+not trusted**: the tile stays live, because that is what a dashboard is for,
+while the flight's minimum and the low-cell alarm wait for the fall to stop.
+That wait is a fraction of a second of real sag, and never, for a decay.
 
-- Roles that bound to nothing fold into one counted line, names included.
-  Every bound role and the whole status block now fit on the first page.
-  Important roles that are unbound keep their own row, in amber.
-- Governor reads `4 ACTIVE`, not `4`. Every value carries its unit - which is
-  what caught the throttle binding above.
-- On the TX16S the list is set one font size larger, 23px instead of 17px.
-  The TX15 keeps its size: at 480 wide the columns cannot hold the text any
-  larger without clipping.
-- The flight controller's flight count sits in the RF Tool row. The artwork
-  check moved to the bottom and leads the list only when a file failed to load.
+Past 0.8 V per cell of unbroken fall it is a collapse. The reading is refused
+outright, and **MAIN POWER LOST** sounds in place of the low-cell alarm,
+repeating every six seconds and reading out the BEC voltage where the aircraft
+publishes one — the buffer, counted down out loud. Armed only: a pack pulled on
+the bench collapses identically and is not an emergency.
 
-## Documentation
+## A pack check before the flight, not after
 
-- The README carries screenshots now, rendered from the code through the
-  widget's own layout so they cannot drift from what the radio draws. All six
-  are in `docs/screens.md`.
-- Credits name the EdgeTX and Rotorflight source files each decision was
-  checked against.
+Once per pack, on the ground, eight seconds after telemetry settles so the ESC's
+inrush dip is not mistaken for the state of charge, cell voltage is compared
+against `cellFull` and spoken if the pack is short. A half pack flies exactly
+like a full one for the first minute, which is the whole problem with finding
+out later.
+
+Asked once and answered once, whichever way it goes. Plugging in the next pack
+asks again.
+
+Checked against a 4.31 V per cell LiHV reading off a real 3S micro, because a
+check that flags the fullest pack you own is a check that gets switched off.
 
 ## Tests
 
-281 automated tests, up from 268, run on every push. Each fix above has a test
-that fails without it.
+297, up from 281. Eight mutations were run against the new guards; four survived
+the first pass, and each one turned out to be a missing test rather than dead
+code. They produced three cases the first version got wrong: a buffer that holds
+the rail at 2 V per cell and stops there, which no plausibility floor can catch;
+a rail already dead at power-up, which the fall logic cannot catch because there
+is nothing to compare against; and a fresh pack after a telemetry gap, refused
+forever as a decay because the widget still remembered the pack before it.
+
+## Credit
+
+The physical insight behind the first change — that a collapse is told from sag
+by behaviour, not by magnitude — comes from reading
+[flugifix/ultidash](https://github.com/flugifix/ultidash). No code is taken; it
+is GPLv3 and this is not.
