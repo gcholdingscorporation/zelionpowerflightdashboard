@@ -174,6 +174,14 @@ that grabbed the wrong sensor, and `42 V` beside `Current` says so where a bare
 **The header names the build**, so "did I copy the new file across?" is a
 question you can answer by looking.
 
+**A `CONFIG` row appears when a `sensors.cfg` exists**, naming the sections
+that actually applied to this model and how many overrides they carried. It
+turns amber reading `no section for this model` when the file exists but none
+of it reached the model you are flying — which is silent otherwise, because the
+overrides simply never happen and the roles fall back to guessing. Section
+headers are **EdgeTX model names, not aircraft names**: a section named for the
+helicopter rather than for the model it flies on matches nothing.
+
 **The flight log row counts the file**, not this session — `2 in log`. The row
 above it carries the flight controller's own lifetime total, so when the two
 agree, nothing was lost. The log keeps the most recent 200 flights; the flight

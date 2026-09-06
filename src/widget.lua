@@ -80,6 +80,14 @@ local HOW = { override = "cfg", name = "auto", unit = "guess" }
 -- ids are read from the host with a fallback, so a firmware that numbers them
 -- differently would print a confidently wrong unit - and a wrong unit on the
 -- screen you consult to find a wrong binding is the worst place for one.
+-- Volts are always two decimals. The adaptive rule below rounds anything
+-- within 0.05 of a whole number to an integer, which is right for rpm and mAh
+-- and wrong here: the same column then reads 45 V one moment and 45.09 V the
+-- next, and two formats in one column read as two different kinds of number.
+local DECIMALS = {
+  packVoltage = 2, cellVoltage = 2, becVoltage = 2, txVoltage = 2,
+}
+
 local SUFFIX = {
   headspeed = "rpm", tailSpeed = "rpm",
   packVoltage = "V", cellVoltage = "V", becVoltage = "V", txVoltage = "V",
@@ -107,7 +115,10 @@ local function formatValue(row)
   end
 
   local text
-  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
+  local dp = DECIMALS[row.role]
+  if dp then
+    text = string.format("%." .. dp .. "f", v)
+  elseif math.abs(v - math.floor(v + 0.5)) < 0.05 then
     text = string.format("%d", math.floor(v + 0.5))
   else
     text = string.format("%.2f", v)
@@ -247,6 +258,28 @@ local function sensorMapRows()
                  value = statsVerdict, status = statsStatus }
   end
 
+  -- Only when there is a file. Absence is the normal case - everything
+  -- auto-detects - and a row saying so every time would be a row spent on
+  -- nothing. Present, it answers the question the file raises: did any of it
+  -- apply to THIS model?
+  local cfgRow = nil
+  if Config.present then
+    local applied, count = Config.appliedFor(Host.modelName())
+    local where = (#applied > 0)
+                  and ("[" .. table.concat(applied, "] + [") .. "]")
+                  or "no section for this model"
+    cfgRow = {
+      label = "-- CONFIG --",
+      sensor = where,
+      value = string.format("%d override%s", count, count == 1 and "" or "s"),
+      -- Amber when the file exists and none of it reached this model. Not an
+      -- error - the sections may all belong to other helicopters - but it is
+      -- the one state where a pilot's overrides are silently doing nothing.
+      status = (count > 0) and "ok" or "unbound",
+      important = true,
+    }
+  end
+
   local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
@@ -311,6 +344,8 @@ local function sensorMapRows()
   -- somebody made and may want to check, not a gap.
   local folded = {}
   if statsRow then table.insert(rows, 2, statsRow) end
+  -- Above the roles it explains, below RF Tool which is about the link.
+  if cfgRow then table.insert(rows, statsRow and 3 or 2, cfgRow) end
 
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then
