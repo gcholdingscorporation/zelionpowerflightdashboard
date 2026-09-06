@@ -608,8 +608,14 @@ function Dashboard.buildSensorMap(w, h)
   -- assumed: the fit test below this layout tries every row on both radios.
   local rowFont = compact and F.tiny or F.small
   local headerH = fh(F.small) + (compact and 4 or 8)
+  -- The version, on the one screen that exists to answer "what is this radio
+  -- actually running". It was knowable only by spotting which features were
+  -- present, which is a guess dressed as a diagnosis - and the question came
+  -- up on every single update.
+  local ver = tostring(ZD.VERSION or "?")
   label(pad, compact and 2 or 4, math.floor(w * 0.6),
-        compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
+        compact and ("SENSOR MAP  " .. ver)
+                 or ("ZELIONDASH " .. ver .. "  -  SENSOR MAP"),
         F.small, Theme.steel)
   V.smCount = label(w - pad - 160, compact and 4 or 7, 160, "",
                     F.tiny, Theme.dim, ALIGN_RIGHT)

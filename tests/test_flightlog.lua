@@ -98,6 +98,45 @@ H.test("a missing reading is blank, never zero", function()
   H.truthy(tonumber(fields[5]) > 0, "but the headspeed it did have is there")
 end)
 
+H.test("the count keeps up with the file after a landing", function()
+  -- The count is cached, because counting it is a file read in the same loop
+  -- that draws the screen. A cache that is not maintained by the writes is
+  -- worse than no cache: the row sits there showing yesterday's total, which
+  -- is precisely the "did I lose a flight?" question it exists to answer.
+  local ZD = fresh(loaded)
+  local _, before = ZD.FlightLog.status()      -- asks, and so caches
+  H.eq(before, "no flight yet")
+
+  flight(ZD, 40)
+  local _, after = ZD.FlightLog.status()
+  H.eq(after, "1 in log", "the landing must move the count")
+
+  flight(ZD, 40)
+  local _, again = ZD.FlightLog.status()
+  H.eq(again, "2 in log")
+  H.eq(#lines(), 3, "and the file really does hold both")
+end)
+
+H.test("the count is the file's, not this session's", function()
+  -- Records already on the card from previous sessions count. This is the
+  -- whole difference: it can be read against the flight controller's own
+  -- lifetime total on the row above, and a session counter cannot.
+  local ZD = fresh(loaded)
+  -- Written after load so the header is this build's, taken from the module
+  -- itself: a hard-coded copy here would go stale on the next column and
+  -- quietly start testing the migration path instead of this.
+  Mock.writeFile(PATH, ZD.FlightLog.HEADER .. "\n"
+                 .. "2026-01-01,09:00,OLD,300" .. string.rep(",", 11) .. "\n")
+  ZD.FlightLog.reset()
+  local _, verdict = ZD.FlightLog.status()
+  H.eq(verdict, "1 in log", "before this session has flown anything")
+
+  flight(ZD, 40)
+  local _, after = ZD.FlightLog.status()
+  H.eq(after, "2 in log", "and the new flight adds to it")
+  H.eq(ZD.FlightLog.written, 1, "though only one was written this session")
+end)
+
 H.test("flights accumulate", function()
   local ZD = fresh(loaded)
   flight(ZD, 40)

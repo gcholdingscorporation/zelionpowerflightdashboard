@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.2.0
+-- Version 1.2.1
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.2.0" }
+local ZD = { VERSION = "1.2.1" }
 
 -- ======== src/host.lua ========
 do
@@ -3225,17 +3225,45 @@ FlightLog.lastWrite  = nil    -- the CSV line most recently written
 FlightLog.written    = 0      -- records written this session
 FlightLog.skipped    = 0      -- flights too short to bother with
 FlightLog.madeDir    = nil    -- whether mkdir reported the folder usable
+-- How many records the file holds. nil means "not counted yet"; counting costs
+-- a file read, so it is done once and then maintained by the writes.
+FlightLog.inFile     = nil
 
 -- Why nothing has been written, in the pilot's terms. "No file appeared" has
 -- three completely different causes and they were indistinguishable: the log
 -- is off, no flight has ended yet, or the write failed. Only the last is a
 -- fault, and only the last is worth chasing.
+-- Records in the file, counted once and then kept up to date by the writes.
+-- Reading the file is real I/O in the same loop that draws the screen, so it
+-- happens on the first question and never again.
+function FlightLog.count()
+  if FlightLog.inFile == nil then
+    FlightLog.inFile = #FlightLog.read()
+  end
+  return FlightLog.inFile
+end
+
+-- Why nothing has been written, in the pilot's terms. "No file appeared" has
+-- three completely different causes and they were indistinguishable: the log
+-- is off, no flight has ended yet, or the write failed. Only the last is a
+-- fault, and only the last is worth chasing.
+--
+-- The count is the FILE's, not this session's. Session counters cannot be
+-- compared with anything: the row above this one carries the flight
+-- controller's own lifetime total, and "1 written" against "2 flights" told a
+-- pilot nothing about whether a flight had been lost, because restarting the
+-- widget resets one number and not the other. Two totals of the same thing can
+-- be read against each other at a glance, which is the entire point of putting
+-- them on adjacent lines.
 function FlightLog.status()
   if not FlightLog.enabled then return "off", "off" end
   if FlightLog.lastError then return FlightLog.lastError, "FAILED" end
-  if FlightLog.written > 0 then
-    return FlightLog.path(), string.format("%d written", FlightLog.written)
+  local n = FlightLog.count()
+  if n > 0 then
+    return FlightLog.path(), string.format("%d in log", n)
   end
+  -- Only worth saying while the log is otherwise empty. Once there are records
+  -- to count, the count is the more useful answer.
   if FlightLog.skipped > 0 then
     return FlightLog.path(),
            string.format("%d too short", FlightLog.skipped)
@@ -3415,6 +3443,8 @@ function FlightLog.append(line)
   if ok then
     FlightLog.lastWrite = line
     FlightLog.written = FlightLog.written + 1
+    -- Already known, and known exactly - no second read to find it out.
+    FlightLog.inFile = #records
     FlightLog.lastError = nil
   else
     FlightLog.lastError = "write failed: " .. FlightLog.path()
@@ -3477,6 +3507,8 @@ function FlightLog.reset()
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
   FlightLog.FALLBACK = nil
+  -- The path can move with the fallback, so the count belongs to the old one.
+  FlightLog.inFile = nil
 end
 
 return FlightLog
@@ -4520,8 +4552,14 @@ function Dashboard.buildSensorMap(w, h)
   -- assumed: the fit test below this layout tries every row on both radios.
   local rowFont = compact and F.tiny or F.small
   local headerH = fh(F.small) + (compact and 4 or 8)
+  -- The version, on the one screen that exists to answer "what is this radio
+  -- actually running". It was knowable only by spotting which features were
+  -- present, which is a guess dressed as a diagnosis - and the question came
+  -- up on every single update.
+  local ver = tostring(ZD.VERSION or "?")
   label(pad, compact and 2 or 4, math.floor(w * 0.6),
-        compact and "SENSOR MAP" or "ZELIONDASH - SENSOR MAP",
+        compact and ("SENSOR MAP  " .. ver)
+                 or ("ZELIONDASH " .. ver .. "  -  SENSOR MAP"),
         F.small, Theme.steel)
   V.smCount = label(w - pad - 160, compact and 4 or 7, 160, "",
                     F.tiny, Theme.dim, ALIGN_RIGHT)

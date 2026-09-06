@@ -9,6 +9,21 @@ return function(H, Mock, Loader)
 
 local DIST = "dist/WIDGETS/ZelionDash/main.lua"
 
+-- Read out of the built artifact rather than hard-coded, so a version bump
+-- does not need this file edited - and so the test still means something.
+local ZD_VERSION = (function()
+  local realIo = Mock.realIo or io
+  local f = realIo.open(DIST, "r")
+  if not f then return "?" end
+  local head = f:read(2048) or ""
+  f:close()
+  return string.match(head, 'VERSION%s*=%s*"([^"]+)"') or "?"
+end)()
+
+local ZD_HEADER =
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq"
+
 local function loadDist()
   local chunk, err = loadfile(DIST)
   if not chunk then error("built file does not compile: " .. tostring(err)) end
@@ -674,6 +689,41 @@ H.test("every sensor map label fits its column", function()
       assertSensorMapFits(what .. " last page")
     end
   end
+end)
+
+H.test("the sensor map says which build is running", function()
+  -- It was knowable only by spotting which features were present, which is a
+  -- guess dressed as a diagnosis. "Have you copied the new file yet?" has no
+  -- answer without this, and it is asked on every single update.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "SENSOR MAP", 1, true), "still says what it is")
+  H.truthy(string.find(t, tostring(ZD_VERSION), 1, true),
+           "and which version drew it")
+end)
+
+H.test("the log row counts the file, not the session", function()
+  -- The row above it carries the flight controller's lifetime total. A session
+  -- counter cannot be read against that: restarting the widget resets one
+  -- number and not the other, so "1 written" beside "2 flights" said nothing
+  -- about whether a flight had been lost. Two totals of the same thing can.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  Mock.writeFile("/LOGS/zeliondash.csv",
+                 ZD_HEADER .. "\n" ..
+                 "2026-01-01,10:00,A,120," .. string.rep(",", 10) .. "\n" ..
+                 "2026-01-01,10:30,A,140," .. string.rep(",", 10) .. "\n")
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "2 in log", 1, true),
+           "two records already on the card, before this session flew any")
+  H.falsy(string.find(t, "written", 1, true), "not a session counter")
+end)
+
+H.test("an empty log still says so rather than showing a zero", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "no flight yet", 1, true))
 end)
 
 H.test("a failed write says so on the sensor map", function()
