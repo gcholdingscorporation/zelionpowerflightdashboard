@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.2.1
+-- Version 1.3.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.2.1" }
+local ZD = { VERSION = "1.3.0" }
 
 -- ======== src/host.lua ========
 do
@@ -1007,6 +1007,10 @@ Config.sections = {}
 Config.problems = {}
 Config.settings = {}
 Config.loaded   = false
+-- Whether a sensors.cfg was actually found. Absence is the normal case and not
+-- a problem, but it is the difference between "my overrides did nothing" and
+-- "the file the pilot thinks they wrote is not where the widget looks".
+Config.present  = false
 
 -- The reserved section is not model-scoped: one pack chemistry per radio is
 -- the common case, and per-model curves would need a second lookup for a
@@ -1022,6 +1026,7 @@ function Config.load()
   Config.sections = {}
   Config.problems = {}
   Config.loaded   = true
+  Config.present  = false
   local text = Host.readFile(Config.path())
   if not text then
     -- A missing file is the normal case, not an error: everything
@@ -1031,7 +1036,43 @@ function Config.load()
     return false
   end
   Config.sections, Config.problems, Config.settings = Config.parse(text)
+  Config.present = true
   return true
+end
+
+-- Which sections are actually in force for this model, and how many overrides
+-- they carry between them.
+--
+-- Sections for OTHER models are normal and correct - a radio flies more than
+-- one helicopter - so their existence is never a complaint. What is worth
+-- saying is which ones applied HERE, because a section header that matches no
+-- model is completely silent otherwise: the overrides simply never happen, the
+-- roles fall back to guessing, and the sensor map reads (guess) where the
+-- pilot expected (cfg). That has already cost a real setup - a section named
+-- for the aircraft rather than for the EdgeTX model it flies on.
+--
+-- The widget cannot know whether that header matches some OTHER model on the
+-- radio, since EdgeTX exposes only the current one. So this reports what did
+-- happen rather than guessing at what was meant.
+function Config.appliedFor(modelName)
+  if not Config.loaded then Config.load() end
+  -- Counted, not merely present. The parser opens an implicit [*] for any
+  -- lines before the first header, so that table exists even in a file that
+  -- never mentions it - and naming a section that contributed nothing is
+  -- exactly the false reassurance this row exists to avoid.
+  local names, count = {}, 0
+  local function take(key, shown)
+    local sect = Config.sections[key]
+    if not sect then return end
+    local n = 0
+    for _ in pairs(sect) do n = n + 1 end
+    if n == 0 then return end
+    names[#names + 1] = shown
+    count = count + n
+  end
+  take(string.lower(trim(modelName or "")), tostring(modelName))
+  take("*", "*")
+  return names, count
 end
 
 -- Overrides for one model: the [*] defaults with the model's own section
@@ -4943,6 +4984,14 @@ local HOW = { override = "cfg", name = "auto", unit = "guess" }
 -- ids are read from the host with a fallback, so a firmware that numbers them
 -- differently would print a confidently wrong unit - and a wrong unit on the
 -- screen you consult to find a wrong binding is the worst place for one.
+-- Volts are always two decimals. The adaptive rule below rounds anything
+-- within 0.05 of a whole number to an integer, which is right for rpm and mAh
+-- and wrong here: the same column then reads 45 V one moment and 45.09 V the
+-- next, and two formats in one column read as two different kinds of number.
+local DECIMALS = {
+  packVoltage = 2, cellVoltage = 2, becVoltage = 2, txVoltage = 2,
+}
+
 local SUFFIX = {
   headspeed = "rpm", tailSpeed = "rpm",
   packVoltage = "V", cellVoltage = "V", becVoltage = "V", txVoltage = "V",
@@ -4970,7 +5019,10 @@ local function formatValue(row)
   end
 
   local text
-  if math.abs(v - math.floor(v + 0.5)) < 0.05 then
+  local dp = DECIMALS[row.role]
+  if dp then
+    text = string.format("%." .. dp .. "f", v)
+  elseif math.abs(v - math.floor(v + 0.5)) < 0.05 then
     text = string.format("%d", math.floor(v + 0.5))
   else
     text = string.format("%.2f", v)
@@ -5110,6 +5162,28 @@ local function sensorMapRows()
                  value = statsVerdict, status = statsStatus }
   end
 
+  -- Only when there is a file. Absence is the normal case - everything
+  -- auto-detects - and a row saying so every time would be a row spent on
+  -- nothing. Present, it answers the question the file raises: did any of it
+  -- apply to THIS model?
+  local cfgRow = nil
+  if Config.present then
+    local applied, count = Config.appliedFor(Host.modelName())
+    local where = (#applied > 0)
+                  and ("[" .. table.concat(applied, "] + [") .. "]")
+                  or "no section for this model"
+    cfgRow = {
+      label = "-- CONFIG --",
+      sensor = where,
+      value = string.format("%d override%s", count, count == 1 and "" or "s"),
+      -- Amber when the file exists and none of it reached this model. Not an
+      -- error - the sections may all belong to other helicopters - but it is
+      -- the one state where a pilot's overrides are silently doing nothing.
+      status = (count > 0) and "ok" or "unbound",
+      important = true,
+    }
+  end
+
   local rows = { {
     -- Optional, and silent either way. Without this the only outward sign of
     -- RF Tool was the footer quietly showing the FC's craft name, which cannot
@@ -5174,6 +5248,8 @@ local function sensorMapRows()
   -- somebody made and may want to check, not a gap.
   local folded = {}
   if statsRow then table.insert(rows, 2, statsRow) end
+  -- Above the roles it explains, below RF Tool which is about the link.
+  if cfgRow then table.insert(rows, statsRow and 3 or 2, cfgRow) end
 
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then

@@ -726,6 +726,93 @@ H.test("an empty log still says so rather than showing a zero", function()
   H.truthy(string.find(Mock.lvglText(), "no flight yet", 1, true))
 end)
 
+H.test("volts read as volts, not sometimes as whole numbers", function()
+  -- The adaptive rule rounds anything within 0.05 of a whole number to an
+  -- integer, which is right for rpm and mAh. In a voltage column it means the
+  -- same field reads 45 V one moment and 45.09 V the next.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, function()
+    flying()
+    Mock.setSensor("Vbat", 45.00)
+    Mock.addSensor("Vbec", 1, 8.00)
+  end)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "45.00 V", 1, true), "pack voltage keeps its decimals")
+  H.truthy(string.find(t, "8.00 V", 1, true), "and so does the BEC rail")
+  H.falsy(string.find(t, "|45 V", 1, true), "never the bare integer")
+end)
+
+H.test("the config row names the sections that applied", function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, function()
+    flying()
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[*]\nescTemperature = Tesc\n")
+  end)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "CONFIG", 1, true), "the row is there")
+  H.truthy(string.find(t, "[*]", 1, true), "and names what applied")
+  H.truthy(string.find(t, "1 override", 1, true), "and how much of it")
+end)
+
+H.test("a config that reached this model at all says so", function()
+  -- A section header is a MODEL name, not an aircraft name. One written for
+  -- the helicopter rather than for the EdgeTX model it flies on matches
+  -- nothing, applies nothing, and is otherwise completely silent: the roles
+  -- just fall back to guessing. This is the row that says so.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, function()
+    flying()
+    Mock.state.modelName = "Omphobby M7R"
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[>Rotorflight]\nthrottle = off\n")
+  end)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "no section for this model", 1, true),
+           "a file that applied nothing here must not look like one that did")
+  H.truthy(string.find(t, "0 overrides", 1, true))
+end)
+
+H.test("a config that applied nothing does not look like one that worked", function()
+  -- The words alone are not enough. This row is read at a glance among a dozen
+  -- others, and if the failure is drawn in the same colour as the success it
+  -- is not a diagnostic - it is another line of text to skim past.
+  local function configColour(setup)
+    local def, widget = boot(800, 480, { SensorMap = 1 }, setup)
+    def.refresh(widget, 0, nil)
+    for _, o in ipairs(Mock.lv.objects) do
+      local t = tostring(o.props.text or "")
+      if string.find(t, "override", 1, true) then return o.props.color end
+    end
+  end
+
+  local worked = configColour(function()
+    flying()
+    Mock.state.modelName = "Goblin 700"
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[Goblin 700]\nescTemperature = Tesc\n")
+  end)
+  local silent = configColour(function()
+    flying()
+    Mock.state.modelName = "Goblin 700"
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[Some Other Heli]\nescTemperature = Tesc\n")
+  end)
+
+  H.truthy(worked ~= nil and silent ~= nil, "both rows must exist")
+  H.truthy(worked ~= silent,
+           "a config that reached this model and one that did not are drawn "
+           .. "the same colour")
+end)
+
+H.test("no config file, no config row", function()
+  -- The normal case. Everything auto-detects, and a row saying "no file" every
+  -- time is a row spent on nothing.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.falsy(string.find(Mock.lvglText(), "CONFIG", 1, true))
+end)
+
 H.test("a failed write says so on the sensor map", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   Mock.state.readOnly = true

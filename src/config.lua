@@ -140,6 +140,10 @@ Config.sections = {}
 Config.problems = {}
 Config.settings = {}
 Config.loaded   = false
+-- Whether a sensors.cfg was actually found. Absence is the normal case and not
+-- a problem, but it is the difference between "my overrides did nothing" and
+-- "the file the pilot thinks they wrote is not where the widget looks".
+Config.present  = false
 
 -- The reserved section is not model-scoped: one pack chemistry per radio is
 -- the common case, and per-model curves would need a second lookup for a
@@ -155,6 +159,7 @@ function Config.load()
   Config.sections = {}
   Config.problems = {}
   Config.loaded   = true
+  Config.present  = false
   local text = Host.readFile(Config.path())
   if not text then
     -- A missing file is the normal case, not an error: everything
@@ -164,7 +169,43 @@ function Config.load()
     return false
   end
   Config.sections, Config.problems, Config.settings = Config.parse(text)
+  Config.present = true
   return true
+end
+
+-- Which sections are actually in force for this model, and how many overrides
+-- they carry between them.
+--
+-- Sections for OTHER models are normal and correct - a radio flies more than
+-- one helicopter - so their existence is never a complaint. What is worth
+-- saying is which ones applied HERE, because a section header that matches no
+-- model is completely silent otherwise: the overrides simply never happen, the
+-- roles fall back to guessing, and the sensor map reads (guess) where the
+-- pilot expected (cfg). That has already cost a real setup - a section named
+-- for the aircraft rather than for the EdgeTX model it flies on.
+--
+-- The widget cannot know whether that header matches some OTHER model on the
+-- radio, since EdgeTX exposes only the current one. So this reports what did
+-- happen rather than guessing at what was meant.
+function Config.appliedFor(modelName)
+  if not Config.loaded then Config.load() end
+  -- Counted, not merely present. The parser opens an implicit [*] for any
+  -- lines before the first header, so that table exists even in a file that
+  -- never mentions it - and naming a section that contributed nothing is
+  -- exactly the false reassurance this row exists to avoid.
+  local names, count = {}, 0
+  local function take(key, shown)
+    local sect = Config.sections[key]
+    if not sect then return end
+    local n = 0
+    for _ in pairs(sect) do n = n + 1 end
+    if n == 0 then return end
+    names[#names + 1] = shown
+    count = count + n
+  end
+  take(string.lower(trim(modelName or "")), tostring(modelName))
+  take("*", "*")
+  return names, count
 end
 
 -- Overrides for one model: the [*] defaults with the model's own section
