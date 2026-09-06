@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.3.1
+-- Version 1.3.2
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.3.1" }
+local ZD = { VERSION = "1.3.2" }
 
 -- ======== src/host.lua ========
 do
@@ -37,9 +37,7 @@ local getTimeFn        = g("getTime")
 local getValueFn       = g("getValue")
 local getFieldInfoFn   = g("getFieldInfo")
 local getSourceValueFn = g("getSourceValue")
-local getSourceNameFn  = g("getSourceName")
 local getVersionFn     = g("getVersion")
-local getRSSIFn        = g("getRSSI")
 local modelTbl         = g("model")
 local ioTbl            = g("io")
 local dirTbl           = g("dir")
@@ -92,12 +90,6 @@ Host.radioName     = tostring(radioName or "unknown")
 Host.versionString = tostring(versionString or "")
 
 -- Lowercased once so callers can do plain substring tests.
-Host.radioTag = string.lower(Host.radioName .. " " .. Host.versionString)
-
-function Host.radioMatches(pattern)
-  return string.find(Host.radioTag, pattern, 1, true) ~= nil
-end
-
 --------------------------------------------------------------------------
 -- Source reads
 --------------------------------------------------------------------------
@@ -144,20 +136,6 @@ function Host.read(source)
   if not ok or v == nil then return nil, false, false end
   if type(v) == "table" then v = v.value end
   return tonumber(v), true, true
-end
-
-function Host.sourceName(id)
-  if not getSourceNameFn then return nil end
-  local ok, name = pcall(getSourceNameFn, id)
-  if not ok then return nil end
-  return name and tostring(name) or nil
-end
-
-function Host.rssi()
-  if not getRSSIFn then return nil end
-  local ok, v = pcall(getRSSIFn)
-  if not ok then return nil end
-  return tonumber(v)
 end
 
 -- The radio's RTC. A flight log with no date is a list of numbers in an
@@ -333,8 +311,6 @@ function Host.widgetDir()
   Host.widgetDirSource = "fallback"
   return resolvedWidgetDir
 end
-
-function Host.widgetDirCandidates() return WIDGET_DIR_CANDIDATES end
 
 --------------------------------------------------------------------------
 -- Directory listing and image probing (diagnostics)
@@ -2064,6 +2040,25 @@ State.supplyCollapsed = false
 -- reading, and by disarming - a normal unplug on the bench is not an emergency.
 State.powerLost = false
 
+-- Widen a slot's recorded range to include one reading.
+--
+-- Written out three times before this - in sampleRole, derivePower and
+-- deriveFuel - identically apart from the variable name, and already starting
+-- to drift as guards were added to one copy and not the others. The callers
+-- keep their own guards, because what disqualifies a reading differs: a live
+-- role can be untrusted while it is still falling, and a derived one cannot be.
+local function recordExtreme(s, value)
+  if not s.hasExtremes then
+    s.min, s.max, s.hasExtremes = value, value, true
+    return
+  end
+  -- Two independent tests, not a chain. Chaining them is equivalent only while
+  -- min never exceeds max, which is true here but is a thing a reader would
+  -- have to stop and prove.
+  if value > s.max then s.max = value end
+  if value < s.min then s.min = value end
+end
+
 local function blank()
   return { value = nil, valid = false, status = "unbound",
            min = nil, max = nil, hasExtremes = false }
@@ -2423,15 +2418,7 @@ local function sampleRole(role, now)
   -- on the screen because the screen should be live; it is not in the record
   -- because the record outlives the moment.
   if not trusted then return end
-
-  if not s.hasExtremes then
-    s.min = value
-    s.max = value
-    s.hasExtremes = true
-  else
-    if value > s.max then s.max = value end
-    if value < s.min then s.min = value end
-  end
+  recordExtreme(s, value)
 end
 
 -- Power is published by some stacks and absent from others. When absent,
@@ -2449,12 +2436,7 @@ local function derivePower()
   s.valid  = true
   s.status = "derived"
   if State.holdActive then return end
-  if not s.hasExtremes then
-    s.min, s.max, s.hasExtremes = watts, watts, true
-  else
-    if watts > s.max then s.max = watts end
-    if watts < s.min then s.min = watts end
-  end
+  recordExtreme(s, watts)
 end
 
 -- Rotorflight computes the state of charge on the flight controller - the
@@ -2516,12 +2498,7 @@ local function deriveFuel()
   s.valid  = true
   s.status = "derived"
   if State.holdActive then return end
-  if not s.hasExtremes then
-    s.min, s.max, s.hasExtremes = pct, pct, true
-  else
-    if pct > s.max then s.max = pct end
-    if pct < s.min then s.min = pct end
-  end
+  recordExtreme(s, pct)
 end
 
 local function updateFlightTimer(now)
@@ -4013,7 +3990,6 @@ ZD.Dashboard = Dashboard
 
 local function assetDir() return Host.widgetDir() end
 
-function Dashboard.assetDir() return assetDir() end
 
 -- EdgeTX publishes its constants through a read-only global lookup table
 -- rather than as raw entries in _G, so rawget() alone returns nil for every
@@ -4140,17 +4116,6 @@ end
 --------------------------------------------------------------------------
 -- Formatting
 --------------------------------------------------------------------------
-
-local function fmt(v, pattern, scale)
-  if v == nil then return "--" end
-  return string.format(pattern, v * (scale or 1))
-end
-
-local function fmtInt(role)
-  local v, ok = State.get(role)
-  if not ok then return "--" end
-  return string.format("%d", math.floor(v + 0.5))
-end
 
 local function fmtExtreme(prefix, value, pattern)
   if value == nil then return prefix .. " --" end
@@ -4704,7 +4669,6 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
   return scroll
 end
 
-function Dashboard.sensorMapVisible() return SM.visible end
 
 -- How much room a folded row has for its list. The row builder wraps against
 -- this, so the wrap follows the screen rather than a guess about it.
@@ -5137,102 +5101,105 @@ local function foldRows(names)
   return rows
 end
 
-local function sensorMapRows()
-  local sensorRows, bound = Sensors.report(), 0
-  for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
-
-  -- Roles first: they are what the screen is consulted for. Two status lines
-  -- above them, the artwork detail below.
-  --
-  -- The flight log is silent by design - it writes once, at landing, and says
-  -- nothing. That leaves no way to tell it is working without pulling the card,
-  -- so it reports itself here: how it decided the heli was flying, how long,
-  -- and whether the last write landed.
-  local summary, artHeader, detail = assetRows()
-  local where, verdict = FlightLog.status()
-  local profile = Profiles.current()
-  local rfWhere, rfVerdict, rfStatus = RF2.status()
+-- The status block: what the widget knows about itself, above the roles it
+-- resolved. Each builder returns a row or nil, and nil rows are simply not
+-- added - which is what lets RF Tool's stats line and the config line come and
+-- go without anything downstream counting positions.
+--
+-- It was one function with the rows written inline and then spliced in with
+-- table.insert(rows, statsRow and 3 or 2, cfgRow). That arithmetic is the kind
+-- that is right until a third optional row exists.
+local function rfToolRows()
+  local where, verdict, status = RF2.status()
   local statsText, statsVerdict, statsStatus = RF2.statsText()
-  -- The flight controller's flight count rides in the RF Tool row's value
-  -- cell when it is good, and the totals take a line of their own only when
-  -- they are not. Two rows that said "connected" and "ok" about the same link
-  -- were a row the roles needed, and a count can only come over a link that
-  -- is up, so it says "connected" better than the word did. A failure keeps
-  -- its own row: "no usable reply" is not the same kind of thing as a count
-  -- and should not sit in its cell.
-  local rfValue  = rfVerdict
-  local statsRow = nil
+
+  -- The flight controller's flight count rides in the RF Tool row's value cell
+  -- when it is good, and the totals take a line of their own only when they are
+  -- not. Two rows saying "connected" and "ok" about the same link were a row
+  -- the roles needed, and a count can only come over a link that is up, so it
+  -- says "connected" better than the word did. A failure keeps its own row:
+  -- "no usable reply" is not a count and should not sit in a count's cell.
+  local stats = nil
   if statsStatus == "ok" then
-    rfValue = string.format("%d flights", RF2.totalFlights or 0)
+    verdict = string.format("%d flights", RF2.totalFlights or 0)
   elseif RF2.available() then
-    statsRow = { label = "  fc stats", sensor = statsText,
-                 value = statsVerdict, status = statsStatus }
+    stats = { label = "  fc stats", sensor = statsText,
+              value = statsVerdict, status = statsStatus }
   end
 
-  -- Only when there is a file. Absence is the normal case - everything
-  -- auto-detects - and a row saying so every time would be a row spent on
-  -- nothing. Present, it answers the question the file raises: did any of it
-  -- apply to THIS model?
-  local cfgRow = nil
-  if Config.present then
-    local applied, count = Config.appliedFor(Host.modelName())
-    local where = (#applied > 0)
-                  and ("[" .. table.concat(applied, "] + [") .. "]")
-                  or "no section for this model"
-    cfgRow = {
-      label = "-- CONFIG --",
-      sensor = where,
-      value = string.format("%d override%s", count, count == 1 and "" or "s"),
-      -- Amber when the file exists and none of it reached this model. Not an
-      -- error - the sections may all belong to other helicopters - but it is
-      -- the one state where a pilot's overrides are silently doing nothing.
-      status = (count > 0) and "ok" or "unbound",
-      important = true,
-    }
-  end
+  -- Optional, and silent either way. Without this the only outward sign of RF
+  -- Tool was the footer quietly showing the FC's craft name, which cannot
+  -- distinguish "not installed" from "installed but never registered" from
+  -- "registered but the FC never handshaked".
+  return { label = "-- RF TOOL --", sensor = where, value = verdict,
+           status = status, important = true },
+         stats
+end
 
-  local rows = { {
-    -- Optional, and silent either way. Without this the only outward sign of
-    -- RF Tool was the footer quietly showing the FC's craft name, which cannot
-    -- distinguish "not installed" from "installed but never registered" from
-    -- "registered but the FC never handshaked".
-    label = "-- RF TOOL --",
-    sensor = rfWhere,
-    value = rfValue,
-    status = rfStatus,
+-- Only when there is a file. Absence is the normal case - everything
+-- auto-detects - and a row saying so every time would be a row spent on
+-- nothing. Present, it answers the question the file raises: did any of it
+-- apply to THIS model?
+local function configRow()
+  if not Config.present then return nil end
+  local applied, count = Config.appliedFor(Host.modelName())
+  return {
+    label = "-- CONFIG --",
+    sensor = (#applied > 0)
+             and ("[" .. table.concat(applied, "] + [") .. "]")
+             or "no section for this model",
+    value = string.format("%d override%s", count, count == 1 and "" or "s"),
+    -- Amber when the file exists and none of it reached this model. Not an
+    -- error - the sections may all belong to other helicopters - but it is the
+    -- one state where a pilot's overrides are silently doing nothing.
+    status = (count > 0) and "ok" or "unbound",
     important = true,
-  }, {
-    -- What the widget thinks it is bolted to. It decides which readings are
-    -- plausible, what headspeed counts as flying, and when the ESC is too hot,
-    -- so a wrong profile is quiet and consequential.
+  }
+end
+
+-- What the widget thinks it is bolted to. It decides which readings are
+-- plausible, what headspeed counts as flying, and when the ESC is too hot, so
+-- a wrong profile is quiet and consequential.
+local function profileRow()
+  local p = Profiles.current()
+  return {
     label = "-- PROFILE --",
-    sensor = Profiles.label() .. (profile and ("  " .. profile.note) or ""),
+    sensor = Profiles.label() .. (p and ("  " .. p.note) or ""),
     value = Profiles.how(),
-    status = profile and "ok" or "unbound",
+    status = p and "ok" or "unbound",
     important = true,
-  }, {
+  }
+end
+
+-- The flight log is silent by design: it writes once, at landing, and says
+-- nothing. That leaves no way to tell it is working without pulling the card,
+-- so it reports itself here - where it writes, how many records are in the
+-- file, and whether the last write landed.
+local function flightLogRows()
+  local where, verdict = FlightLog.status()
+  local logRow = {
     label = "-- FLIGHT LOG --",
     sensor = where,
     value = verdict,
     status = FlightLog.lastError and "insane"
              or (FlightLog.written > 0 and "ok" or "unbound"),
     important = true,
-  }, {
-    -- The line that says whether a flight is even being detected. Without a
-    -- flight there is nothing to write, and "no file appeared" reads exactly
-    -- the same either way.
+  }
+
+  -- The line that says whether a flight is even being detected. Without a
+  -- flight there is nothing to write, and "no file appeared" reads exactly the
+  -- same either way.
+  local flightRow = {
     label = "  flight",
     sensor = (State.armed and ("FLYING, from " .. State.armSource)
               or ("idle, arm source " .. State.armSource))
              .. (FlightTime.timerLabel()
                  and (" -> " .. FlightTime.timerLabel()) or ""),
     -- Whichever figure is worth the cell. Until there is an estimate: the
-    -- elapsed time, so the flight can be seen counting, and the 20s it has
-    -- to reach to be logged. Once there is one: how long is left, which is
-    -- the only number anyone wants mid-air - elapsed is on the dashboard
-    -- header anyway. Both at once was the widest string on the screen and
-    -- did not fit the cell at the larger font. A separate row pushed the
-    -- governor off the first page.
+    -- elapsed time, so the flight can be seen counting, and the 20s it has to
+    -- reach to be logged. Once there is one: how long is left, which is the
+    -- only number anyone wants mid-air - elapsed is on the dashboard header
+    -- anyway. Both at once was the widest string on the screen.
     value = FlightTime.seconds
             and ("left " .. FlightTime.clock())
             or string.format("%d:%02d min %ds",
@@ -5240,60 +5207,73 @@ local function sensorMapRows()
                              math.floor(State.flightSeconds % 60),
                              FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
-  } }
+  }
+  return logRow, flightRow
+end
+
+-- The footer line: a config fault outranks everything, since a bad config
+-- explains every other oddity on the screen.
+local function footerNote()
+  if #Config.problems > 0 then
+    return "cfg: " .. Config.problems[1], true
+  end
+  local note = (State.armed and "ARMED" or "disarmed") .. "  " ..
+               (RF2.craftName or Host.modelName())
+  if #Sensors.unresolved > 0 then
+    note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
+  end
+  return note, false
+end
+
+local function sensorMapRows()
+  local sensorRows, bound = Sensors.report(), 0
+  for _, r in ipairs(sensorRows) do if r.sensor then bound = bound + 1 end end
+
+  local rows = {}
+  local function add(row) if row then rows[#rows + 1] = row end end
+
+  local rfRow, statsRow = rfToolRows()
+  local logRow, flightRow = flightLogRows()
+  add(rfRow); add(statsRow); add(configRow()); add(profileRow())
+  add(logRow); add(flightRow)
 
   -- A role that bound to nothing has no sensor, no reading and no status worth
   -- a line of its own - only its name. There are usually ten of them, and as
-  -- full rows they spend more than half the first page saying "nothing here",
-  -- which pushed Governor onto the last visible line and the bound roles that
-  -- the screen is actually consulted for down with it.
+  -- full rows they spend more than half the first page saying "nothing here".
   --
-  -- Two things are deliberately NOT folded. An important role is left in place
-  -- and drawn amber, because an unbound Governor is a warning and burying the
-  -- one row that mattered in a list is how it stops being read. A role
-  -- switched off in sensors.cfg is left in place too: that is a decision
-  -- somebody made and may want to check, not a gap.
+  -- Two things deliberately do NOT fold. An important role is left in place and
+  -- drawn amber, because an unbound Governor is a warning and burying the one
+  -- row that mattered in a list is how it stops being read. A role switched off
+  -- in sensors.cfg is left alone too: that is a decision somebody made and may
+  -- want to check, not a gap.
   local folded = {}
-  if statsRow then table.insert(rows, 2, statsRow) end
-  -- Above the roles it explains, below RF Tool which is about the link.
-  if cfgRow then table.insert(rows, statsRow and 3 or 2, cfgRow) end
-
   for _, r in ipairs(sensorRows) do
     if r.status == "unbound" and not r.off and not r.important then
       folded[#folded + 1] = r.label
     else
-      rows[#rows + 1] = {
+      add({
         label = r.label, sensor = r.off and "off" or r.sensor, status = r.status,
         important = r.important, how = r.how and HOW[r.how] or nil,
         value = formatValue(r),
-      }
+      })
     end
   end
-  for _, line in ipairs(foldRows(folded)) do rows[#rows + 1] = line end
+  for _, line in ipairs(foldRows(folded)) do add(line) end
 
   -- The artwork summary led the list from when a missing PNG was the open
-  -- problem. With both files loading it is a row saying "2 ok" above the
-  -- roles, which is a row the roles needed. So it leads only when it has
-  -- something to report, and otherwise heads its own detail block at the
-  -- bottom, where it is still one scroll away.
+  -- problem. With both files loading it is a row saying "2 ok" above the roles,
+  -- which is a row the roles needed. So it leads only when it has something to
+  -- report, and otherwise heads its own detail block at the bottom.
+  local summary, artHeader, detail = assetRows()
   if summary.status ~= "ok" then
     table.insert(rows, 1, summary)
-    rows[#rows + 1] = artHeader
+    add(artHeader)
   else
-    rows[#rows + 1] = summary
+    add(summary)
   end
-  for _, r in ipairs(detail) do rows[#rows + 1] = r end
+  for _, r in ipairs(detail) do add(r) end
 
-  local note, bad = nil, false
-  if #Config.problems > 0 then
-    note, bad = "cfg: " .. Config.problems[1], true
-  else
-    note = (State.armed and "ARMED" or "disarmed") .. "  " ..
-           (RF2.craftName or Host.modelName())
-    if #Sensors.unresolved > 0 then
-      note = note .. "  (" .. #Sensors.unresolved .. " unresolved)"
-    end
-  end
+  local note, bad = footerNote()
   return rows, bound, note, bad
 end
 

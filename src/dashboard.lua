@@ -21,7 +21,6 @@ ZD.Dashboard = Dashboard
 
 local function assetDir() return Host.widgetDir() end
 
-function Dashboard.assetDir() return assetDir() end
 
 -- EdgeTX publishes its constants through a read-only global lookup table
 -- rather than as raw entries in _G, so rawget() alone returns nil for every
@@ -148,17 +147,6 @@ end
 --------------------------------------------------------------------------
 -- Formatting
 --------------------------------------------------------------------------
-
-local function fmt(v, pattern, scale)
-  if v == nil then return "--" end
-  return string.format(pattern, v * (scale or 1))
-end
-
-local function fmtInt(role)
-  local v, ok = State.get(role)
-  if not ok then return "--" end
-  return string.format("%d", math.floor(v + 0.5))
-end
 
 local function fmtExtreme(prefix, value, pattern)
   if value == nil then return prefix .. " --" end
@@ -712,7 +700,6 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
   return scroll
 end
 
-function Dashboard.sensorMapVisible() return SM.visible end
 
 -- How much room a folded row has for its list. The row builder wraps against
 -- this, so the wrap follows the screen rather than a guess about it.
