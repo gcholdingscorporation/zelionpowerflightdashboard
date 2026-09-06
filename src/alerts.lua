@@ -216,9 +216,16 @@ function Alerts.selfTest()
   local def = DEFS[1]
   local h = def.haptic
   for _ = 1, (h[3] or 1) do Host.playHaptic(h[1], h[2], Host.PLAY_NOW) end
-  local v = State.valid("cellVoltage")
-            and State.num("cellVoltage") or cellLow()
-  Host.playNumber(math.floor(v * 100 + 0.5), Host.UNIT_VOLTS, Host.PREC2)
+  -- Speaks the live cell voltage, and says NOTHING when there is not one.
+  -- It used to fall back to the alert threshold, which made a test with no
+  -- telemetry indistinguishable from the real low-cell alarm - a plausible
+  -- number, in the right voice, for a reading nobody had. The buzz alone is
+  -- the honest test: it proves the alert path works without asserting a
+  -- voltage that does not exist.
+  if State.valid("cellVoltage") then
+    Host.playNumber(math.floor(State.num("cellVoltage") * 100 + 0.5),
+                    Host.UNIT_VOLTS, Host.PREC2)
+  end
   Alerts.lastSpoken = "test"
   Alerts.count = Alerts.count + 1
   return true

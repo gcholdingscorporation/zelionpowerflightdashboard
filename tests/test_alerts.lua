@@ -227,10 +227,42 @@ H.test("speaks the live reading, so it proves the binding too", function()
 end)
 
 H.test("works on a bench with no telemetry at all", function()
+  -- A pre-flight check cannot require a heli. But it must not invent a reading
+  -- either: this used to speak the alert threshold when there was no cell
+  -- voltage, which made a test with nothing connected sound exactly like the
+  -- real low-cell alarm - the right voice, a plausible number, for a reading
+  -- nobody had. The buzz alone proves the alert path works.
   local ZD = fresh()
   ZD.Alerts.selfTest()
-  H.truthy(#Mock.played > 0, "a pre-flight check cannot require a heli")
-  H.eq(Mock.spokenValues()[1], 3.40, "falls back to the configured threshold")
+  H.truthy(#Mock.played > 0, "the test must still do something")
+  H.eq(#Mock.spokenValues(), 0,
+       "spoke a voltage with no cell sensor connected: "
+       .. table.concat(Mock.spokenValues(), ", "))
+end)
+
+H.test("a test alert already switched on does not fire on every model change", function()
+  -- Switching models rebuilds the widget. The off-to-on memory used to live on
+  -- the module, which does not survive that - so an option left switched on
+  -- read as a fresh transition every time, and the widget announced a test
+  -- alert on each switch to that model. With no telemetry yet it spoke the
+  -- fallback threshold, so a heli that was not even powered appeared to report
+  -- a flat cell. Reported from the field, and reproduced here before the fix.
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  Mock.state.modelName = "OMP micro"
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+  local def = assert(loadfile("dist/WIDGETS/ZelionDash/main.lua"))()
+
+  local opts = { TestAlert = 1 }
+  local w = def.create({ x = 0, y = 0, w = 800, h = 480 }, opts)
+  def.update(w, opts)
+  H.eq(#Mock.played, 0,
+       "a model switch is not the pilot asking for a test")
+
+  -- And the option still works when it is actually toggled.
+  def.update(w, { TestAlert = 0 })
+  def.update(w, { TestAlert = 1 })
+  H.truthy(#Mock.played > 0, "off and on again must still sound one")
 end)
 
 H.test("does not disturb the real alerts", function()

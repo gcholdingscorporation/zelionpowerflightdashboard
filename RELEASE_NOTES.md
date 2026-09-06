@@ -1,45 +1,42 @@
-Two changes to the sensor map. One is cosmetic; the other tells you when a
-config file you wrote is quietly doing nothing.
+One fix, reported from the field: the widget announced "3.40 volts" when
+switching to a model, from a helicopter that was not powered on.
 
 ## Install
 
-Download `ZelionDash-1.3.0.zip`, unzip it, and copy the `WIDGETS` folder onto
+Download `ZelionDash-1.3.1.zip`, unzip it, and copy the `WIDGETS` folder onto
 the radio's storage, merging with the one already there. **Delete `main.luac`**
-next to the `main.lua` you replaced — the header will read `ZELIONDASH 1.3.0`
-once the new file is actually running.
+next to the `main.lua` you replaced — the sensor map header will read
+`ZELIONDASH 1.3.1` once the new file is running.
 
-## A config file that applied nothing now says so
+## A phantom low-cell callout on every model change
 
-Section headers in `sensors.cfg` are **EdgeTX model names**, not aircraft
-names. A section written for the helicopter rather than for the model it flies
-on matches nothing — and it fails completely silently: the overrides never
-happen, the roles fall back to guessing, and the sensor map shows `(guess)`
-where you expected `(cfg)`.
+Two faults stacked into one convincing lie.
 
-When a `sensors.cfg` exists, a `-- CONFIG --` row now names the sections that
-actually applied to this model and counts the overrides they carried. It reads
-amber as `no section for this model / 0 overrides` when none of it reached the
-model you are flying.
+**The Test Alert option fired on every model switch.** It is meant to be
+edge-triggered: switch it on, hear one alert. The memory of its previous state
+lived on the module rather than on the widget, and module state does not
+survive the widget being rebuilt — which is exactly what changing model does.
+So an option left switched on read as a fresh off-to-on transition every single
+time, and the widget sounded a test alert on each switch to that model.
 
-Only sections that carried something count. The parser opens an implicit `[*]`
-for any lines before the first header, so that section exists even in a file
-that never mentions it — and naming a section that contributed nothing is
-exactly the false reassurance this row exists to prevent.
+**And the test invented a voltage.** With no telemetry it fell back to speaking
+the low-cell alert threshold itself. So a test with nothing connected sounded
+exactly like the real low-cell alarm: the right voice, a plausible number, for
+a reading nobody had.
 
-No row at all when there is no file. That is the normal case, everything
-auto-detects, and a row saying so every time is a row spent on nothing.
+Together: change to that model, and a helicopter sitting unpowered on the bench
+appeared to report a flat cell.
 
-## Volts read as volts
+The memory now lives on the widget and is seeded from the option as found, so
+an option already on is a state rather than a transition. The test speaks the
+live cell voltage and says **nothing** when there is not one — the buzz alone
+proves the alert path works without asserting a reading that does not exist.
 
-The value column rounded anything within 0.05 of a whole number to an integer,
-which is right for rpm and mAh and wrong for a voltage: the same field read
-`45 V` one moment and `45.09 V` the next. Pack, cell, BEC and TX voltages now
-always carry two decimals.
+Toggling the option off and on still sounds one alert, as it always did.
 
 ## Tests
 
-307, up from 302. Four mutations were run against the new behaviour and all
-four are caught — including the one that mattered least on paper and most in
-practice: drawing a config that applied nothing in the same colour as one that
-worked. The words alone are not a diagnostic when the row is read at a glance
-among a dozen others.
+308, up from 307. The model switch is reproduced in a test that fails without
+the fix. One existing test had to be rewritten: it asserted the fallback
+threshold was spoken, which was pinning the bug rather than the behaviour.
+Three mutations were run against the fix and all three are caught.
