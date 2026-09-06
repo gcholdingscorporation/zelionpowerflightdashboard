@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.3.0
+-- Version 1.3.1
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.3.0" }
+local ZD = { VERSION = "1.3.1" }
 
 -- ======== src/host.lua ========
 do
@@ -2867,9 +2867,16 @@ function Alerts.selfTest()
   local def = DEFS[1]
   local h = def.haptic
   for _ = 1, (h[3] or 1) do Host.playHaptic(h[1], h[2], Host.PLAY_NOW) end
-  local v = State.valid("cellVoltage")
-            and State.num("cellVoltage") or cellLow()
-  Host.playNumber(math.floor(v * 100 + 0.5), Host.UNIT_VOLTS, Host.PREC2)
+  -- Speaks the live cell voltage, and says NOTHING when there is not one.
+  -- It used to fall back to the alert threshold, which made a test with no
+  -- telemetry indistinguishable from the real low-cell alarm - a plausible
+  -- number, in the right voice, for a reading nobody had. The buzz alone is
+  -- the honest test: it proves the alert path works without asserting a
+  -- voltage that does not exist.
+  if State.valid("cellVoltage") then
+    Host.playNumber(math.floor(State.num("cellVoltage") * 100 + 0.5),
+                    Host.UNIT_VOLTS, Host.PREC2)
+  end
   Alerts.lastSpoken = "test"
   Alerts.count = Alerts.count + 1
   return true
@@ -5367,7 +5374,10 @@ function Widget.create(zone, options)
   pcall(State.reloadModel)
   built = nil
   zoneW, zoneH = nil, nil
-  return { zone = zone, options = options }
+  -- Seeded, not defaulted to false: an option already on when the widget is
+  -- built is the state it is in, not a transition into it.
+  return { zone = zone, options = options,
+           lastTest = (options and options.TestAlert == 1) or false }
 end
 
 function Widget.update(widget, options)
@@ -5383,12 +5393,18 @@ function Widget.update(widget, options)
   FlightTime.resetTimerWrite()
 
   -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
-  -- and on again sounds another. update() is only called when the options
-  -- change, but guarding on the transition costs nothing and means a firmware
-  -- that calls it more often cannot turn this into a siren.
+  -- and on again sounds another.
+  --
+  -- The memory lives on the WIDGET, not on the module, and create() seeds it
+  -- from the option as found. Module state does not survive the widget being
+  -- rebuilt, so an option left switched on read as off-to-on every time the
+  -- pilot changed model - the widget announced a test alert on every switch to
+  -- that model, and with no telemetry yet the test speaks its fallback, which
+  -- is the low-cell threshold itself. A phantom "3.40 volts", on the ground,
+  -- from a helicopter that was not even powered.
   local test = (options and options.TestAlert == 1) or false
-  if test and not Widget.lastTestOption then pcall(Alerts.selfTest) end
-  Widget.lastTestOption = test
+  if test and not widget.lastTest then pcall(Alerts.selfTest) end
+  widget.lastTest = test
   -- There used to be a Level option here, stepping the renderer down one
   -- construct at a time. It existed only to bisect the emergency-mode reboot
   -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
