@@ -36,11 +36,23 @@ Alerts.enabled = true
 -- Telemetry has to be live this long before anything can fire.
 Alerts.SETTLE = Host.seconds(4)
 
+-- The pack check waits longer than the others. A pack just plugged in is still
+-- settling - the ESC's inrush pulls the rail down for a moment - and calling a
+-- full pack half-empty on the strength of that dip is how a useful check
+-- becomes one nobody listens to.
+Alerts.PACK_SETTLE = Host.seconds(8)
+
+-- A gap in telemetry longer than this is a pack change, not a dropout, and it
+-- re-arms the once-per-pack checks. Short enough that a real swap is always
+-- caught, long enough that a flaky link on the ground does not re-announce.
+Alerts.REPLUG = Host.seconds(5)
+
 Alerts.fired = {}          -- id -> true while the condition is held
 Alerts.lastSpoken = nil    -- id of the most recent alert, for the UI
 Alerts.count = 0           -- total fires this session, for tests and diagnostics
 
 local liveSince = nil
+local lastLive  = nil
 local state = {}           -- id -> { active, nextAt }
 
 --------------------------------------------------------------------------
@@ -61,10 +73,62 @@ local GOV_FAULT = { ["THR-OFF"] = true, ["LOST-HS"] = true, AUTOROT = true }
 
 local DEFS = {
   {
+    -- The main pack has gone and the flight controller is running on whatever
+    -- is left - a backup buffer, or just the ESC's capacitors. Seconds.
+    --
+    -- Outranks the cell alert and silences it, because the readings that alert
+    -- would be shouting about are the decay, not the pack.
+    id = "power",
+    label = "MAIN POWER LOST",
+    test  = function() return State.powerLost == true end,
+    clear = function() return State.powerLost ~= true end,
+    -- Fast, and it does not stop. There is no acknowledging this one.
+    repeatAfter = 6,
+    haptic = { 120, 60, 3 },
+    tone = { 340, 250, 50 },
+    speak = function()
+      -- Count the buffer down out loud. The BEC rail where the aircraft has
+      -- one, the pack otherwise - and nothing at all rather than an invented
+      -- number, which is the failure this alert exists to replace.
+      for _, role in ipairs({ "becVoltage", "packVoltage" }) do
+        if State.valid(role) then
+          Host.playNumber(math.floor(State.num(role) * 100 + 0.5),
+                          Host.UNIT_VOLTS, Host.PREC2)
+          return
+        end
+      end
+    end,
+  },
+  {
+    -- Asked once, on the ground, after the pack has settled: is this thing
+    -- actually charged? A half pack flies exactly like a full one for the
+    -- first minute, which is the whole problem with finding out later.
+    id = "pack",
+    label = "PACK NOT FULL",
+    once  = true,
+    delay = Alerts.PACK_SETTLE,
+    test  = function()
+      if State.armed then return false end
+      if not State.trusted("cellVoltage") then return false end
+      local v = State.num("cellVoltage")
+      if v < State.MIN_PLAUSIBLE_CELL then return false end
+      return v < Config.setting("cellFull")
+    end,
+    haptic = { 40, 40, 2 },
+    speak = function()
+      Host.playNumber(math.floor(State.num("cellVoltage") * 100 + 0.5),
+                      Host.UNIT_VOLTS, Host.PREC2)
+    end,
+  },
+  {
     id = "cell",
     -- The one the pilot actually flies to. A margin of 0.10V on the way back
     -- up: a pack that has hit its floor does not recover quietly.
-    test  = function() return State.valid("cellVoltage")
+    -- Trusted, not merely present: a value still falling has not been shown
+    -- to be a reading, and announcing one is how a decay gets read out as a
+    -- flat pack.
+    test  = function() return not State.powerLost
+                          and State.trusted("cellVoltage")
                           and State.num("cellVoltage") <= cellLow() end,
     clear = function() return not State.valid("cellVoltage")
                           or State.num("cellVoltage") >= cellLow() + 0.10 end,
@@ -163,6 +227,7 @@ end
 function Alerts.reset()
   state = {}
   liveSince = nil
+  lastLive  = nil
   Alerts.fired = {}
   Alerts.lastSpoken = nil
   Alerts.count = 0
@@ -171,9 +236,13 @@ end
 -- Any live flight value counts as telemetry being up. Deliberately the same
 -- test the dashboard once used to decide it had something worth drawing.
 local function telemetryLive()
+  -- powerLost is in the list because a collapse refuses both voltages, which
+  -- would otherwise read as "no telemetry" and shut the alert engine down at
+  -- the exact moment it has something worth saying. It is armed-only and
+  -- clears on disarm, so it cannot keep the engine awake after a normal unplug.
   return State.valid("cellVoltage") or State.valid("packVoltage")
       or State.valid("headspeed") or State.valid("batteryPercent")
-      or State.valid("current")
+      or State.valid("current") or State.powerLost == true
 end
 
 function Alerts.service(now)
@@ -188,8 +257,15 @@ function Alerts.service(now)
     -- dashboard already says so. Clear the settle timer so a reconnect gets
     -- its grace period back rather than firing on the first noisy sample.
     liveSince = nil
+    -- A long enough gap is a pack change. Re-arm the once-per-pack checks so
+    -- the next pack is asked about too - and only then, or a flaky link on the
+    -- ground would announce the same pack over and over.
+    if lastLive and (now - lastLive) >= Alerts.REPLUG then
+      for _, st in pairs(state) do st.done = nil end
+    end
     return
   end
+  lastLive = now
   if liveSince == nil then liveSince = now end
   if (now - liveSince) < Alerts.SETTLE then return end
 
@@ -202,7 +278,17 @@ function Alerts.service(now)
     local s = state[def.id]
     if not s then s = { active = false, nextAt = 0 }; state[def.id] = s end
 
-    if s.active then
+    if (now - liveSince) < (def.delay or Alerts.SETTLE) then
+      -- Not this one's turn yet. A per-alert settle, so the pack check can
+      -- wait out the inrush without holding everything else up.
+    elseif def.once then
+      -- Asked once per pack, and marked answered whichever way it went: a
+      -- check that passed is finished, not still pending.
+      if not s.done then
+        s.done = true
+        if def.test() then fire(def) end
+      end
+    elseif s.active then
       if def.clear() then
         s.active = false
         Alerts.fired[def.id] = nil
@@ -223,7 +309,7 @@ end
 function Alerts.active()
   local out = {}
   for _, def in ipairs(DEFS) do
-    if Alerts.fired[def.id] then out[#out + 1] = def.id end
+    if Alerts.fired[def.id] then out[#out + 1] = def.label or def.id end
   end
   return out
 end

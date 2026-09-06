@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.1.0
+-- Version 1.2.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.1.0" }
+local ZD = { VERSION = "1.2.0" }
 
 -- ======== src/host.lua ========
 do
@@ -1954,6 +1954,75 @@ local currentSum, currentCount = 0, 0
 -- and the latch survived a model change.
 local spunUp, belowSince = false, nil
 
+-- Telling a supply collapse from load sag.
+--
+-- When the main pack is unplugged, or a connector lets go in the air, the FC
+-- does not stop talking: it runs on the ESC's capacitors or a backup buffer
+-- and keeps sending while the rail decays - 4.1 V/cell, then 2.9, then 1.4,
+-- then 0. Every one of those is a plausible-looking number, so the widget
+-- recorded them as the flight's minimum, and announced "battery critical,
+-- zero volts" on the way down. Both are wrong, and the second is the kind of
+-- wrong that makes a pilot distrust the alert that matters.
+--
+-- The physical distinction, and it is a clean one:
+--
+-- A collapse KEEPS FALLING. Sag stops and holds, then recovers. That, rather
+-- than the size of any single step, is the discriminator - and it has to be,
+-- because a single step here is not a fixed slice of time. Telemetry arrives
+-- at the flight controller's rate, not the widget's, so one service pass may
+-- carry 100 ms of change or 500 ms of it, and any "too big for one frame"
+-- rule is really a rule about how fast the sensor happens to update.
+--
+-- So a fall large enough to be worth questioning is never accepted on the
+-- strength of one reading. It is held pending, and the NEXT reading decides:
+--
+--   still falling  -> a decay. Refused, and the collapse is declared.
+--   holding steady -> a real value. Accepted once it has held.
+--
+-- How long "held" means is the one thing that differs by state. Armed, a real
+-- sag has to show almost immediately or the dashboard is lying during the
+-- part of the flight that matters, so the window is a fraction of a second.
+-- Disarmed there is no load at all, a genuinely lower pack can only be one
+-- somebody just plugged in, and it will sit there all day - so the window is
+-- seconds, and a decay never survives it.
+--
+-- A refused reading is not shown, not recorded and not alerted on. It does not
+-- freeze the old value in its place either: a stale number that looks live is
+-- the thing this whole widget is built to avoid.
+-- Measured over an unbroken RUN of falling readings, never over one step.
+--
+-- A step threshold was tried first and it does not work, for a reason worth
+-- writing down: a decay does not arrive in one jump. It walks down - 3.55,
+-- 2.95, 2.35, 1.75 - and every one of those steps is small enough to pass for
+-- sag. Four "ordinary" readings later the flight's minimum is 1.75 V. What
+-- gives it away is not any single step but that it never stops. Sag stops,
+-- and then it recovers, because the pilot eases off.
+--
+-- So: while a reading is falling it is DISPLAYED but not TRUSTED. The tile
+-- shows what the sensor says, live, because that is what a dashboard is for.
+-- The flight's minimum and the low-cell alarm wait for the fall to stop -
+-- which is a fraction of a second of real sag, and never, for a decay.
+-- If the run's total fall passes the bar below, it is a collapse.
+State.COLLAPSE_FALL_CELL = 0.8   -- total fall in one unbroken run, per cell
+-- Any change smaller than this is noise, not a fall, and ends a run.
+State.FALL_EPSILON       = 0.05
+-- How long a fall has to have stopped before its value is trusted. Armed, a
+-- real sag has to reach the alarm quickly or the alarm is late; disarmed there
+-- is no load, so the only thing that legitimately reads lower is a pack
+-- somebody just plugged in, and that will sit there all day.
+State.ARMED_SETTLE       = Host.seconds(0.3)
+State.VOLT_SETTLE        = Host.seconds(3)
+-- A connected cell reads its real 3.3-4.2 V or collapses towards zero. Nothing
+-- in between is a cell, so this floor can never mask a genuine low-cell alert:
+-- it sits far below the ~3.3 V where one would fire.
+State.MIN_PLAUSIBLE_CELL = 1.0
+
+-- True for the pass in which a reading was refused as a collapse.
+State.supplyCollapsed = false
+-- Latched while the main supply is gone in flight. Cleared by a healthy
+-- reading, and by disarming - a normal unplug on the bench is not an emergency.
+State.powerLost = false
+
 local function blank()
   return { value = nil, valid = false, status = "unbound",
            min = nil, max = nil, hasExtremes = false }
@@ -2027,11 +2096,21 @@ function State.avgCurrent()
   return currentSum / currentCount
 end
 
+-- Whether a reading is settled enough to act on, as opposed to merely being
+-- the latest thing the sensor said. Only voltages are ever untrusted.
+function State.trusted(role)
+  local s = State.values[role]
+  return s ~= nil and s.valid == true and s.trusted ~= false
+end
+
 function State.resetSession()
   State.resetExtremes()
   currentSum, currentCount = 0, 0
   State.startPackVoltage, State.startCellVoltage = nil, nil
   spunUp, belowSince = false, nil
+  latch = {}
+  cellsCache = nil
+  State.supplyCollapsed, State.powerLost = false, false
   State.flightSeconds  = 0
   State.sessionStarted = false
   lastSecondTick = nil
@@ -2160,25 +2239,149 @@ State.armSource = "none"
 -- Service pass
 --------------------------------------------------------------------------
 
-local function sampleRole(role)
+-- How many cells the pack has, so a per-cell threshold can be applied to a
+-- pack-voltage reading. From the sensor when the FC publishes one, otherwise
+-- from the ratio of the two voltages, and remembered: the moment the numbers
+-- are needed is the moment they have stopped being trustworthy.
+local cellsCache = nil
+
+function State.cells()
+  local n, ok = State.get("cellCount")
+  if ok and n and n >= 1 then
+    cellsCache = math.floor(n + 0.5)
+    return cellsCache
+  end
+  local pack, pOk = State.get("packVoltage")
+  local cell, cOk = State.get("cellVoltage")
+  if pOk and cOk and pack and cell and cell > State.MIN_PLAUSIBLE_CELL then
+    local guess = math.floor(pack / cell + 0.5)
+    if guess >= 1 and guess <= 16 then cellsCache = guess end
+  end
+  return cellsCache
+end
+
+-- role -> { held = last accepted reading, pend = { v, t } }
+local latch = {}
+
+-- Returns the reading to use, or nil when it was refused. `scale` converts a
+-- per-cell threshold into this role's own units: 1 for a cell reading, the
+-- cell count for a pack reading.
+-- Returns: value to display (nil when there is nothing honest to show), and
+-- whether that value may be trusted to set a minimum or raise an alarm.
+local function latchVoltage(role, raw, scale, now)
+  local eps    = State.FALL_EPSILON       * scale
+  local total  = State.COLLAPSE_FALL_CELL * scale
+  local floor  = State.MIN_PLAUSIBLE_CELL * scale
+  local settle = State.armed and State.ARMED_SETTLE or State.VOLT_SETTLE
+
+  local L = latch[role]
+  if not L then L = {}; latch[role] = L end
+  L.staleSince = nil
+
+  -- Below the floor there is no supply at all. The decay's own tail, and the
+  -- one case that needs no corroboration.
+  if raw < floor then
+    L.run = nil
+    State.supplyCollapsed = true
+    return nil, false
+  end
+
+  local held = L.held
+  if held == nil then
+    L.held, L.run = raw, nil
+    return raw, true
+  end
+
+  -- Not falling. Ends any run, and is every reading in a normal flight.
+  if raw >= held - eps then
+    L.held, L.run = raw, nil
+    return raw, true
+  end
+
+  local run = L.run
+  if run == nil then
+    L.run = { from = held, last = raw, t = now }
+    return raw, false
+  end
+  if raw < run.last - eps then
+    run.last, run.t = raw, now      -- still going down; the clock restarts
+  end
+
+  -- Nothing with a battery behind it falls this far without stopping.
+  if (run.from - raw) > total then
+    State.supplyCollapsed = true
+    return nil, false
+  end
+
+  if (now - run.t) >= settle then
+    L.held, L.run = raw, nil
+    return raw, true
+  end
+  return raw, false
+end
+
+-- After a real gap there is nothing left to compare against: the next reading
+-- may be a different pack. Without this, a fresh pack that reads lower than the
+-- one before it is refused forever as a decay that never stops.
+local function forgetIfStale(role, now)
+  local L = latch[role]
+  if not L or L.held == nil then return end
+  if L.staleSince == nil then L.staleSince = now; return end
+  if (now - L.staleSince) >= State.VOLT_SETTLE then latch[role] = nil end
+end
+
+-- The per-cell scale for a role, or nil for one the latch does not police.
+-- BEC is deliberately absent: it is a regulated rail that legitimately drops,
+-- and on a buffer takeover it is the one reading still worth having.
+local function voltScale(role)
+  if role == "cellVoltage" then return 1 end
+  if role == "packVoltage" then return State.cells() end
+  return nil
+end
+
+local function sampleRole(role, now)
   local s = slot(role)
   local value, status = Sensors.read(role)
   s.status = status
+
+  local trusted = true
+  local scale = voltScale(role)
+  if scale then
+    now = now or Host.now()
+    if status == "ok" then
+      local kept, ok = latchVoltage(role, value, scale, now)
+      if kept == nil then
+        -- Refused outright. Given its own status so the sensor map can say
+        -- which readings were thrown away, rather than showing a bare dash.
+        s.value, s.valid, s.status, s.trusted = nil, false, "collapsed", false
+        return
+      end
+      value, trusted = kept, ok
+    else
+      forgetIfStale(role, now)
+    end
+  end
 
   if status ~= "ok" then
     -- Deliberately retain the last good extremes. A momentary telemetry
     -- dropout should not erase the session's peak headspeed.
     s.value = nil
     s.valid = false
+    s.trusted = false
     return
   end
 
   s.value = value
   s.valid = true
+  s.trusted = trusted
 
   local def = Roles.get(role)
   if not def or not def.track then return end
   if State.holdActive then return end
+  -- A reading still on its way down has not been shown to be a reading. It is
+  -- on the screen because the screen should be live; it is not in the record
+  -- because the record outlives the moment.
+  if not trusted then return end
 
   if not s.hasExtremes then
     s.min = value
@@ -2325,8 +2528,9 @@ function State.service(now, opts)
     ZD.Profiles.observe(v, ok == "ok")
   end
 
+  State.supplyCollapsed = false
   for i = 1, #Roles.order do
-    sampleRole(Roles.order[i])
+    sampleRole(Roles.order[i], now)
   end
   deriveFuel()
   derivePower()
@@ -2336,6 +2540,16 @@ function State.service(now, opts)
   local armed, source = readArmed(now)
   State.armed = armed
   State.armSource = source
+
+  -- Only ever a flight emergency. A pack pulled on the bench collapses exactly
+  -- the same way, and an alarm for that would teach the pilot to ignore it.
+  if not armed then
+    State.powerLost = false
+  elseif State.supplyCollapsed then
+    State.powerLost = true
+  elseif State.trusted("packVoltage") or State.trusted("cellVoltage") then
+    State.powerLost = false
+  end
 
   if armed and not wasArmed then
     -- Fresh flight: peaks belong to this flight, not the previous one.
@@ -2432,11 +2646,23 @@ Alerts.enabled = true
 -- Telemetry has to be live this long before anything can fire.
 Alerts.SETTLE = Host.seconds(4)
 
+-- The pack check waits longer than the others. A pack just plugged in is still
+-- settling - the ESC's inrush pulls the rail down for a moment - and calling a
+-- full pack half-empty on the strength of that dip is how a useful check
+-- becomes one nobody listens to.
+Alerts.PACK_SETTLE = Host.seconds(8)
+
+-- A gap in telemetry longer than this is a pack change, not a dropout, and it
+-- re-arms the once-per-pack checks. Short enough that a real swap is always
+-- caught, long enough that a flaky link on the ground does not re-announce.
+Alerts.REPLUG = Host.seconds(5)
+
 Alerts.fired = {}          -- id -> true while the condition is held
 Alerts.lastSpoken = nil    -- id of the most recent alert, for the UI
 Alerts.count = 0           -- total fires this session, for tests and diagnostics
 
 local liveSince = nil
+local lastLive  = nil
 local state = {}           -- id -> { active, nextAt }
 
 --------------------------------------------------------------------------
@@ -2457,10 +2683,62 @@ local GOV_FAULT = { ["THR-OFF"] = true, ["LOST-HS"] = true, AUTOROT = true }
 
 local DEFS = {
   {
+    -- The main pack has gone and the flight controller is running on whatever
+    -- is left - a backup buffer, or just the ESC's capacitors. Seconds.
+    --
+    -- Outranks the cell alert and silences it, because the readings that alert
+    -- would be shouting about are the decay, not the pack.
+    id = "power",
+    label = "MAIN POWER LOST",
+    test  = function() return State.powerLost == true end,
+    clear = function() return State.powerLost ~= true end,
+    -- Fast, and it does not stop. There is no acknowledging this one.
+    repeatAfter = 6,
+    haptic = { 120, 60, 3 },
+    tone = { 340, 250, 50 },
+    speak = function()
+      -- Count the buffer down out loud. The BEC rail where the aircraft has
+      -- one, the pack otherwise - and nothing at all rather than an invented
+      -- number, which is the failure this alert exists to replace.
+      for _, role in ipairs({ "becVoltage", "packVoltage" }) do
+        if State.valid(role) then
+          Host.playNumber(math.floor(State.num(role) * 100 + 0.5),
+                          Host.UNIT_VOLTS, Host.PREC2)
+          return
+        end
+      end
+    end,
+  },
+  {
+    -- Asked once, on the ground, after the pack has settled: is this thing
+    -- actually charged? A half pack flies exactly like a full one for the
+    -- first minute, which is the whole problem with finding out later.
+    id = "pack",
+    label = "PACK NOT FULL",
+    once  = true,
+    delay = Alerts.PACK_SETTLE,
+    test  = function()
+      if State.armed then return false end
+      if not State.trusted("cellVoltage") then return false end
+      local v = State.num("cellVoltage")
+      if v < State.MIN_PLAUSIBLE_CELL then return false end
+      return v < Config.setting("cellFull")
+    end,
+    haptic = { 40, 40, 2 },
+    speak = function()
+      Host.playNumber(math.floor(State.num("cellVoltage") * 100 + 0.5),
+                      Host.UNIT_VOLTS, Host.PREC2)
+    end,
+  },
+  {
     id = "cell",
     -- The one the pilot actually flies to. A margin of 0.10V on the way back
     -- up: a pack that has hit its floor does not recover quietly.
-    test  = function() return State.valid("cellVoltage")
+    -- Trusted, not merely present: a value still falling has not been shown
+    -- to be a reading, and announcing one is how a decay gets read out as a
+    -- flat pack.
+    test  = function() return not State.powerLost
+                          and State.trusted("cellVoltage")
                           and State.num("cellVoltage") <= cellLow() end,
     clear = function() return not State.valid("cellVoltage")
                           or State.num("cellVoltage") >= cellLow() + 0.10 end,
@@ -2559,6 +2837,7 @@ end
 function Alerts.reset()
   state = {}
   liveSince = nil
+  lastLive  = nil
   Alerts.fired = {}
   Alerts.lastSpoken = nil
   Alerts.count = 0
@@ -2567,9 +2846,13 @@ end
 -- Any live flight value counts as telemetry being up. Deliberately the same
 -- test the dashboard once used to decide it had something worth drawing.
 local function telemetryLive()
+  -- powerLost is in the list because a collapse refuses both voltages, which
+  -- would otherwise read as "no telemetry" and shut the alert engine down at
+  -- the exact moment it has something worth saying. It is armed-only and
+  -- clears on disarm, so it cannot keep the engine awake after a normal unplug.
   return State.valid("cellVoltage") or State.valid("packVoltage")
       or State.valid("headspeed") or State.valid("batteryPercent")
-      or State.valid("current")
+      or State.valid("current") or State.powerLost == true
 end
 
 function Alerts.service(now)
@@ -2584,8 +2867,15 @@ function Alerts.service(now)
     -- dashboard already says so. Clear the settle timer so a reconnect gets
     -- its grace period back rather than firing on the first noisy sample.
     liveSince = nil
+    -- A long enough gap is a pack change. Re-arm the once-per-pack checks so
+    -- the next pack is asked about too - and only then, or a flaky link on the
+    -- ground would announce the same pack over and over.
+    if lastLive and (now - lastLive) >= Alerts.REPLUG then
+      for _, st in pairs(state) do st.done = nil end
+    end
     return
   end
+  lastLive = now
   if liveSince == nil then liveSince = now end
   if (now - liveSince) < Alerts.SETTLE then return end
 
@@ -2598,7 +2888,17 @@ function Alerts.service(now)
     local s = state[def.id]
     if not s then s = { active = false, nextAt = 0 }; state[def.id] = s end
 
-    if s.active then
+    if (now - liveSince) < (def.delay or Alerts.SETTLE) then
+      -- Not this one's turn yet. A per-alert settle, so the pack check can
+      -- wait out the inrush without holding everything else up.
+    elseif def.once then
+      -- Asked once per pack, and marked answered whichever way it went: a
+      -- check that passed is finished, not still pending.
+      if not s.done then
+        s.done = true
+        if def.test() then fire(def) end
+      end
+    elseif s.active then
       if def.clear() then
         s.active = false
         Alerts.fired[def.id] = nil
@@ -2619,7 +2919,7 @@ end
 function Alerts.active()
   local out = {}
   for _, def in ipairs(DEFS) do
-    if Alerts.fired[def.id] then out[#out + 1] = def.id end
+    if Alerts.fired[def.id] then out[#out + 1] = def.label or def.id end
   end
   return out
 end
