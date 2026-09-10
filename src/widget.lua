@@ -18,6 +18,7 @@ local State   = ZD.State
 local Alerts  = ZD.Alerts
 local FlightLog = ZD.FlightLog
 local FlightTime = ZD.FlightTime
+local PackHealth = ZD.PackHealth
 local Profiles = ZD.Profiles
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
@@ -533,6 +534,7 @@ function Widget.refresh(widget, event, touchState)
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)
   pcall(FlightTime.service, now)
+  pcall(PackHealth.service, now)
   pcall(FlightTime.driveTimer)
   pcall(FlightLog.service)
   ensureScreen(widget)
@@ -561,6 +563,7 @@ function Widget.background(widget)
   -- Kept running off-screen for the same reason the alerts are: the countdown
   -- has to be right when the pilot looks back, not start over.
   pcall(FlightTime.service, now)
+  pcall(PackHealth.service, now)
   pcall(FlightTime.driveTimer)
   -- Logged from here too: a flight can end while the pilot is on another
   -- screen, and an unwritten flight is lost the moment the model changes.

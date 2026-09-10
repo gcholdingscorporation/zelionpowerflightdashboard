@@ -8,6 +8,15 @@ return function(H, Mock, Loader)
 
 local PATH = "/LOGS/zeliondash.csv"
 
+-- Derived from the header rather than written down. Every column added to this
+-- log used to mean hunting the hard-coded widths in here and bumping them,
+-- which is a test that fails for the one reason that is never interesting.
+local function columns(ZD)
+  local n = 1
+  for _ in ZD.FlightLog.HEADER:gmatch(",") do n = n + 1 end
+  return n
+end
+
 local function fresh(setup)
   Mock.reset()
   Mock.removeRf2()
@@ -385,7 +394,7 @@ H.test("records resting voltage, mean draw and worst link quality", function()
 
   local f = {}
   for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
-  H.eq(#f, 15, "eleven original columns plus four")
+  H.eq(#f, columns(ZD), "a record is exactly as wide as the header")
   H.eq(f[12], "47.40", "pack at rest, before the rotor turned")
   H.eq(f[13], "3.95",  "and the cell with it")
   H.truthy(tonumber(f[14]) > 40 and tonumber(f[14]) < 60,
@@ -448,7 +457,8 @@ H.test("an old row is padded, not left short", function()
 
   local f = {}
   for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
-  H.eq(#f, 15, "same width as every other row, so columns still line up")
+  H.eq(#f, columns(ZD),
+       "same width as every other row, so columns still line up")
   H.eq(f[12], "", "and honestly blank for a flight flown before they existed")
 end)
 

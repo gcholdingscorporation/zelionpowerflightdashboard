@@ -14,6 +14,7 @@ local SUITES = {
   "test_profiles",
   "test_flighttime",
   "test_flightlog",
+  "test_packhealth",
   "test_rf2",
   "test_layout",
   "test_dashboard",
