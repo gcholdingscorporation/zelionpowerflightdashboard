@@ -256,6 +256,32 @@ whole problem with finding out later.
 It is asked once and answered once, whichever way it goes. Plugging in the next
 pack asks again.
 
+## Pack health
+
+A pack announces that it is finished long before its capacity does. What goes
+first is internal resistance: the same punch sags further every month, and by
+the time the mAh figure has visibly dropped the pack has been unpleasant to fly
+for a while.
+
+Each flight logs one figure, `ir_mohm` — milliohms per cell, so a 3S micro and a
+12S 700 are directly comparable. Watch it climb across flights on the same pack.
+
+It is **measured**, not estimated from the columns beside it. A cell under load
+reads `V_open − I × R`, so cell voltage against current is a straight line whose
+slope is the resistance. The widget fits that line over three-second windows —
+short enough that the pack does not measurably deplete inside one — and takes
+the median across a flight's windows.
+
+Dividing the flight's voltage sag by its peak current looks like the same number
+and is not: those are the extremes of the *whole flight* and need not have
+happened at the same moment. Against 47 real flights that shortcut gave a
+believable 3.5 mΩ on a 12S pack and a 4× spread of nonsense on a 3S micro — it
+looked right on the aircraft that happened to suit it.
+
+The figure is blank unless at least five windows agreed on it, the current
+actually moved during them, and the result was physically possible. A steady
+hover measures nothing, and says so rather than inventing a number.
+
 ## Time remaining
 
 Set **Time Timer** in the widget settings to 1, 2 or 3 and ZelionDash drives

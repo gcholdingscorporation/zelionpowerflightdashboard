@@ -50,7 +50,7 @@ FlightLog.MAX_RECORDS = 200
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -59,6 +59,9 @@ FlightLog.HEADER =
 FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq",
 }
 
 local function columnCount(header)
@@ -231,6 +234,11 @@ function FlightLog.record()
     safe(function() return num(State.startCellVoltage, "%.2f") end),
     safe(function() return num(State.avgCurrent(), "%.1f") end),
     safe(function() return num(State.min("linkQuality"), "%d") end),
+    -- Measured, not derived from the two columns beside it. Dividing this
+    -- flight's voltage sag by its peak current looks like the same number and
+    -- is not: those are the extremes of the whole flight and need not have
+    -- happened together. See packhealth.lua.
+    safe(function() return num(ZD.PackHealth.milliohms, "%.1f") end),
   }, ",")
 end
 

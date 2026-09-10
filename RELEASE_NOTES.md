@@ -1,53 +1,67 @@
-Housekeeping. No behaviour change — every one of the 308 tests passes unaltered,
-which is the point: this is a shape change, not a functional one.
+Pack internal resistance, measured in flight and logged per flight.
 
 ## Install
 
-Download `ZelionDash-1.3.2.zip`, unzip it, and copy the `WIDGETS` folder onto
-the radio's storage. **Delete `main.luac`** next to the `main.lua` you replaced.
+Download `ZelionDash-1.4.0.zip`, unzip it, and copy the `WIDGETS` folder onto
+the radio's storage. **Delete `main.luac`** next to the `main.lua` you replaced;
+the sensor map header will read `ZELIONDASH 1.4.0` once the new file is running.
 
-The version bump exists so the file on the card and the version on the sensor
-map stay in one-to-one correspondence. Nothing on screen changes.
+Your existing `zeliondash.csv` is widened in place — the new column is blank for
+every flight flown before it existed, which is the only honest value.
 
-## Dead code removed
+## Why resistance
 
-Eight definitions with no callers anywhere in the widget, the tools or the
-tests: `Dashboard.assetDir`, `Dashboard.sensorMapVisible`, `Host.radioMatches`,
-`Host.sourceName`, `Host.rssi`, `Host.widgetDirCandidates`, and two unused
-formatters in the renderer. Three of those were dead *chains* — the resolved
-EdgeTX function and its only consumer — so `getSourceName` and `getRSSI` are no
-longer looked up at all.
+A pack announces that it is finished long before its capacity does. What goes
+first is internal resistance: the same punch sags further every month, and by
+the time the mAh figure has visibly dropped the pack has been unpleasant to fly
+for a while.
 
-## One writer for session extremes
+One new column, `ir_mohm` — milliohms per cell, so a 3S micro and a 12S 700 are
+directly comparable. Nothing on screen: the value of this number is the trend
+across flights, and there is no trend until there are flights behind it.
 
-Widening a recorded min/max was written out three times, in `sampleRole`,
-`derivePower` and `deriveFuel`, identically apart from the variable name. The
-copies had already begun to drift as guards were added to one and not the
-others. There is now one `recordExtreme`, and the callers keep their own guards
-because what disqualifies a reading genuinely differs between them.
+## Measured, not inferred
 
-## The sensor map row builder, taken apart
+A cell under load reads `V_open − I × R`, so cell voltage against current is a
+straight line whose slope is the resistance. The difficulty is `V_open`, which
+falls as the pack empties — a fit across a whole flight blends the resistance
+slope with the depletion slope and reports neither. So the fit runs over
+three-second windows, short enough that the pack does not measurably deplete
+inside one, and the flight's answer is the median across its windows.
 
-`sensorMapRows` had grown to 168 lines doing five jobs, and spliced its optional
-rows in by position — `table.insert(rows, statsRow and 3 or 2, cfgRow)`. That
-arithmetic is right until a third optional row exists.
+**The shortcut this replaces looked fine.** Dividing the flight's voltage sag by
+its peak current uses two columns already in the log. Against 47 real flights it
+gave a believable 3.5 mΩ on a 12S pack and a 4× spread of nonsense on a 3S
+micro. Those two figures are the extremes of the *whole flight* and need not
+have happened at the same moment: on a heli flown in long pulls they nearly
+coincide, and on one flown in short punches they do not. It was right on the
+aircraft that happened to suit it, which is the most dangerous way for a
+measurement to be wrong.
 
-It is now 51 lines over five named builders, each returning a row or nil, with
-nil rows simply not added. Nothing counts positions any more. A shadowed local
-went with it.
+## When it refuses
 
-## What was looked at and left alone
+Blank unless at least five windows agreed, the current genuinely moved during
+them, and the result was physically possible. A steady hover cannot measure
+resistance — every sample shares one current, the fit divides by nearly nothing,
+and the answer would be large, confident and meaningless. It says nothing
+instead.
 
-A line-level pass flagged the `== true` and `~= false` comparisons as
-redundant. They are not: `powerLost`, `linkConnected` and the sensor flags are
-genuinely three-state, and nil is not false. Collapsing them would have been a
-bug, so they stand.
+## Tests
 
-The comment density — around 30% of the source — was also left alone. Those
-comments carry the hardware findings this widget was built out of, and the
-count of them is not the measure of anything.
+322, up from 308. Thirteen of them are new and they run against synthetic packs
+whose resistance is written on the tin, because "the number looks plausible" is
+exactly what the old method passed.
 
-## Net
+Seven mutations were run against the guards. **Four survived the first pass**,
+and chasing them was worth more than the feature:
 
-3232 lines of code to 3203. The line count is not the story; the longest
-function going from 168 lines to 51 is.
+- One found a real design error. The first version skipped readings the collapse
+  latch had not yet confirmed — which are the samples taken during a hard punch,
+  the ones furthest along the current axis and the most informative in the whole
+  flight. It was discarding the best half of its own data.
+- One found a test that was physically absurd: an outlier window of 60 mΩ at
+  120 A is a seven-volt sag, which the collapse detector threw out before the
+  median ever saw it. The test proved nothing until the outlier was made real.
+- One found a threshold that could not be justified — a minimum sample count per
+  window that nothing could be made to fail without. It is gone. A number no
+  test can defend is a number somebody later tunes in the dark.
