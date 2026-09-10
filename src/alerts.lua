@@ -121,6 +121,25 @@ local DEFS = {
     end,
   },
   {
+    -- The ESC already knows. It has been logging a desync, or sitting over
+    -- temperature, while the dashboard showed a number climbing slowly enough
+    -- that nobody read it as a fault.
+    --
+    -- Only fires on a DECODED fault from a vendor whose bits are documented.
+    -- An unknown ESC's status reaches the sensor map and stops there - see
+    -- escfault.lua for why a general "non-zero is bad" rule would alarm on
+    -- every flight of a perfectly healthy OpenYGE.
+    id = "esc-fault",
+    label = "ESC FAULT",
+    test  = function() return ZD.EscFault.critical() end,
+    clear = function() return not ZD.EscFault.critical() end,
+    repeatAfter = 12,
+    haptic = { 80, 70, 3 },
+    -- No number worth reading out, and the pilot is busy. The text is on the
+    -- sensor map for afterwards; right now the buzz is the message.
+    tone = { 300, 220, 45 },
+  },
+  {
     id = "cell",
     -- The one the pilot actually flies to. A margin of 0.10V on the way back
     -- up: a pack that has hit its floor does not recover quietly.

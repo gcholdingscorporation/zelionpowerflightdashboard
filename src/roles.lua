@@ -52,6 +52,7 @@ Roles.order = {
   "current", "capacity", "power",
   "becVoltage", "escTemperature", "mcuTemperature",
   "governor", "armFlags", "throttle", "batteryProfile",
+  "escSignature", "escStatus",
   "linkQuality", "rssi1", "rssi2",
   "txVoltage", "flightMode",
 }
@@ -139,6 +140,23 @@ Roles.defs = {
     names = { "Thr", "Thro", "THR" },
     unit = U_PERCENT, min = -100, max = 100, track = "max",
   },
+  -- Which ESC is talking, and what it is saying. Rotorflight passes the
+  -- vendor's own status word through untouched, so the signature is not
+  -- decoration: the same number means different things on different ESCs, and
+  -- without knowing the vendor the status cannot be read at all.
+  escSignature = {
+    label = "ESC vendor",
+    names = { "Esc#", "ESC#", "EscN" },
+    min = 0, max = 255, int = true,
+  },
+  escStatus = {
+    label = "ESC status",
+    names = { "EscF", "ESCF", "EscS" },
+    -- A 32-bit field on some vendors, so the window is the field's own width
+    -- rather than a guess at which bits get used.
+    min = 0, max = 4294967295, int = true,
+  },
+
   batteryProfile = {
     label = "Battery profile",
     names = { "BAT#", "Bat#", "Prof" },

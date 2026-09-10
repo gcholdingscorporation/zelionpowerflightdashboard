@@ -19,6 +19,7 @@ local Alerts  = ZD.Alerts
 local FlightLog = ZD.FlightLog
 local FlightTime = ZD.FlightTime
 local PackHealth = ZD.PackHealth
+local EscFault = ZD.EscFault
 local Profiles = ZD.Profiles
 local Theme   = ZD.Theme
 local Dashboard = ZD.Dashboard
@@ -283,6 +284,21 @@ local function configRow()
   }
 end
 
+-- Only when the ESC actually publishes a signature. Most setups do not have
+-- Esc#/EscF switched on in Rotorflight's telemetry list, and a row explaining
+-- that on every screen is a row the roles need.
+local function escRow()
+  local text, sev = EscFault.summary()
+  if not text then return nil end
+  return {
+    label = "-- ESC --",
+    sensor = text,
+    value = sev and string.upper(sev) or "ok",
+    status = (sev == "crit") and "insane" or (sev and "unbound" or "ok"),
+    important = true,
+  }
+end
+
 -- What the widget thinks it is bolted to. It decides which readings are
 -- plausible, what headspeed counts as flying, and when the ESC is too hot, so
 -- a wrong profile is quiet and consequential.
@@ -360,7 +376,7 @@ local function sensorMapRows()
 
   local rfRow, statsRow = rfToolRows()
   local logRow, flightRow = flightLogRows()
-  add(rfRow); add(statsRow); add(configRow()); add(profileRow())
+  add(rfRow); add(statsRow); add(configRow()); add(profileRow()); add(escRow())
   add(logRow); add(flightRow)
 
   -- A role that bound to nothing has no sensor, no reading and no status worth
