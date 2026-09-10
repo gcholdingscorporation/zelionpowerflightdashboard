@@ -1,67 +1,57 @@
-Pack internal resistance, measured in flight and logged per flight.
+The ESC usually knows before you do. This reads what it is already saying.
 
 ## Install
 
-Download `ZelionDash-1.4.0.zip`, unzip it, and copy the `WIDGETS` folder onto
-the radio's storage. **Delete `main.luac`** next to the `main.lua` you replaced;
-the sensor map header will read `ZELIONDASH 1.4.0` once the new file is running.
+Download `ZelionDash-1.5.0.zip`, unzip it, copy the `WIDGETS` folder onto the
+radio, and **delete `main.luac`** beside the `main.lua` you replaced.
 
-Your existing `zeliondash.csv` is widened in place — the new column is blank for
-every flight flown before it existed, which is the only honest value.
+**Then switch the sensors on.** `Esc#` and `EscF` are not in Rotorflight's CRSF
+telemetry list by default, and without them this does nothing at all. Add both,
+rediscover sensors on the radio, and an `-- ESC --` row appears on the sensor
+map naming your ESC vendor and what it is reporting.
 
-## Why resistance
+## What it does
 
-A pack announces that it is finished long before its capacity does. What goes
-first is internal resistance: the same punch sags further every month, and by
-the time the mAh figure has visibly dropped the pack has been unpleasant to fly
-for a while.
+Rotorflight publishes the vendor signature and the ESC's own status word. A
+decoded fault — desync, over-temperature, a motor connection the ESC does not
+like — now sounds an alert and names itself on the sensor map, rather than
+waiting for you to notice a temperature climbing.
 
-One new column, `ir_mohm` — milliohms per cell, so a 3S micro and a 12S 700 are
-directly comparable. Nothing on screen: the value of this number is the trend
-across flights, and there is no trend until there are flights behind it.
+## What it deliberately does not do
 
-## Measured, not inferred
+**The firmware never interprets that status word.** Every decoder in
+`esc_sensor.c` ends `escSensorData[0].status = tele->status1` — the bytes are
+handed on exactly as the ESC sent them. The meaning belongs to the vendor, and
+there are sixteen of them.
 
-A cell under load reads `V_open − I × R`, so cell voltage against current is a
-straight line whose slope is the resistance. The difficulty is `V_open`, which
-falls as the pack empties — a fit across a whole flight blends the resistance
-slope with the depletion slope and reports neither. So the fit runs over
-three-second windows, short enough that the pack does not measurably deplete
-inside one, and the flight's answer is the median across its windows.
+**Three have their bit layouts documented in the firmware**: HobbyWing V5,
+Scorpion and OpenYGE. Those three are implemented from that documentation, bit
+by bit, with a test for every bit.
 
-**The shortcut this replaces looked fine.** Dividing the flight's voltage sag by
-its peak current uses two columns already in the log. Against 47 real flights it
-gave a believable 3.5 mΩ on a 12S pack and a 4× spread of nonsense on a 3S
-micro. Those two figures are the extremes of the *whole flight* and need not
-have happened at the same moment: on a heli flown in long pulls they nearly
-coincide, and on one flown in short punches they do not. It was right on the
-aircraft that happened to suit it, which is the most dangerous way for a
-measurement to be wrong.
+**Every other ESC shows its code and raises nothing.** It is tempting to treat
+any non-zero status as a fault — one rule, all sixteen vendors, done. It is
+wrong on the first one you try. OpenYGE keeps the **motor state** in the low
+nibble, so a perfectly healthy ESC running normally reports `0x0E` for the
+entire flight. That rule would not degrade gracefully on an unknown ESC; it
+would invent a fault on every flight, and an alert that cries wolf is worse than
+no alert.
 
-## When it refuses
+OpenYGE also shows why the state cannot be skipped: the same warning bit is a
+*warning* or a *failure* depending on the motor state it arrives with, because
+the firmware documents each as "Fail if Motor Status ...".
 
-Blank unless at least five windows agreed, the current genuinely moved during
-them, and the result was physically possible. A steady hover cannot measure
-resistance — every sample shares one current, the fit divides by nearly nothing,
-and the answer would be large, confident and meaningless. It says nothing
-instead.
+A vendor gets added when its layout can be read from somewhere authoritative,
+not when a plausible guess is available.
+
+## An ESC that sends no status is not reported as healthy
+
+BLHeli32, HobbyWing V4, Castle, BLHeli_S and AM32 have no status field at all,
+so `EscF` sits at zero for the whole flight. The row reads **no status sent**
+rather than **ok**, because "ok" would be a claim and this is a fact.
 
 ## Tests
 
-322, up from 308. Thirteen of them are new and they run against synthetic packs
-whose resistance is written on the tin, because "the number looks plausible" is
-exactly what the old method passed.
-
-Seven mutations were run against the guards. **Four survived the first pass**,
-and chasing them was worth more than the feature:
-
-- One found a real design error. The first version skipped readings the collapse
-  latch had not yet confirmed — which are the samples taken during a hard punch,
-  the ones furthest along the current axis and the most informative in the whole
-  flight. It was discarding the best half of its own data.
-- One found a test that was physically absurd: an outlier window of 60 mΩ at
-  120 A is a seven-volt sag, which the collapse detector threw out before the
-  median ever saw it. The test proved nothing until the outlier was made real.
-- One found a threshold that could not be justified — a minimum sample count per
-  window that nothing could be made to fail without. It is gone. A number no
-  test can defend is a number somebody later tunes in the dark.
+337, up from 322. Fifteen new, and every expectation traces to a comment block
+in `esc_sensor.c` rather than to a plausible reading of one. Five mutations were
+run against the decoder's judgement calls and all five are caught — including
+the one that matters most, treating an unknown vendor's code as a fault.

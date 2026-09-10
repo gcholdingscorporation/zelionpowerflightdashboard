@@ -19,6 +19,7 @@ Loader.MODULES = {
   "alerts",
   "flighttime",
   "packhealth",
+  "escfault",
   "flightlog",
   "theme",
   "layout",
@@ -27,7 +28,7 @@ Loader.MODULES = {
 
 function Loader.load(root)
   root = root or "src"
-  local ZD = { VERSION = "1.4.0" }
+  local ZD = { VERSION = "1.5.0" }
   for _, name in ipairs(Loader.MODULES) do
     local path = root .. "/" .. name .. ".lua"
     local chunk, err = loadfile(path)

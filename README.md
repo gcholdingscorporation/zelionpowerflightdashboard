@@ -256,6 +256,32 @@ whole problem with finding out later.
 It is asked once and answered once, whichever way it goes. Plugging in the next
 pack asks again.
 
+## ESC faults
+
+The ESC usually knows before you do. Rotorflight publishes two sensors carrying
+that knowledge — `Esc#`, the vendor signature, and `EscF`, the ESC's own status
+word — and the widget reads them when they are present.
+
+**They are off by default.** Add `Esc#` and `EscF` to the CRSF telemetry list on
+the flight controller, and an `-- ESC --` row appears on the sensor map naming
+the vendor and what it is reporting. A decoded fault also sounds an alert.
+
+**Three vendors are decoded**: HobbyWing V5, Scorpion and OpenYGE. Those are the
+three whose bit layouts Rotorflight documents in `esc_sensor.c`; the firmware
+itself never interprets the status word, it passes each vendor's bytes through
+untouched.
+
+**Every other ESC shows its code and raises no alarm**, and that restraint is
+deliberate. Treating any non-zero status as a fault would appear to cover all
+sixteen vendors and is wrong on the first one you try: OpenYGE keeps the *motor
+state* in the low nibble, so a perfectly healthy ESC reports `0x0E` for the
+whole flight. A rule like that does not degrade gracefully on an unknown ESC —
+it invents a fault every time you fly.
+
+A vendor gets added when its layout can be read from somewhere authoritative,
+not when a plausible guess is available. If your ESC shows a code here, the row
+names the vendor whose documentation would be needed.
+
 ## Pack health
 
 A pack announces that it is finished long before its capacity does. What goes
