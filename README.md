@@ -282,6 +282,10 @@ A vendor gets added when its layout can be read from somewhere authoritative,
 not when a plausible guess is available. If your ESC shows a code here, the row
 names the vendor whose documentation would be needed.
 
+**On an undecoded ESC — OMPHOBBY included — the row appears and the alert never
+fires.** That is the feature working, not failing: the widget will tell you what
+your ESC said and will not pretend to know what it meant.
+
 ## Pack health
 
 A pack announces that it is finished long before its capacity does. What goes

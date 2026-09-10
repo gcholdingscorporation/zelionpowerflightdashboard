@@ -1,57 +1,28 @@
-The ESC usually knows before you do. This reads what it is already saying.
+One correction to 1.5.0, found by a question rather than by a test.
 
 ## Install
 
-Download `ZelionDash-1.5.0.zip`, unzip it, copy the `WIDGETS` folder onto the
-radio, and **delete `main.luac`** beside the `main.lua` you replaced.
+`ZelionDash-1.5.1.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-**Then switch the sensors on.** `Esc#` and `EscF` are not in Rotorflight's CRSF
-telemetry list by default, and without them this does nothing at all. Add both,
-rediscover sensors on the radio, and an `-- ESC --` row appears on the sensor
-map naming your ESC vendor and what it is reporting.
+## A pending restart is not a fault
 
-## What it does
+1.5.0 treated ESC signature `0xFF` as a critical fault and sounded the alarm on
+it. Reading the call sites says otherwise: that signature is set only by
+`paramEscNeedRestart()` in `esc_sensor.c`, which is reached from three places
+and **all three are parameter flows** — the HobbyWing V5 ping and reset
+responses, and the Tribunus UNC setup.
 
-Rotorflight publishes the vendor signature and the ESC's own status word. A
-decoded fault — desync, over-temperature, a motor connection the ESC does not
-like — now sounds an alert and names itself on the sensor map, rather than
-waiting for you to notice a temperature climbing.
+It means *"power-cycle the ESC to apply the settings you just changed"*. It
+happens on the bench with a configurator open, and it never happens in flight.
+Alarming on it would buzz at a pilot who is deliberately editing ESC settings —
+the exact cry-wolf failure the rest of this feature was designed to avoid.
 
-## What it deliberately does not do
+It now reads `restart to apply settings` and raises nothing.
 
-**The firmware never interprets that status word.** Every decoder in
-`esc_sensor.c` ends `escSensorData[0].status = tele->status1` — the bytes are
-handed on exactly as the ESC sent them. The meaning belongs to the vendor, and
-there are sixteen of them.
-
-**Three have their bit layouts documented in the firmware**: HobbyWing V5,
-Scorpion and OpenYGE. Those three are implemented from that documentation, bit
-by bit, with a test for every bit.
-
-**Every other ESC shows its code and raises nothing.** It is tempting to treat
-any non-zero status as a fault — one rule, all sixteen vendors, done. It is
-wrong on the first one you try. OpenYGE keeps the **motor state** in the low
-nibble, so a perfectly healthy ESC running normally reports `0x0E` for the
-entire flight. That rule would not degrade gracefully on an unknown ESC; it
-would invent a fault on every flight, and an alert that cries wolf is worse than
-no alert.
-
-OpenYGE also shows why the state cannot be skipped: the same warning bit is a
-*warning* or a *failure* depending on the motor state it arrives with, because
-the firmware documents each as "Fail if Motor Status ...".
-
-A vendor gets added when its layout can be read from somewhere authoritative,
-not when a plausible guess is available.
-
-## An ESC that sends no status is not reported as healthy
-
-BLHeli32, HobbyWing V4, Castle, BLHeli_S and AM32 have no status field at all,
-so `EscF` sits at zero for the whole flight. The row reads **no status sent**
-rather than **ok**, because "ok" would be a claim and this is a fact.
+The same reading corrects something said when 1.5.0 shipped: that signature is
+**not** vendor-independent, so it was never a path an OMPHOBBY ESC could reach.
 
 ## Tests
 
-337, up from 322. Fifteen new, and every expectation traces to a comment block
-in `esc_sensor.c` rather than to a plausible reading of one. Five mutations were
-run against the decoder's judgement calls and all five are caught — including
-the one that matters most, treating an unknown vendor's code as a fault.
+337, unchanged in count. The test that asserted `0xFF` was a critical fault now
+asserts the opposite, and says why in the place someone would look.
