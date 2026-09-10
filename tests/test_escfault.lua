@@ -148,10 +148,18 @@ H.test("a vendor that sends no status is not reported as healthy", function()
   H.truthy(string.find(text, "no status sent", 1, true), text)
 end)
 
-H.test("a restart is a fault on any vendor", function()
+H.test("a pending restart is not a fault", function()
+  -- 0xFF is set only by paramEscNeedRestart(), reached from three places in
+  -- esc_sensor.c and all three are parameter flows - the HobbyWing V5 ping and
+  -- reset responses and the Tribunus UNC setup. It means "power-cycle to apply
+  -- the settings you just changed", which happens on the bench with a
+  -- configurator open and never in the air. This shipped as a critical alarm
+  -- for one release; the call sites say otherwise.
   local ZD = esc(0xFF, 0)
-  H.eq(ZD.EscFault.read(), "RESTART")
-  H.truthy(ZD.EscFault.critical())
+  local text, sev = ZD.EscFault.read()
+  H.truthy(string.find(text, "restart", 1, true), text)
+  H.nilv(sev, "a settings prompt must not buzz at a pilot editing settings")
+  H.falsy(ZD.EscFault.critical())
 end)
 
 H.test("no ESC sensors at all is silence, not a fault", function()

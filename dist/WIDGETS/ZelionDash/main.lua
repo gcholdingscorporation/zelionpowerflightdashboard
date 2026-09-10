@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.5.0
+-- Version 1.5.1
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.5.0" }
+local ZD = { VERSION = "1.5.1" }
 
 -- ======== src/host.lua ========
 do
@@ -3423,6 +3423,8 @@ ZD.EscFault = EscFault
 
 -- Signatures, from esc_sensor.c. Naming an ESC we cannot decode is still worth
 -- doing: it tells the pilot which vendor's documentation would be needed.
+-- Not a vendor. 0xFF is what the firmware substitutes for the signature while
+-- an ESC is waiting to be power-cycled after a settings change.
 EscFault.VENDORS = {
   [0x00] = "none",      [0xC8] = "BLHeli32",  [0x9B] = "HobbyWing V4",
   [0x4B] = "Kontronik", [0xD0] = "OMPHOBBY",  [0xDD] = "ZTW",
@@ -3514,7 +3516,15 @@ function EscFault.read()
   sig = math.floor(sig)
   local vendor = EscFault.VENDORS[sig] or string.format("ESC 0x%02X", sig)
 
-  if sig == 0xFF then return "RESTART", "crit", vendor end
+  -- Not a fault, and it took reading the call sites to establish that. The
+  -- signature is set only by paramEscNeedRestart(), which is reached from
+  -- three places in esc_sensor.c and all three are PARAMETER flows - the
+  -- HobbyWing V5 ping and reset responses, and the Tribunus UNC setup. It
+  -- means "power-cycle the ESC to apply the settings you just changed", it
+  -- happens on the bench with a configurator open, and it never happens in
+  -- flight. Alarming on it would buzz at a pilot who is deliberately editing
+  -- ESC settings.
+  if sig == 0xFF then return "restart to apply settings", nil, vendor end
 
   local status, statusOk = State.get("escStatus")
   if not statusOk then return nil, nil, vendor end
