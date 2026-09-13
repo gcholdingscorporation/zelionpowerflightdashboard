@@ -56,6 +56,8 @@ local lastAttempt = -1e9
 -- cannot be immediately undone by a poll seeing a field RF Tool has not
 -- bothered to clear.
 local polledApi = nil
+-- Watched alongside the API version, not folded into it: see RF2.service.
+local polledCraft = nil
 
 local function rf2Table()
   local t = rawget(_G, "rf2")
@@ -144,6 +146,7 @@ local function handleStateChange(newState)
     -- current state rather than as a fresh connection to react to.
     local tbl = rf2Table()
     polledApi = tbl and tonumber(tbl.apiVersion) or nil
+    polledCraft = tbl and tbl.modelName or nil
     return
   end
 
@@ -203,14 +206,25 @@ function RF2.service(now)
   local rf2 = rf2Table()
   if not rf2 then return end
 
-  local api = tonumber(rf2.apiVersion)
-  if api == polledApi then return end
-  polledApi = api
+  -- The craft name is watched in its own right, not inferred from the API
+  -- version changing.
+  --
+  -- It used to be: the name was only re-read when apiVersion moved, which
+  -- happens to cover swapping helicopters because the link drops in between
+  -- and the version goes nil and back. Happens to. Two aircraft on the same
+  -- Rotorflight build, or a rename in the configurator, and the widget went on
+  -- reporting the previous helicopter's name - which matters most to exactly
+  -- the setup that needs it, one model slot flying several aircraft, where
+  -- this name is the ONLY thing identifying which one flew.
+  local api   = tonumber(rf2.apiVersion)
+  local craft = rf2.modelName
+  if api == polledApi and craft == polledCraft then return end
+  polledApi, polledCraft = api, craft
 
   if api ~= nil then
     RF2.apiVersion = api
     RF2.connected  = true
-    RF2.craftName  = rf2.modelName
+    RF2.craftName  = craft
     requestFlightStats()
   else
     -- RF Tool lost its handshake with the flight controller.
@@ -279,6 +293,7 @@ function RF2.reset()
   RF2.connected  = nil
   lastAttempt    = -1e9
   polledApi      = nil
+  polledCraft    = nil
   clearFcData()
 end
 

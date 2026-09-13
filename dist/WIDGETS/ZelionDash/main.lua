@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.7.0
+-- Version 1.8.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.7.0" }
+local ZD = { VERSION = "1.8.0" }
 
 -- ======== src/host.lua ========
 do
@@ -1048,7 +1048,12 @@ end
 -- The widget cannot know whether that header matches some OTHER model on the
 -- radio, since EdgeTX exposes only the current one. So this reports what did
 -- happen rather than guessing at what was meant.
-function Config.appliedFor(modelName)
+-- `craftName` is what the FLIGHT CONTROLLER calls the aircraft, as opposed to
+-- the name of the radio's model slot. A pilot who flies four helicopters from
+-- one EdgeTX model - deliberately, to keep the setup on the aircraft rather
+-- than on the transmitter - has exactly one model name and four craft names,
+-- so a section keyed on the model name can say nothing about which is flying.
+function Config.appliedFor(modelName, craftName)
   if not Config.loaded then Config.load() end
   -- Counted, not merely present. The parser opens an implicit [*] for any
   -- lines before the first header, so that table exists even in a file that
@@ -1065,6 +1070,9 @@ function Config.appliedFor(modelName)
     count = count + n
   end
   take(string.lower(trim(modelName or "")), tostring(modelName))
+  if craftName and trim(craftName) ~= trim(modelName or "") then
+    take(string.lower(trim(craftName)), tostring(craftName))
+  end
   take("*", "*")
 
   -- [battery] counts too. It is a reserved section rather than a role table, so
@@ -1082,19 +1090,23 @@ function Config.appliedFor(modelName)
   return names, count
 end
 
--- Overrides for one model: the [*] defaults with the model's own section
--- layered on top.
-function Config.overridesFor(modelName)
+-- Overrides for one aircraft: [*] first, the radio's model section over that,
+-- and the flight controller's craft name over both.
+--
+-- Craft last because it is the most specific thing known. A section named for
+-- the model slot covers every aircraft flown from it; one named for the craft
+-- covers exactly one helicopter, and that is the one whose word should win.
+function Config.overridesFor(modelName, craftName)
   if not Config.loaded then Config.load() end
   local out = {}
-  local shared = Config.sections["*"]
-  if shared then
-    for role, sensor in pairs(shared) do out[role] = sensor end
+  local function layer(key)
+    local sect = key and Config.sections[string.lower(trim(key))]
+    if not sect then return end
+    for role, sensor in pairs(sect) do out[role] = sensor end
   end
-  local specific = Config.sections[string.lower(trim(modelName or ""))]
-  if specific then
-    for role, sensor in pairs(specific) do out[role] = sensor end
-  end
+  layer("*")
+  layer(modelName)
+  layer(craftName)
   return out
 end
 
@@ -1543,9 +1555,10 @@ end
 
 -- Called when the active model changes: overrides differ per model, so every
 -- binding has to be reconsidered from scratch.
-function Sensors.reload(modelName)
+function Sensors.reload(modelName, craftName)
   Sensors.modelName = modelName or Host.modelName()
-  Sensors.overrides = Config.overridesFor(Sensors.modelName)
+  Sensors.craftName = craftName
+  Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName)
   lastProbe = -1e9
   Sensors.resolve(true)
 end
@@ -1698,6 +1711,8 @@ local lastAttempt = -1e9
 -- cannot be immediately undone by a poll seeing a field RF Tool has not
 -- bothered to clear.
 local polledApi = nil
+-- Watched alongside the API version, not folded into it: see RF2.service.
+local polledCraft = nil
 
 local function rf2Table()
   local t = rawget(_G, "rf2")
@@ -1786,6 +1801,7 @@ local function handleStateChange(newState)
     -- current state rather than as a fresh connection to react to.
     local tbl = rf2Table()
     polledApi = tbl and tonumber(tbl.apiVersion) or nil
+    polledCraft = tbl and tbl.modelName or nil
     return
   end
 
@@ -1845,14 +1861,25 @@ function RF2.service(now)
   local rf2 = rf2Table()
   if not rf2 then return end
 
-  local api = tonumber(rf2.apiVersion)
-  if api == polledApi then return end
-  polledApi = api
+  -- The craft name is watched in its own right, not inferred from the API
+  -- version changing.
+  --
+  -- It used to be: the name was only re-read when apiVersion moved, which
+  -- happens to cover swapping helicopters because the link drops in between
+  -- and the version goes nil and back. Happens to. Two aircraft on the same
+  -- Rotorflight build, or a rename in the configurator, and the widget went on
+  -- reporting the previous helicopter's name - which matters most to exactly
+  -- the setup that needs it, one model slot flying several aircraft, where
+  -- this name is the ONLY thing identifying which one flew.
+  local api   = tonumber(rf2.apiVersion)
+  local craft = rf2.modelName
+  if api == polledApi and craft == polledCraft then return end
+  polledApi, polledCraft = api, craft
 
   if api ~= nil then
     RF2.apiVersion = api
     RF2.connected  = true
-    RF2.craftName  = rf2.modelName
+    RF2.craftName  = craft
     requestFlightStats()
   else
     -- RF Tool lost its handshake with the flight controller.
@@ -1921,6 +1948,7 @@ function RF2.reset()
   RF2.connected  = nil
   lastAttempt    = -1e9
   polledApi      = nil
+  polledCraft    = nil
   clearFcData()
 end
 
@@ -1990,6 +2018,9 @@ State.sessionStarted  = false
 -- one number this is useless without, since sag is the whole point.
 State.startPackVoltage = nil
 State.startCellVoltage = nil
+
+-- The flight controller's name for the aircraft last seen, or nil.
+State.craft = nil
 
 -- Which pack the pilot says is fitted, or nil. Set from the widget option each
 -- service; nothing here derives or guesses it, because nothing can.
@@ -2192,11 +2223,28 @@ function State.resetSession()
   lastSecondTick = nil
 end
 
+-- What the flight controller calls this aircraft, when it says. This is the
+-- name that identifies a HELICOPTER; the EdgeTX model name identifies a slot
+-- in the radio, and the two are only the same thing when a pilot keeps one
+-- model per aircraft.
+function State.craftName()
+  local n = RF2.craftName
+  if type(n) ~= "string" or n == "" then return nil end
+  return n
+end
+
+-- The aircraft's name for anything that wants to identify it: the flight
+-- controller's, falling back to the radio's.
+function State.aircraft()
+  return State.craftName() or Host.modelName()
+end
+
 function State.reloadModel()
   local name = Host.modelName()
   State.modelName = name
+  State.craft     = State.craftName()
   State.values = {}
-  Sensors.reload(name)
+  Sensors.reload(name, State.craft)
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
@@ -2575,6 +2623,23 @@ function State.service(now, opts)
 
   Sensors.service(now)
   RF2.service(now)
+
+  -- A different helicopter, on the same model slot.
+  --
+  -- Watching only the EdgeTX model name is enough when each aircraft has its
+  -- own model, and catches nothing at all when they share one - which is a
+  -- deliberate way to set a radio up, keeping the configuration on the
+  -- aircraft instead of duplicating it across four model slots. The craft name
+  -- arrives from the flight controller a moment after the link comes up, so
+  -- this fires on the first service pass that has it, not at power-on.
+  --
+  -- Deliberately not when the name goes AWAY: a craft name is cleared on every
+  -- disconnect, including a brief one, and rebinding every sensor because the
+  -- link blinked would be worse than carrying the last known name.
+  local craft = State.craftName()
+  if craft and craft ~= State.craft then
+    State.reloadModel()
+  end
   State.linkConnected = RF2.connected
 
   -- Pack voltage first, so auto-detection has settled on an aircraft before
@@ -3701,7 +3766,7 @@ FlightLog.MELODY = {
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -3719,6 +3784,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell",
 }
 
 local function columnCount(header)
@@ -3917,10 +3985,13 @@ local function restedTail(settled)
   -- it, which is worse than an empty cell: this column exists to calibrate the
   -- reserve against a voltage, and a column that silently mixes the two units
   -- calibrates it wrong. Blank, never nearly - the same rule as the rest.
-  if not settled then return ",," end
+  local craft = "," .. safe(function()
+    return field(State.craft or State.craftName() or "")
+  end)
+  if not settled then return ",," .. craft end
   return "," ..
     safe(function() return num(State.restPackVoltage, "%.2f") end) .. "," ..
-    safe(function() return num(State.restCellVoltage, "%.2f") end)
+    safe(function() return num(State.restCellVoltage, "%.2f") end) .. craft
 end
 
 --------------------------------------------------------------------------
@@ -5718,7 +5789,7 @@ end
 -- apply to THIS model?
 local function configRow()
   if not Config.present then return nil end
-  local applied, count = Config.appliedFor(Host.modelName())
+  local applied, count = Config.appliedFor(Host.modelName(), State.craftName())
   return {
     label = "-- CONFIG --",
     sensor = (#applied > 0)
@@ -5769,7 +5840,7 @@ local function packRow()
   local pack = State.pack
   return {
     label = "-- PACK --",
-    sensor = pack and (Host.modelName() .. " pack " .. pack)
+    sensor = pack and (State.aircraft() .. " pack " .. pack)
                   or "not set - flights unnamed",
     value = pack and ("#" .. pack) or "unsaid",
     status = pack and "ok" or "unbound",
@@ -6010,7 +6081,7 @@ function Widget.update(widget, options)
   Dashboard.noLogo  = false
   Widget.degraded = nil
   pcall(Config.load)
-  pcall(Sensors.reload, Host.modelName())
+  pcall(Sensors.reload, Host.modelName(), State.craftName())
   pcall(Alerts.reset)
   built = nil
   ensureScreen(widget)

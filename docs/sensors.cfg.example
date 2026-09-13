@@ -6,9 +6,23 @@
 # recognise, or when auto-detection picked the wrong one.
 #
 # Format:   role = SensorName
-# Sections: [*] applies to every model
-#           [Model Name] applies to that model only, and wins over [*]
+# Sections: [*]           applies to everything
+#           [Model Name]  the EdgeTX model slot, and wins over [*]
+#           [Craft Name]  what the FLIGHT CONTROLLER calls the aircraft, from
+#                         RF Tool, and wins over both
 #           Section names are matched case-insensitively.
+#
+# The craft section is for a radio set up with ONE EdgeTX model flying several
+# helicopters, keeping the configuration on the aircraft instead of duplicating
+# it across model slots. Under that setup the model name is a constant and says
+# nothing about what is flying, so name the section after the helicopter as the
+# Rotorflight configurator knows it:
+#
+#   [ALZRC Devil 380]
+#   escTemperature = Tmp1
+#
+# It is applied the moment the flight controller reports a different craft, so
+# swapping helicopters on one model slot rebinds without touching the radio.
 #
 # A line naming a role that does not exist is reported on the diagnostics
 # screen rather than ignored, so typos are visible.
@@ -70,6 +84,9 @@
 #
 # [Goblin 700]
 # escTemperature = Tmp1
+#
+# Settings in [battery] are radio-wide and cannot be scoped to a model or a
+# craft. Everything above can be.
 
 
 # ---------------------------------------------------------------------------

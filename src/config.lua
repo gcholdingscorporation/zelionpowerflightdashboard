@@ -187,7 +187,12 @@ end
 -- The widget cannot know whether that header matches some OTHER model on the
 -- radio, since EdgeTX exposes only the current one. So this reports what did
 -- happen rather than guessing at what was meant.
-function Config.appliedFor(modelName)
+-- `craftName` is what the FLIGHT CONTROLLER calls the aircraft, as opposed to
+-- the name of the radio's model slot. A pilot who flies four helicopters from
+-- one EdgeTX model - deliberately, to keep the setup on the aircraft rather
+-- than on the transmitter - has exactly one model name and four craft names,
+-- so a section keyed on the model name can say nothing about which is flying.
+function Config.appliedFor(modelName, craftName)
   if not Config.loaded then Config.load() end
   -- Counted, not merely present. The parser opens an implicit [*] for any
   -- lines before the first header, so that table exists even in a file that
@@ -204,6 +209,9 @@ function Config.appliedFor(modelName)
     count = count + n
   end
   take(string.lower(trim(modelName or "")), tostring(modelName))
+  if craftName and trim(craftName) ~= trim(modelName or "") then
+    take(string.lower(trim(craftName)), tostring(craftName))
+  end
   take("*", "*")
 
   -- [battery] counts too. It is a reserved section rather than a role table, so
@@ -221,19 +229,23 @@ function Config.appliedFor(modelName)
   return names, count
 end
 
--- Overrides for one model: the [*] defaults with the model's own section
--- layered on top.
-function Config.overridesFor(modelName)
+-- Overrides for one aircraft: [*] first, the radio's model section over that,
+-- and the flight controller's craft name over both.
+--
+-- Craft last because it is the most specific thing known. A section named for
+-- the model slot covers every aircraft flown from it; one named for the craft
+-- covers exactly one helicopter, and that is the one whose word should win.
+function Config.overridesFor(modelName, craftName)
   if not Config.loaded then Config.load() end
   local out = {}
-  local shared = Config.sections["*"]
-  if shared then
-    for role, sensor in pairs(shared) do out[role] = sensor end
+  local function layer(key)
+    local sect = key and Config.sections[string.lower(trim(key))]
+    if not sect then return end
+    for role, sensor in pairs(sect) do out[role] = sensor end
   end
-  local specific = Config.sections[string.lower(trim(modelName or ""))]
-  if specific then
-    for role, sensor in pairs(specific) do out[role] = sensor end
-  end
+  layer("*")
+  layer(modelName)
+  layer(craftName)
   return out
 end
 
