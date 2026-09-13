@@ -56,10 +56,19 @@ jobs:
         run: lua5.4 tests/run.lua
 
       # The same shape as the file a pilot copies by hand: a WIDGETS folder to
-      # merge onto the card. Nothing else - sensors.cfg is per-radio and does
-      # not belong in a download everyone gets.
+      # merge onto the card.
+      #
+      # The documented example rides along, but as sensors.cfg.EXAMPLE and never
+      # as sensors.cfg. A live config is per-radio, and one inside the download
+      # would overwrite the pilot's own overrides every time they upgraded -
+      # silently, since merging a folder onto a card does not ask. Named this
+      # way it cannot collide with anything, and the reference is on the card at
+      # the field instead of in a repository nobody can reach from there.
       - name: Package
-        run: (cd dist && zip -r "../ZelionDash-$V.zip" WIDGETS) && ls -l "ZelionDash-$V.zip"
+        run: |
+          cp docs/sensors.cfg.example dist/WIDGETS/ZelionDash/sensors.cfg.example
+          (cd dist && zip -r "../ZelionDash-$V.zip" WIDGETS)
+          unzip -l "ZelionDash-$V.zip"
 
       # gh creates the tag at the commit being released. It refuses if the tag
       # already exists, which is the guard against publishing a version twice.

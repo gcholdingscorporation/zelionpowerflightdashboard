@@ -1,33 +1,31 @@
-One fix, found while checking the install instructions for 1.6.0 were true.
+The documented config reference now ships with the widget.
 
 ## Install
 
-`ZelionDash-1.6.1.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.6.2.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## A settings-only `sensors.cfg` read as one that did nothing
+## `sensors.cfg.example` is in the zip
 
-The `-- CONFIG --` row exists to catch a file that is silently doing nothing —
-a section header naming the aircraft rather than the EdgeTX model it flies on
-applies nothing at all and is otherwise completely invisible.
+The download now carries the full configuration reference into
+`/WIDGETS/ZelionDash/sensors.cfg.example` — every one of the 22 overridable
+sensor roles, the `[battery]` settings, and what each one is for.
 
-It counted only role-to-sensor sections. `[battery]` is a reserved settings
-section, so a file like
+To use it: copy it to `sensors.cfg` in the same folder and uncomment what you
+need. Everything in it is optional; sensor discovery is automatic and most
+setups never need a line of it.
 
-```ini
-[battery]
-reservePct = 40
-```
+It ships as `sensors.cfg.example` and **never** as `sensors.cfg`. A live config
+is per-radio, and one inside the download would overwrite a pilot's own
+overrides on every upgrade — silently, because merging a folder onto a card
+does not ask. Under this name it cannot collide with anything, and the
+reference is on the card at the field rather than in a repository nobody can
+reach from there.
 
-read **`no section for this model`, `0 overrides`, in amber** — while that
-reserve was in force and moving the flight timer.
+## No code changes
 
-That is the row's own failure mode pointed the wrong way: it told a pilot their
-config was doing nothing at the moment it started working. It now counts named
-settings too, and reads `[battery]  1 override`.
-
-The settings themselves were always applied correctly. Only the diagnostic was
-wrong — but a diagnostic nobody can trust is worse than none.
+Packaging and documentation only. The widget is byte-for-byte 1.6.1 apart from
+its version string.
 
 ## Tests
 
-341, up one. It fails without the fix.
+341, unchanged.
