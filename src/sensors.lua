@@ -202,9 +202,10 @@ end
 
 -- Called when the active model changes: overrides differ per model, so every
 -- binding has to be reconsidered from scratch.
-function Sensors.reload(modelName)
+function Sensors.reload(modelName, craftName)
   Sensors.modelName = modelName or Host.modelName()
-  Sensors.overrides = Config.overridesFor(Sensors.modelName)
+  Sensors.craftName = craftName
+  Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName)
   lastProbe = -1e9
   Sensors.resolve(true)
 end

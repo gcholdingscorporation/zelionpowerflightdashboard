@@ -1,57 +1,65 @@
-The log now records what the pack settles to after a flight.
+The helicopter identifies itself, so one model slot can fly all of them.
 
 ## Install
 
-`ZelionDash-1.7.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.8.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## `end_pack` and `end_cell`
+## One EdgeTX model, several helicopters
 
-Two new columns: the **rested** voltages after a flight.
+A radio can be set up with one model per aircraft, or with **one model** and the
+configuration kept on the flight controllers — deliberately, so that several
+model slots cannot drift apart from each other. This release is for the second
+kind, which everything here previously assumed away.
 
-Nothing in the log had them. `start_pack` and `start_cell` are the resting
-voltages *before* a flight, `min_cell` is under load, and the voltage a pilot
-actually reads off the screen after landing — the one that says whether the
-timer is ending where it should — existed nowhere on the card. Calibrating the
-reserve against a voltage meant transcribing numbers off photographs.
+Under that setup the EdgeTX model name is a constant. It says nothing about
+which helicopter flew, and every part of this widget that identified an
+aircraft was reading it.
 
-## The row now waits 45 seconds
+RF Tool already knew better. The flight controller reports its own craft name,
+and the widget was already displaying it in the sensor map footer — it just was
+not used for anything that mattered.
 
-A pack straight off a hard flight reads low and climbs for a minute, so a
-voltage read at the landing is not a rested voltage. The record is formatted
-when the rotor stops and held until the pack has recovered.
+### `craft` column
 
-**This is the one place this widget trades reliability for data.** Before, a
-flight was on the card the instant it ended and could not be lost. Now a radio
-switched off inside that window loses it.
+New log column: what the flight controller calls the aircraft, blank when there
+is no RF Tool or no link.
 
-Everything else is handled. Telemetry dropping, the pack being unplugged, the
-next flight starting — each writes the row early rather than risking it. Only a
-power switch cannot be caught.
+`model` keeps its meaning — the radio's model slot. Both are written. That
+column has meant one thing for every row already on the card, and quietly
+redefining it is how a log stops being comparable with itself.
 
-**So a three-note chime says the row is on the card.** That is the answer to
-the window: it is the sound of the flight being saved, and the moment it is
-safe to switch off. The sensor map reads `HOLDING a landing for its rested
-voltage` until then.
+A pack's identity is now `craft` + `pack`, falling back to `model` + `pack`. On
+a one-model radio, number every physical pack uniquely across the fleet rather
+than restarting at 1 per aircraft.
 
-The tone is synthesised, not played from a file. Which system sounds exist
-depends on the firmware build and the installed language pack, and a
-confirmation that is silent on somebody's radio is worse than none — the same
-reasoning that has always kept `.wav` files out of the alerts. It is a rising
-major arpeggio, deliberately unlike the alerts, which are a haptic buzz and a
-spoken number.
+### `sensors.cfg` sections can name the craft
 
-## Blank rather than nearly
+```ini
+[ALZRC Devil 380]
+escTemperature = Tmp1
+```
 
-When a row goes early the flight is still written in full, and those two
-columns are left **empty**. A voltage read seconds after a landing sits several
-hundredths below a settled one and is indistinguishable from it in the column —
-and this column exists to calibrate a reserve against a voltage. Blank, never
-nearly.
+Layered `[*]` → `[model slot]` → `[craft]`, most specific last. The craft
+section wins where both name the same role, because it describes exactly one
+helicopter and the slot describes every aircraft flown from it.
 
-The chime stays silent if the card refuses the write. A confirmation for a lost
-flight would be worse than no confirmation.
+Applied the moment the flight controller reports a different craft, so swapping
+helicopters rebinds without touching the radio. The `-- PACK --` row names the
+craft too.
+
+## A bug in the path this depends on
+
+RF Tool's craft name was only re-read when the **API version** changed. That
+happens to cover swapping helicopters, because the link drops in between and
+the version goes away and comes back. Happens to.
+
+Two aircraft on the same Rotorflight build, or a rename in the configurator,
+and the widget went on reporting the previous helicopter's name — which matters
+most to exactly the setup that needs it, where that name is the only thing
+identifying what flew. The name is now watched in its own right.
 
 ## Tests
 
-348, up seven. Verified by mutation: removing the wait, never flushing early,
-and chiming regardless of the write each fail tests that name what broke.
+356, up eight. Four mutations verified: not re-reading the craft name, not
+reloading when it changes, ignoring craft sections, and layering the craft
+before the slot instead of after.

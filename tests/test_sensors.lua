@@ -279,4 +279,77 @@ H.test("report covers every role and flags the important ones", function()
   H.eq(byRole.governor.status, "unbound")
 end)
 
+
+H.group("sensors: one model slot, several helicopters")
+
+-- A radio set up with ONE EdgeTX model and the configuration kept on the
+-- flight controllers - deliberately, so four model slots cannot drift apart -
+-- has a model name that is a constant and says nothing about what is flying.
+-- The flight controller's craft name is what identifies the aircraft, so it is
+-- what a sensors.cfg section has to be allowed to name.
+
+local function withCraft(craft, cfg)
+  return function()
+    Mock.state.modelName = ">Rotorflight"
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.addSensor("Tesc", 11, 71)
+    Mock.addSensor("Thr",  nil, 62)
+    Mock.installRf2({ apiVersion = 12.09, modelName = craft })
+    if cfg then Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", cfg) end
+  end
+end
+
+local CFG = "[Omphobby M7R]\nthrottle = off\n" ..
+            "[ALZRC Devil 380]\nescTemperature = off\n"
+
+H.test("a section named for the craft applies", function()
+  local ZD = fresh(withCraft("Omphobby M7R", CFG))
+  H.eq(ZD.Sensors.overrides.throttle, "off",
+       "the craft's own section never reached the resolver")
+end)
+
+H.test("and the other helicopter's section does not", function()
+  local ZD = fresh(withCraft("Omphobby M7R", CFG))
+  H.nilv(ZD.Sensors.overrides.escTemperature,
+         "applied a section belonging to a different aircraft")
+end)
+
+H.test("swapping helicopter re-applies the new one's overrides", function()
+  -- The model slot never changes, so nothing about the radio signals the swap.
+  -- Without watching the craft name, the widget flies the second helicopter
+  -- with the first one's sensor configuration - silently, and for as long as
+  -- the radio stays on.
+  local ZD = fresh(withCraft("Omphobby M7R", CFG))
+  H.eq(ZD.Sensors.overrides.throttle, "off")
+
+  _G.rf2.modelName = "ALZRC Devil 380"
+  for _ = 1, 40 do
+    Mock.advanceSeconds(0.5)
+    ZD.State.service(Mock.state.time)
+  end
+
+  H.eq(ZD.State.craft, "ALZRC Devil 380", "the swap was never noticed")
+  H.eq(ZD.Sensors.overrides.escTemperature, "off",
+       "still configured for the previous helicopter")
+  H.nilv(ZD.Sensors.overrides.throttle,
+         "kept the previous helicopter's override")
+end)
+
+H.test("the model slot's own section still applies under a craft", function()
+  -- Craft sections are more specific, not a replacement: a setting that is
+  -- true of every aircraft on this radio still belongs on the slot.
+  local ZD = fresh(withCraft("Omphobby M7R",
+    "[>Rotorflight]\nthrottle = off\n[Omphobby M7R]\nescTemperature = off\n"))
+  H.eq(ZD.Sensors.overrides.throttle, "off", "the slot section was ignored")
+  H.eq(ZD.Sensors.overrides.escTemperature, "off")
+end)
+
+H.test("the craft wins where both name the same role", function()
+  local ZD = fresh(withCraft("Omphobby M7R",
+    "[>Rotorflight]\nescTemperature = Tesc\n[Omphobby M7R]\nescTemperature = off\n"))
+  H.eq(ZD.Sensors.overrides.escTemperature, "off",
+       "the slot overruled the aircraft it was flying")
+end)
+
+
 end

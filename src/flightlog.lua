@@ -82,7 +82,7 @@ FlightLog.MELODY = {
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -100,6 +100,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell",
 }
 
 local function columnCount(header)
@@ -298,10 +301,13 @@ local function restedTail(settled)
   -- it, which is worse than an empty cell: this column exists to calibrate the
   -- reserve against a voltage, and a column that silently mixes the two units
   -- calibrates it wrong. Blank, never nearly - the same rule as the rest.
-  if not settled then return ",," end
+  local craft = "," .. safe(function()
+    return field(State.craft or State.craftName() or "")
+  end)
+  if not settled then return ",," .. craft end
   return "," ..
     safe(function() return num(State.restPackVoltage, "%.2f") end) .. "," ..
-    safe(function() return num(State.restCellVoltage, "%.2f") end)
+    safe(function() return num(State.restCellVoltage, "%.2f") end) .. craft
 end
 
 --------------------------------------------------------------------------

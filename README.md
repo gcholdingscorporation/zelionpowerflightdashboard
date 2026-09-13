@@ -368,9 +368,29 @@ announces a countdown by watching thresholds, so a value drifting back up over
 the flight ends:
 
 ```
-date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell
-2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2,45.40,3.78
+date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft
+2026-08-05,14:14:09,>Rotorflight,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2,45.40,3.78,GOBLIN 700
 ```
+
+### `model` is the radio; `craft` is the helicopter
+
+`model` is the EdgeTX model slot. `craft` is what the **flight controller**
+calls the aircraft, read from RF Tool, and it is blank when there is no RF Tool
+or no link.
+
+They are the same thing only on a radio that keeps one model per aircraft. A
+radio set up with one model and the configuration held on the flight
+controllers — deliberately, so that several model slots cannot drift apart —
+has a constant `model` and a `craft` that changes with whatever is powered up.
+There, `craft` is the only column that says which helicopter flew.
+
+Both are recorded. `model` has meant "the radio's model slot" for every row
+already written, and quietly redefining a column is how a log stops being
+comparable with itself.
+
+A pack's identity is `craft` (or `model`, where there is no craft) plus `pack`.
+So on a one-model radio, give every physical pack a number that is unique
+across the whole fleet rather than restarting at 1 per aircraft.
 
 ### The row is written 45 seconds after you land
 

@@ -54,6 +54,9 @@ State.sessionStarted  = false
 State.startPackVoltage = nil
 State.startCellVoltage = nil
 
+-- The flight controller's name for the aircraft last seen, or nil.
+State.craft = nil
+
 -- Which pack the pilot says is fitted, or nil. Set from the widget option each
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
@@ -255,11 +258,28 @@ function State.resetSession()
   lastSecondTick = nil
 end
 
+-- What the flight controller calls this aircraft, when it says. This is the
+-- name that identifies a HELICOPTER; the EdgeTX model name identifies a slot
+-- in the radio, and the two are only the same thing when a pilot keeps one
+-- model per aircraft.
+function State.craftName()
+  local n = RF2.craftName
+  if type(n) ~= "string" or n == "" then return nil end
+  return n
+end
+
+-- The aircraft's name for anything that wants to identify it: the flight
+-- controller's, falling back to the radio's.
+function State.aircraft()
+  return State.craftName() or Host.modelName()
+end
+
 function State.reloadModel()
   local name = Host.modelName()
   State.modelName = name
+  State.craft     = State.craftName()
   State.values = {}
-  Sensors.reload(name)
+  Sensors.reload(name, State.craft)
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
@@ -638,6 +658,23 @@ function State.service(now, opts)
 
   Sensors.service(now)
   RF2.service(now)
+
+  -- A different helicopter, on the same model slot.
+  --
+  -- Watching only the EdgeTX model name is enough when each aircraft has its
+  -- own model, and catches nothing at all when they share one - which is a
+  -- deliberate way to set a radio up, keeping the configuration on the
+  -- aircraft instead of duplicating it across four model slots. The craft name
+  -- arrives from the flight controller a moment after the link comes up, so
+  -- this fires on the first service pass that has it, not at power-on.
+  --
+  -- Deliberately not when the name goes AWAY: a craft name is cleared on every
+  -- disconnect, including a brief one, and rebinding every sensor because the
+  -- link blinked would be worse than carrying the last known name.
+  local craft = State.craftName()
+  if craft and craft ~= State.craft then
+    State.reloadModel()
+  end
   State.linkConnected = RF2.connected
 
   -- Pack voltage first, so auto-detection has settled on an aircraft before

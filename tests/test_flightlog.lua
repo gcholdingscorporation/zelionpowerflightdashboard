@@ -615,4 +615,62 @@ H.test("a flight too short to log is not held either", function()
 end)
 
 
+
+H.group("flightlog: one model slot, four helicopters")
+
+-- A radio can be set up with one EdgeTX model per aircraft, or with ONE model
+-- and the configuration kept on the flight controllers - which is a deliberate
+-- choice, not an oversight: it stops four model slots drifting apart. Under
+-- that setup the EdgeTX model name is a constant and says nothing about which
+-- helicopter flew, so the flight controller's craft name is what identifies
+-- the aircraft.
+
+-- fresh() calls Mock.reset(), so the model name has to be set inside the setup
+-- rather than around it.
+local function withFc(craft, slot)
+  return function()
+    loaded()
+    Mock.state.modelName = slot or ">Rotorflight"
+    Mock.installRf2({ apiVersion = 12.09, modelName = craft })
+  end
+end
+
+H.test("the craft name is logged beside the model name, not instead of it", function()
+  local ZD = fresh(withFc("Omphobby M7R"))
+  flight(ZD, 40)
+  local rec = lines()[2]
+  H.eq(column(ZD, rec, "craft"), "Omphobby M7R", "row: " .. rec)
+  -- Both. The model column has meant "the radio's model slot" for every row
+  -- already on the card, and quietly redefining a column is how a log stops
+  -- being comparable with itself.
+  H.eq(column(ZD, rec, "model"), ">Rotorflight")
+end)
+
+H.test("two helicopters on one model slot are told apart", function()
+  local ZD = fresh(withFc("Omphobby M7R"))
+  flight(ZD, 40)
+
+  -- Land, power down, plug in the other helicopter. The model slot never
+  -- changed; only the flight controller did. RF Tool re-reads on its own
+  -- retry, so the new name arrives a few seconds after the link does - which
+  -- is why this is watched every service pass and not only at power-on.
+  _G.rf2.modelName = "ALZRC Devil 380"
+  run(ZD, 12)
+  flight(ZD, 40)
+
+  local a, b = lines()[2], lines()[3]
+  H.eq(column(ZD, a, "craft"), "Omphobby M7R")
+  H.eq(column(ZD, b, "craft"), "ALZRC Devil 380",
+       "both flights logged as the same aircraft: " .. b)
+end)
+
+H.test("a craft with no flight controller name still logs the flight", function()
+  local ZD = fresh(loaded)                  -- no RF Tool at all
+  flight(ZD, 40)
+  local rec = lines()[2]
+  H.eq(column(ZD, rec, "craft"), "", "invented a craft name from nowhere")
+  H.eq(column(ZD, rec, "model"), "GOBLIN 700", "and the slot name carries it")
+end)
+
+
 end
