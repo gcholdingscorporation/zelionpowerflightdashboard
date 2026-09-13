@@ -50,7 +50,7 @@ FlightLog.MAX_RECORDS = 200
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -62,6 +62,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm",
 }
 
 local function columnCount(header)
@@ -239,6 +242,10 @@ function FlightLog.record()
     -- is not: those are the extremes of the whole flight and need not have
     -- happened together. See packhealth.lua.
     safe(function() return num(ZD.PackHealth.milliohms, "%.1f") end),
+    -- The pilot's half of a pack's identity; the model column is the other
+    -- half. Blank when unset, never 0: a pack numbered zero and a pack nobody
+    -- named are different things, and only one of them should group.
+    safe(function() return num(State.pack, "%d") end),
   }, ",")
 end
 

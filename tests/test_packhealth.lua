@@ -265,11 +265,28 @@ H.test("and reaches the flight log as a number", function()
   local ZD = fresh()
   fly(ZD, 60, 3.5, { base = 120, swing = 90 })
   land(ZD, 10)
+  -- Found by name. Reading the last field worked until a column was appended
+  -- after it, and a test that breaks when an unrelated column is added is a
+  -- test people learn to edit rather than believe.
+  local function column(ZD_, row, want)
+    local want_at, k = nil, 0
+    for name in string.gmatch(ZD_.FlightLog.HEADER, "[^,]+") do
+      k = k + 1
+      if name == want then want_at = k end
+    end
+    H.truthy(want_at ~= nil, "no " .. want .. " column in the header")
+    k = 0
+    for field in string.gmatch(row .. ",", "([^,]*),") do
+      k = k + 1
+      if k == want_at then return field end
+    end
+    return nil
+  end
+
   local row = ZD.FlightLog.record()
-  local last = string.match(row, "([^,]*)$")
-  H.truthy(last ~= "" and last ~= nil,
-           "ir_mohm was blank in the row: " .. row)
-  H.near(tonumber(last), 3.5, 0.2, "logged " .. tostring(last))
+  local ir = column(ZD, row, "ir_mohm")
+  H.truthy(ir ~= nil and ir ~= "", "ir_mohm was blank in the row: " .. row)
+  H.near(tonumber(ir), 3.5, 0.2, "logged " .. tostring(ir))
 end)
 
 H.test("each flight measures its own pack", function()

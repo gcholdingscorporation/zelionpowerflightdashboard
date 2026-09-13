@@ -217,9 +217,15 @@ under load from alarming on every rotor beat.
 They sound while another screen is in front, and the **Hold Switch** silences
 them.
 
-**Test Alert** sounds one on demand — that is the pre-flight check that the
-volume is up and the haptic is on. It speaks the live cell voltage, so it also
-confirms the right sensor is bound.
+**ENTER on the sensor map** sounds one on demand — that is the pre-flight
+check that the volume is up and the haptic is on. It speaks the live cell
+voltage, so it also confirms the right sensor is bound.
+
+This used to be a widget option called Test Alert. EdgeTX 2.11 allows ten
+options per widget and this one wanted eleven, so the least valuable slot paid
+for the pack number. A press is the better home in any case: a toggle that
+fires on its rising edge is a control whose position means nothing, and it
+took two bugs to make it behave like a button.
 
 Thresholds are configurable; see `docs/sensors.cfg.example`.
 
@@ -354,11 +360,20 @@ announces a countdown by watching thresholds, so a value drifting back up over
 the flight ends:
 
 ```
-date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq
-2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88
+date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack
+2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2
 ```
 
-The last four are collected rather than displayed. `start_pack` and
+`ir_mohm` is the pack's measured internal resistance — see **Pack resistance**
+below. `pack` is which pack was fitted, from the **Pack** widget option, and it
+is blank when you have not said. Together with `model` it is a pack's identity:
+pack 2 on the M7R and pack 2 on the micro are two different packs, and nothing
+in telemetry can tell any of them apart. Five packs were flown on one afternoon
+and the log could not attribute a single flight, which makes a resistance trend
+an average over whichever packs happened to fly that day.
+
+`start_pack`, `start_cell`, `avg_amps` and `min_lq` are collected rather than
+displayed. `start_pack` and
 `start_cell` are the **resting** voltages, sampled while disarmed and frozen at
 arm — not read at the moment of arming, because with rotor-based arming the
 head is already turning by then and a voltage under load is the one thing

@@ -440,22 +440,36 @@ H.test("alerts sound while another screen is in front", function()
   H.truthy(#Mock.played > 0, "still audible off-screen")
 end)
 
-H.test("the test option sounds one alert per toggle, not a siren", function()
-  local def, widget = boot(800, 480, nil, flying)
+H.test("ENTER on the sensor map sounds one alert, and only one", function()
+  -- This was an option, edge-triggered on being switched from off to on, and
+  -- it took two bugs to make a toggle behave like a button. It is a button now:
+  -- EdgeTX allows ten widget options and this widget wanted eleven, so the
+  -- least valuable slot paid for the pack number.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
   Mock.played = {}
 
-  def.update(widget, { TestAlert = 1 })
-  local afterOn = #Mock.played
-  H.truthy(afterOn > 0, "switching it on sounds one")
+  def.refresh(widget, EVT_VIRTUAL_ENTER, nil)
+  local afterPress = #Mock.played
+  H.truthy(afterPress > 0, "the press sounded nothing")
 
-  -- update() firing again with the option unchanged must not re-sound it.
-  def.update(widget, { TestAlert = 1 })
-  H.eq(#Mock.played, afterOn, "and only one")
+  -- Every frame after it is an ordinary refresh, not a held key.
+  for _ = 1, 20 do def.refresh(widget, 0, nil) end
+  H.eq(#Mock.played, afterPress, "one press, one alert")
 
-  def.update(widget, { TestAlert = 0 })
-  def.update(widget, { TestAlert = 1 })
-  H.truthy(#Mock.played > afterOn, "off and on again sounds another")
+  def.refresh(widget, EVT_VIRTUAL_ENTER, nil)
+  H.truthy(#Mock.played > afterPress, "a second press sounds another")
+end)
+
+H.test("and nowhere else - ENTER on the dashboard is not a control", function()
+  -- The sensor map is a page you go to on purpose. The dashboard is what is in
+  -- front of a pilot in the air, and a key that buzzes there is a key that gets
+  -- pressed by accident with the heli flying.
+  local def, widget = boot(800, 480, nil, flying)
+  def.refresh(widget, 0, nil)
+  Mock.played = {}
+  def.refresh(widget, EVT_VIRTUAL_ENTER, nil)
+  H.eq(#Mock.played, 0, "the dashboard answered a key press")
 end)
 
 H.test("the option switches them off", function()

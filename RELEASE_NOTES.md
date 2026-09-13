@@ -1,45 +1,55 @@
-One bug, found by the flight log itself.
+A pack now has a name, and the alert self-test moved to a key.
 
 ## Install
 
-`ZelionDash-1.5.2.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.6.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## `ir_mohm` was never written
+**Check the Pack option after upgrading.** It occupies the slot Test Alert used
+to, so a radio coming from 1.5.x will read its old Test Alert setting as pack 0
+or pack 1. Both are harmless, and the sensor map shows which.
 
-1.4.0 added a measured pack internal resistance and a column to put it in. A
-47-flight log, covering every build since, has that column **blank on every
-single row** — including flights where the measurement certainly succeeded.
+## Which pack was that
 
-The measurement was fine. The handover was not.
+Five packs were flown on one afternoon and the log could not tell them apart.
+Nothing about a pack reaches telemetry — not its capacity, not its C rating,
+not its age — so a resistance trend was an average over whichever packs
+happened to fly that day.
 
-A flight's row is written *after* the rotor stops. `State` knows this and
-clears its extremes on the **arm** edge, so a landed flight still has its
-minimum cell and peak current to report. `PackHealth` cleared itself on the
-**disarm** edge instead — and `Widget.refresh` services `PackHealth` before
-`FlightLog`, on the very frame that latches the disarm:
+The new **Pack** widget option is the one number only the pilot can supply. It
+is written to the log as a `pack` column, and together with the `model` column
+it is a pack's identity: pack 2 on the M7R and pack 2 on the micro are two
+different packs. Unset logs blank, never 0 — a pack numbered zero and a pack
+nobody named are different things and should not group.
 
-```
-State.service    -> armed goes false, disarmPending = true
-PackHealth.service -> not armed: reset(), milliohms = nil
-FlightLog.service  -> writes the row, reads nil
-```
+The sensor map gained a `-- PACK --` row, which is both the readout and the
+reminder: an unset pack is not an error, but every flight logged without one is
+a flight that cannot be attributed afterwards.
 
-So the column could never be filled, on any flight, on any aircraft. The reset
-now happens when a flight starts, matching `State`.
+## Test Alert became a key press
 
-## The test that asserted the bug
+EdgeTX 2.11 allows ten widget options per widget. This one already had ten.
 
-There was a test here named `each flight measures its own pack`, and it
-required `milliohms` to be nil once the rotor stopped. That is precisely the
-condition that guarantees an empty column — the bug was pinned in place by a
-test that agreed with it.
+The least valuable slot paid for the pack number: the alert self-test is now
+**ENTER on the sensor map**, and a new `-- ALERTS --` row says so — a control
+nobody can discover is not a control. It still sounds one alert and speaks the
+live cell voltage, so it still proves the volume is up, the haptic is on and
+the right sensor is bound.
 
-It now checks the two things that actually matter, separately: the figure
-**survives the disarm that writes it**, and the **next** flight starts from
-nothing rather than inheriting the last one's answer. A third test formats a
-real record and asserts the last field parses as a number near the synthetic
-pack's known resistance — the assertion that would have caught this in 1.4.0.
+A press is the better home regardless. A toggle that fires on its rising edge
+is a control whose position means nothing, and it took two bugs to make that
+one behave like a button — including the phantom "3.40 volts" from a heli that
+was not even powered. ENTER on the dashboard does nothing, deliberately: that
+is the screen in front of a pilot in the air.
+
+The option was replaced **in place** rather than removed. EdgeTX stores widget
+options positionally, so appending after a removal would have shifted Log
+Flights up a slot and read its setting out of the one beside it.
 
 ## Tests
 
-339, up two.
+340, up one. The two tests that drove the old option now drive the key, and a
+new one checks the dashboard ignores it. The test that reads `ir_mohm` out of a
+formatted record now finds the column by name — it was reading the last field,
+which broke the moment a column was appended after it, and a test that fails
+when an unrelated column is added is a test people learn to edit rather than
+believe.
