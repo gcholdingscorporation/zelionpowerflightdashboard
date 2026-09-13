@@ -853,7 +853,10 @@ H.test("a failed write says so on the sensor map", function()
   Mock.setSensor("Hspd", 1850)
   for _ = 1, 300 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
   Mock.setSensor("Hspd", 0)
-  for _ = 1, 100 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+  -- Long enough to clear the settle window: the row is formatted at the landing
+  -- but held back for its rested voltage, so the card is not touched - and the
+  -- write cannot have failed - until that window is out.
+  for _ = 1, 600 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
   Mock.state.readOnly = false
   H.truthy(string.find(Mock.lvglText(), "FAILED", 1, true),
            "a card that will not take the write must not fail quietly")

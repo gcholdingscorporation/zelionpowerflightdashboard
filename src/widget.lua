@@ -347,6 +347,10 @@ end
 -- file, and whether the last write landed.
 local function flightLogRows()
   local where, verdict = FlightLog.status()
+  if FlightLog.waiting() then
+    where = "HOLDING a landing for its rested voltage"
+    verdict = "wait for beep"
+  end
   local logRow = {
     label = "-- FLIGHT LOG --",
     sensor = where,
@@ -572,7 +576,7 @@ function Widget.refresh(widget, event, touchState)
   pcall(FlightTime.service, now)
   pcall(PackHealth.service, now)
   pcall(FlightTime.driveTimer)
-  pcall(FlightLog.service)
+  pcall(FlightLog.service, now)
   ensureScreen(widget)
 
   if Widget.showSensors then
@@ -608,7 +612,7 @@ function Widget.background(widget)
   pcall(FlightTime.driveTimer)
   -- Logged from here too: a flight can end while the pilot is on another
   -- screen, and an unwritten flight is lost the moment the model changes.
-  pcall(FlightLog.service)
+  pcall(FlightLog.service, now)
 end
 
 Widget.options = {
