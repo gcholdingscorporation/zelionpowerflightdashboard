@@ -70,6 +70,9 @@ end
 
 PackHealth.reset = reset
 
+-- Which side of the arm edge the last service saw.
+local wasArmed = false
+
 -- Least squares through the window. Returns milliohms per cell, or nil when
 -- the window cannot support a slope.
 local function solve()
@@ -128,9 +131,21 @@ end
 function PackHealth.service(now)
   now = now or Host.now()
 
+  -- Cleared when a flight STARTS, not when one ends.
+  --
+  -- State resets its extremes on the arm edge for a reason: the row is written
+  -- after the rotor stops, so anything cleared at disarm is cleared before the
+  -- logging layer can read it. This reset was on the wrong edge, and since
+  -- PackHealth.service runs ahead of FlightLog.service on the very frame that
+  -- latches the disarm, the figure was always nil by the time the record was
+  -- formatted. Forty-seven flights, ir_mohm blank on every one.
   if not State.armed then
-    reset()
+    wasArmed = false
     return
+  end
+  if not wasArmed then
+    wasArmed = true
+    reset()
   end
   -- Deliberately parked with the model powered. Same reasoning as the extremes.
   if State.holdActive then return end
