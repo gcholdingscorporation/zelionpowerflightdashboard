@@ -372,7 +372,7 @@ date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,en
 2026-08-05,14:14:09,>Rotorflight,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2,45.40,3.78,GOBLIN 700
 ```
 
-### `model` is the radio; `craft` is the helicopter
+### `model` is the radio; `craft` is the helicopter; `cells` tells the rest apart
 
 `model` is the EdgeTX model slot. `craft` is what the **flight controller**
 calls the aircraft, read from RF Tool, and it is blank when there is no RF Tool
@@ -388,7 +388,26 @@ Both are recorded. `model` has meant "the radio's model slot" for every row
 already written, and quietly redefining a column is how a log stops being
 comparable with itself.
 
-A pack's identity is `craft` (or `model`, where there is no craft) plus `pack`.
+Not every flight controller publishes a name. Rotorflight does; OMPHOBBY's
+OSF03 has no provision for one, so those aircraft arrive anonymous — and on one
+model slot, anonymous means indistinguishable. What they do bring is a **cell
+count**, logged as `cells`, and a fleet whose unnamed aircraft differ in cells
+is separable by it. Name them in `sensors.cfg`:
+
+```ini
+[cells:3]
+craftName = Omphobby M2 V3
+
+[cells:2]
+craftName = Omphobby M1 V3
+```
+
+That name goes into `craft` exactly as a reported one would. Where both exist
+the **reported name wins** — a name is a fact and a cell count is an inference,
+which is what separates two aircraft that share a cell count but report
+different names.
+
+A pack's identity is `craft` (or `model`, where nothing names it) plus `pack`.
 So on a one-model radio, give every physical pack a number that is unique
 across the whole fleet rather than restarting at 1 per aircraft.
 

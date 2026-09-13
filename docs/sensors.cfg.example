@@ -8,8 +8,10 @@
 # Format:   role = SensorName
 # Sections: [*]           applies to everything
 #           [Model Name]  the EdgeTX model slot, and wins over [*]
+#           [cells:N]     an aircraft identified only by its cell count, for a
+#                         flight controller that publishes no name
 #           [Craft Name]  what the FLIGHT CONTROLLER calls the aircraft, from
-#                         RF Tool, and wins over both
+#                         RF Tool, and wins over all of them
 #           Section names are matched case-insensitively.
 #
 # The craft section is for a radio set up with ONE EdgeTX model flying several
@@ -23,6 +25,26 @@
 #
 # It is applied the moment the flight controller reports a different craft, so
 # swapping helicopters on one model slot rebinds without touching the radio.
+#
+# WHEN THE FLIGHT CONTROLLER WILL NOT SAY. Rotorflight reports a craft name.
+# OMPHOBBY's OSF03 has no provision for one, so those aircraft arrive anonymous
+# - and on one model slot, anonymous means indistinguishable. What they do
+# bring is a cell count, and a fleet whose unnamed aircraft differ in cells is
+# separable by it:
+#
+#   [cells:3]
+#   craftName = Omphobby M2 V3
+#
+#   [cells:2]
+#   craftName = Omphobby M1 V3
+#
+# craftName is the one key here that is not a role binding: it is what to call
+# the aircraft, and it is written to the flight log. A cells section takes role
+# overrides like any other.
+#
+# A reported craft name always beats a cell count, because a name is a fact and
+# a count is an inference - which is what separates two aircraft that share a
+# cell count but report different names.
 #
 # A line naming a role that does not exist is reported on the diagnostics
 # screen rather than ignored, so typos are visible.

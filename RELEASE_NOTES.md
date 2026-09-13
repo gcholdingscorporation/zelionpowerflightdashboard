@@ -1,65 +1,54 @@
-The helicopter identifies itself, so one model slot can fly all of them.
+The aircraft that cannot name themselves are now identified by their cell count.
 
 ## Install
 
-`ZelionDash-1.8.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.9.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## One EdgeTX model, several helicopters
+## When the flight controller will not say
 
-A radio can be set up with one model per aircraft, or with **one model** and the
-configuration kept on the flight controllers — deliberately, so that several
-model slots cannot drift apart from each other. This release is for the second
-kind, which everything here previously assumed away.
+1.8.0 let the flight controller identify the aircraft, so one EdgeTX model
+could fly several helicopters. That works on Rotorflight, which reports a craft
+name. OMPHOBBY's **OSF03 has no provision for one**, so those aircraft arrive
+anonymous — and on one model slot, anonymous means indistinguishable.
 
-Under that setup the EdgeTX model name is a constant. It says nothing about
-which helicopter flew, and every part of this widget that identified an
-aircraft was reading it.
-
-RF Tool already knew better. The flight controller reports its own craft name,
-and the widget was already displaying it in the sensor map footer — it just was
-not used for anything that mattered.
-
-### `craft` column
-
-New log column: what the flight controller calls the aircraft, blank when there
-is no RF Tool or no link.
-
-`model` keeps its meaning — the radio's model slot. Both are written. That
-column has meant one thing for every row already on the card, and quietly
-redefining it is how a log stops being comparable with itself.
-
-A pack's identity is now `craft` + `pack`, falling back to `model` + `pack`. On
-a one-model radio, number every physical pack uniquely across the fleet rather
-than restarting at 1 per aircraft.
-
-### `sensors.cfg` sections can name the craft
+What they do bring is a **cell count**. A fleet whose unnamed aircraft differ
+in cells is fully separable by it:
 
 ```ini
-[ALZRC Devil 380]
-escTemperature = Tmp1
+[cells:3]
+craftName = Omphobby M2 V3
+
+[cells:2]
+craftName = Omphobby M1 V3
 ```
 
-Layered `[*]` → `[model slot]` → `[craft]`, most specific last. The craft
-section wins where both name the same role, because it describes exactly one
-helicopter and the slot describes every aircraft flown from it.
+That name is written to the log's `craft` column exactly as a reported one
+would be. A `[cells:N]` section takes role overrides like any other, so an
+aircraft on a different flight controller can have its own sensor bindings
+without its own model slot.
 
-Applied the moment the flight controller reports a different craft, so swapping
-helicopters rebinds without touching the radio. The `-- PACK --` row names the
-craft too.
+Layering is `[*]` → `[model slot]` → `[cells:N]` → `[craft]`, most specific
+last. **A reported craft name always wins over a cell count** — a name is a
+fact and a count is an inference. That is what keeps two aircraft that share a
+cell count apart when only their names differ.
 
-## A bug in the path this depends on
+## `cells` column
 
-RF Tool's craft name was only re-read when the **API version** changed. That
-happens to cover swapping helicopters, because the link drops in between and
-the version goes away and comes back. Happens to.
+The cell count is now logged in its own right. It is the discriminator of last
+resort, it costs four characters a row, and it is what separated five aircraft
+in a log that had been flying them all under one model name.
 
-Two aircraft on the same Rotorflight build, or a rename in the configurator,
-and the widget went on reporting the previous helicopter's name — which matters
-most to exactly the setup that needs it, where that name is the only thing
-identifying what flew. The name is now watched in its own right.
+## A reload that was far too big
+
+The first version of this reloaded the model when the cell count changed. The
+cell count is derived from pack voltage over cell voltage, so a **supply
+collapse moves it** — and a model reload resets the session, throwing away the
+flight's recorded minimum at the exact moment that minimum was worth having.
+
+It re-resolves the sensor bindings now and nothing else. A different cell count
+means different overrides; it does not mean a different flight.
 
 ## Tests
 
-356, up eight. Four mutations verified: not re-reading the craft name, not
-reloading when it changes, ignoring craft sections, and layering the craft
-before the slot instead of after.
+361, up five. Three mutations verified. Restoring the oversized reload fails 35
+tests, which is a fair measure of what it was doing.

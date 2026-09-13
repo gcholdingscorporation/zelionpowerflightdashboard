@@ -352,4 +352,89 @@ H.test("the craft wins where both name the same role", function()
 end)
 
 
+
+H.group("sensors: a flight controller that will not name itself")
+
+-- Rotorflight reports a craft name. OMPHOBBY's OSF03 has no provision for one,
+-- so those aircraft arrive anonymous - and on a radio flying everything from
+-- one model slot, anonymous means indistinguishable.
+--
+-- What they do bring is a cell count. A fleet whose unnamed aircraft differ in
+-- cells - a 2S micro and a 3S micro - is fully separable by it.
+
+local function osf03(cells, cfg)
+  return function()
+    Mock.state.modelName = ">Rotorflight"
+    Mock.removeRf2()                       -- OSF03: no RF Tool, no craft name
+    Mock.addSensor("Hspd", 18, 3200)
+    Mock.addSensor("Tesc", 11, 54)
+    Mock.addSensor("Thr",  nil, 55)
+    Mock.addSensor("Vcel", 1, 3.90)
+    Mock.addSensor("Vbat", 1, 3.90 * cells)
+    if cfg then Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", cfg) end
+  end
+end
+
+local FLEET =
+  "[cells:3]\ncraftName = Omphobby M2 V3\n" ..
+  "[cells:2]\ncraftName = Omphobby M1 V3\nescTemperature = off\n"
+
+H.test("names an unnamed aircraft by its cell count", function()
+  local ZD = fresh(osf03(3, FLEET))
+  H.eq(ZD.State.cells(), 3, "the cell count was not worked out")
+  H.eq(ZD.State.aircraft(), "Omphobby M2 V3",
+       "got " .. tostring(ZD.State.aircraft()))
+end)
+
+H.test("and the other one differently", function()
+  local ZD = fresh(osf03(2, FLEET))
+  H.eq(ZD.State.aircraft(), "Omphobby M1 V3")
+  H.eq(ZD.Sensors.overrides.escTemperature, "off",
+       "a cells section carries role overrides too")
+end)
+
+H.test("the flight controller's own name still wins", function()
+  -- A reported name is a fact; a cell count is an inference. Where both speak,
+  -- the fact wins - which matters on a fleet where two 6S aircraft share a
+  -- cell count and only their craft names tell them apart.
+  local ZD = fresh(function()
+    Mock.state.modelName = ">Rotorflight"
+    Mock.addSensor("Vcel", 1, 3.90)
+    Mock.addSensor("Vbat", 1, 23.40)       -- 6S
+    Mock.installRf2({ apiVersion = 12.09, modelName = "ALZRC Devil 380" })
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[cells:6]\ncraftName = something else\n")
+  end)
+  H.eq(ZD.State.aircraft(), "ALZRC Devil 380",
+       "an inference overruled the flight controller")
+end)
+
+H.test("with nothing naming it, the model slot carries it", function()
+  local ZD = fresh(osf03(3, nil))
+  H.eq(ZD.State.aircraft(), ">Rotorflight",
+       "invented a name for an aircraft nobody named")
+end)
+
+H.test("the cell count settling does not reset the flight", function()
+  -- This is derived from pack over cell voltage, so it moves when the supply
+  -- collapses. Reloading the model on it - which is what this did first - threw
+  -- away the flight's recorded minimum at the moment it was worth having.
+  local ZD = fresh(osf03(3, FLEET))
+  Mock.setSensor("Hspd", 3200)
+  for _ = 1, 40 do
+    Mock.advanceSeconds(0.2)
+    ZD.State.service(Mock.state.time)
+  end
+  Mock.setSensor("Vcel", 3.62)
+  for _ = 1, 30 do
+    Mock.advanceSeconds(0.2)
+    ZD.State.service(Mock.state.time)
+  end
+  H.truthy(ZD.State.armed, "never armed, so this proves nothing")
+  H.near(ZD.State.min("cellVoltage"), 3.62, 0.01,
+         "the flight's minimum was lost: "
+         .. tostring(ZD.State.min("cellVoltage")))
+end)
+
+
 end

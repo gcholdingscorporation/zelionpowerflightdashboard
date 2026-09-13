@@ -42,6 +42,22 @@ end
 -- alternative - a second file - is worse.
 Config.SETTINGS_SECTION = "battery"
 
+-- The one key inside a model/craft/cells section that is not a role binding:
+-- what to CALL the aircraft this section describes.
+--
+-- It exists for flight controllers that publish no craft name. Rotorflight
+-- reports one and the widget uses it; OMPHOBBY's OSF03 has no provision for
+-- it, so an aircraft on OSF03 has nothing to identify it in the log at all.
+-- What it does have is a cell count, and on a fleet where the OSF03 aircraft
+-- differ in cells - a 2S and a 3S micro - that is enough to tell them apart.
+Config.NAME_KEY = "craftName"
+
+-- Sections keyed on cell count rather than on a name: [cells:3].
+Config.CELLS_PREFIX = "cells:"
+
+-- Section name -> the pilot's name for that aircraft.
+Config.names = {}
+
 -- Numbers, with the range each is allowed to take. Anything outside it is a
 -- typo rather than an intention, and a wrong cell voltage here would quietly
 -- misreport the state of charge in the air.
@@ -70,9 +86,10 @@ function Config.parse(text)
   local sections, problems = {}, {}
   local settings = {}
   local explicit = {}
+  local names = {}
   for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
   if not text or text == "" then
-    Config.explicit = explicit
+    Config.explicit, Config.names = explicit, names
     return sections, problems, settings
   end
 
@@ -115,6 +132,8 @@ function Config.parse(text)
             settings[key] = n
             explicit[key] = true
           end
+        elseif key == Config.NAME_KEY then
+          names[current] = value
         elseif not Roles.get(key) then
           problems[#problems + 1] =
             string.format("line %d: unknown role '%s'", lineNo, key)
@@ -132,7 +151,7 @@ function Config.parse(text)
     explicit.cellMin, explicit.cellFull = nil, nil
   end
 
-  Config.explicit = explicit
+  Config.explicit, Config.names = explicit, names
   return sections, problems, settings
 end
 
@@ -192,26 +211,33 @@ end
 -- one EdgeTX model - deliberately, to keep the setup on the aircraft rather
 -- than on the transmitter - has exactly one model name and four craft names,
 -- so a section keyed on the model name can say nothing about which is flying.
-function Config.appliedFor(modelName, craftName)
+function Config.appliedFor(modelName, craftName, cells)
   if not Config.loaded then Config.load() end
   -- Counted, not merely present. The parser opens an implicit [*] for any
   -- lines before the first header, so that table exists even in a file that
   -- never mentions it - and naming a section that contributed nothing is
   -- exactly the false reassurance this row exists to avoid.
   local names, count = {}, 0
+  local seen = {}
   local function take(key, shown)
+    key = string.lower(trim(key or ""))
+    if key == "" or seen[key] then return end
     local sect = Config.sections[key]
-    if not sect then return end
     local n = 0
-    for _ in pairs(sect) do n = n + 1 end
+    if sect then for _ in pairs(sect) do n = n + 1 end end
+    -- A section that only names the aircraft has carried something too.
+    if Config.names[key] then n = n + 1 end
     if n == 0 then return end
+    seen[key] = true
     names[#names + 1] = shown
     count = count + n
   end
-  take(string.lower(trim(modelName or "")), tostring(modelName))
-  if craftName and trim(craftName) ~= trim(modelName or "") then
-    take(string.lower(trim(craftName)), tostring(craftName))
+  take(modelName, tostring(modelName))
+  if cells then
+    local k = Config.CELLS_PREFIX .. tostring(cells)
+    take(k, k)
   end
+  if craftName then take(craftName, tostring(craftName)) end
   take("*", "*")
 
   -- [battery] counts too. It is a reserved section rather than a role table, so
@@ -235,18 +261,49 @@ end
 -- Craft last because it is the most specific thing known. A section named for
 -- the model slot covers every aircraft flown from it; one named for the craft
 -- covers exactly one helicopter, and that is the one whose word should win.
-function Config.overridesFor(modelName, craftName)
+-- The section keys that describe this aircraft, least specific first.
+--
+--   [*]          everything
+--   [model]      the radio's model slot - every aircraft flown from it
+--   [cells:N]    an aircraft identified only by its cell count, which is all
+--                a flight controller without a craft name leaves to go on
+--   [craft]      one named helicopter, straight from the flight controller
+--
+-- Cells before craft: a cell count is an inference and a reported name is not,
+-- so where both speak the name wins. Cells after the model slot for the same
+-- reason it exists at all - on a radio flying several aircraft from one slot,
+-- the slot is the general case and the cell count is the specific one.
+local function keysFor(modelName, craftName, cells)
+  local keys = { "*", modelName }
+  if cells then keys[#keys + 1] = Config.CELLS_PREFIX .. tostring(cells) end
+  keys[#keys + 1] = craftName
+  return keys
+end
+
+Config.keysFor = keysFor
+
+function Config.overridesFor(modelName, craftName, cells)
   if not Config.loaded then Config.load() end
   local out = {}
-  local function layer(key)
+  for _, key in ipairs(keysFor(modelName, craftName, cells)) do
     local sect = key and Config.sections[string.lower(trim(key))]
-    if not sect then return end
-    for role, sensor in pairs(sect) do out[role] = sensor end
+    if sect then
+      for role, sensor in pairs(sect) do out[role] = sensor end
+    end
   end
-  layer("*")
-  layer(modelName)
-  layer(craftName)
   return out
+end
+
+-- What the pilot calls this aircraft, when a flight controller will not say.
+-- Most specific wins, same order as the overrides.
+function Config.nameFor(modelName, craftName, cells)
+  if not Config.loaded then Config.load() end
+  local found = nil
+  for _, key in ipairs(keysFor(modelName, craftName, cells)) do
+    local n = key and Config.names[string.lower(trim(key))]
+    if n and n ~= "" then found = n end
+  end
+  return found
 end
 
 return Config

@@ -82,7 +82,8 @@ FlightLog.MELODY = {
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell," ..
+  "craft,cells"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -103,6 +104,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft",
 }
 
 local function columnCount(header)
@@ -301,13 +305,26 @@ local function restedTail(settled)
   -- it, which is worse than an empty cell: this column exists to calibrate the
   -- reserve against a voltage, and a column that silently mixes the two units
   -- calibrates it wrong. Blank, never nearly - the same rule as the rest.
-  local craft = "," .. safe(function()
-    return field(State.craft or State.craftName() or "")
-  end)
-  if not settled then return ",," .. craft end
+  -- The aircraft's name and its cell count.
+  --
+  -- The name is the RESOLVED one, not just the flight controller's: on an
+  -- OSF03 there is no craft name to report, and a [cells:N] section in
+  -- sensors.cfg is the only thing that can supply one. Blank when nothing
+  -- anywhere names it, rather than repeating the model slot into a column that
+  -- already sits beside it.
+  --
+  -- Cells is logged in its own right because it is the discriminator of last
+  -- resort. It is what separated five aircraft in a log that had been flying
+  -- them all under one model name, and it costs four characters a row.
+  local tail = "," .. safe(function()
+    local name = State.aircraft()
+    if not name or name == Host.modelName() then return "" end
+    return field(name)
+  end) .. "," .. safe(function() return num(State.cells(), "%d") end)
+  if not settled then return ",," .. tail end
   return "," ..
     safe(function() return num(State.restPackVoltage, "%.2f") end) .. "," ..
-    safe(function() return num(State.restCellVoltage, "%.2f") end) .. craft
+    safe(function() return num(State.restCellVoltage, "%.2f") end) .. tail
 end
 
 --------------------------------------------------------------------------
