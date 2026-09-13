@@ -57,6 +57,11 @@ State.startCellVoltage = nil
 -- Which pack the pilot says is fitted, or nil. Set from the widget option each
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
+
+-- The live resting voltages while disarmed, as opposed to the pair frozen at
+-- arm above. These keep climbing after a landing as the pack recovers.
+State.restPackVoltage = nil
+State.restCellVoltage = nil
 State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
@@ -698,6 +703,10 @@ function State.service(now, opts)
     local cv, cOk = State.get("cellVoltage")
     if pOk then restPack = pv end
     if cOk then restCell = cv end
+    -- Published as well as kept, because the logging layer wants the RESTED
+    -- voltage after a flight and there is nowhere else to read it: every
+    -- voltage on the record is either frozen at arm or a minimum under load.
+    State.restPackVoltage, State.restCellVoltage = restPack, restCell
   end
 
   updateFlightTimer(now)

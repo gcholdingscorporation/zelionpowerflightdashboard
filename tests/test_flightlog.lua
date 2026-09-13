@@ -39,13 +39,28 @@ local function run(ZD, seconds)
   end
 end
 
--- Spool up, hold for `seconds`, land. The rotor is what marks a flight when
--- the flight controller publishes no ARM flags.
+-- Spool up, hold for `seconds`, land, and wait out the settle window. The
+-- rotor is what marks a flight when the flight controller publishes no ARM
+-- flags.
+--
+-- The wait is not padding. The row is formatted at the landing but held back
+-- until the pack has recovered, so end_cell is a rested voltage rather than one
+-- still climbing - nothing reaches the card until then. Derived from the
+-- constant so that tuning the window does not mean editing every test here.
+local function settleSeconds(ZD)
+  return ZD.FlightLog.SETTLE / 100 + 2
+end
+
+local function land(ZD)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)                      -- the disarm itself needs a moment to latch
+  run(ZD, settleSeconds(ZD))
+end
+
 local function flight(ZD, seconds)
   Mock.setSensor("Hspd", 1850)
   run(ZD, seconds)
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
 end
 
 local function loaded()
@@ -85,7 +100,7 @@ H.test("records the flight's peaks, not the day's", function()
   Mock.setSensor("Curr", 96);    run(ZD, 2)
   Mock.setSensor("Tesc", 74);    run(ZD, 2)
   Mock.setSensor("Hspd", 1850); run(ZD, 15)
-  Mock.setSensor("Hspd", 0);    run(ZD, 8)
+  land(ZD)
 
   local rec = lines()[2]
   H.truthy(string.find(rec, "2150", 1, true), "max headspeed")
@@ -179,8 +194,7 @@ H.test("the card is touched once per flight, not on a timer", function()
   run(ZD, 60)
   H.eq(#lines(), 0, "nothing yet - the flight has not ended")
   local writes = Mock.state.writes or 0
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
   H.eq(#lines(), 2)
   H.truthy((Mock.state.writes or 0) - writes <= 3,
            "one record, not one per service pass")
@@ -258,8 +272,7 @@ H.test("a value with no integer representation blanks its column only", function
   run(ZD, 40)
   Mock.setSensor("Tesc", math.huge)      -- a glitched sensor
   run(ZD, 2)
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
   local l = lines()
   H.eq(#l, 2, "the flight was still written")
   H.truthy(string.find(l[2], "1850", 1, true), "and the good columns survived")
@@ -294,8 +307,7 @@ H.test("switching model mid-flight abandons the flight", function()
   Mock.state.modelName = "SOMETHING ELSE"
   run(ZD, 1)
   H.truthy(ZD.State.flightSeconds < 5, "the session started over")
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
   H.eq(#lines(), 0, "and nothing was written for the abandoned one")
 end)
 
@@ -389,8 +401,7 @@ H.test("records resting voltage, mean draw and worst link quality", function()
   Mock.setSensor("Curr", 60)
   Mock.setSensor("RQly", 62)
   run(ZD, 20)
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
 
   local f = {}
   for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
@@ -411,8 +422,7 @@ H.test("resting voltage is taken before the rotor, not at arm", function()
   Mock.setSensor("Vbat", 44.0)        -- sags the instant it spools
   Mock.setSensor("Hspd", 1850)
   run(ZD, 40)
-  Mock.setSensor("Hspd", 0)
-  run(ZD, 8)
+  land(ZD)
   local f = {}
   for x in (lines()[2] .. ","):gmatch("([^,]*),") do f[#f + 1] = x end
   H.eq(f[12], "47.40", "the resting figure, not the sagged one")
@@ -470,5 +480,139 @@ H.test("a header from no version of this widget still starts over", function()
   H.eq(l[1], ZD.FlightLog.HEADER)
   H.eq(#l, 2, "half a flight log is more confusing than a fresh one")
 end)
+
+
+H.group("flightlog: the settle window")
+
+-- The row is formatted at the landing and written 45 seconds later, so the
+-- rested voltage has recovered. Everything here is about that gap: what is in
+-- it, what gets out of it early, and what must not change inside it.
+
+local function column(ZD, rec, want)
+  local at, k = nil, 0
+  for name in string.gmatch(ZD.FlightLog.HEADER, "[^,]+") do
+    k = k + 1
+    if name == want then at = k end
+  end
+  H.truthy(at ~= nil, "no " .. want .. " column")
+  k = 0
+  for field in string.gmatch(rec .. ",", "([^,]*),") do
+    k = k + 1
+    if k == at then return field end
+  end
+end
+
+H.test("nothing reaches the card until the pack has recovered", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#lines(), 0, "written before the pack could possibly have rested")
+  H.truthy(ZD.FlightLog.waiting(), "and nothing says it is being held")
+
+  run(ZD, settleSeconds(ZD))
+  H.eq(#lines(), 2, "the wait never ended")
+  H.falsy(ZD.FlightLog.waiting())
+end)
+
+H.test("the rested voltage is the one after the flight, not before it", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Vcel", 4.15); Mock.setSensor("Vbat", 49.8)
+  run(ZD, 5)                                  -- resting, full, before the flight
+  Mock.setSensor("Hspd", 1850)
+  Mock.setSensor("Vcel", 3.55); Mock.setSensor("Vbat", 42.6)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  -- The pack recovers while the row is held. This is the whole point: read at
+  -- the landing it would say 3.55, and 3.55 is not a rested voltage.
+  Mock.setSensor("Vcel", 3.78); Mock.setSensor("Vbat", 45.4)
+  run(ZD, settleSeconds(ZD))
+
+  local rec = lines()[2]
+  H.eq(column(ZD, rec, "end_cell"), "3.78", "row: " .. rec)
+  H.eq(column(ZD, rec, "end_pack"), "45.40")
+  H.eq(column(ZD, rec, "start_cell"), "4.15", "and the pre-flight pair is intact")
+end)
+
+H.test("a chime says the row is on the card", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#Mock.played, 0, "sounded before the write")
+  run(ZD, settleSeconds(ZD))
+  H.truthy(#Mock.played > 0, "the pilot has no way to know it is safe to switch off")
+  for _, p in ipairs(Mock.played) do H.eq(p.op, "tone", "not a spoken alert") end
+end)
+
+H.test("and stays silent when the card refuses the write", function()
+  -- Worse than no confirmation: a confirmation for a flight that was lost.
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.state.readOnly = true
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  run(ZD, settleSeconds(ZD))
+  Mock.state.readOnly = false
+  H.eq(#Mock.played, 0, "chimed for a flight that never reached the card")
+end)
+
+H.test("relighting inside the window writes the flight first", function()
+  -- The case that would lose data. State resets its extremes the moment the
+  -- next flight arms, so a row still waiting to be formatted would be formatted
+  -- from the NEW flight - or from nothing at all.
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  Mock.setSensor("Hspd", 2150)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#lines(), 0, "still holding")
+
+  Mock.setSensor("Hspd", 1850)              -- straight back up
+  run(ZD, 3)
+  H.eq(#lines(), 2, "the held flight was not written before the next one began")
+  H.truthy(string.find(lines()[2], "2150", 1, true),
+           "the wrong flight's peak: " .. lines()[2])
+  H.eq(column(ZD, lines()[2], "end_cell"), "",
+       "a pack back under load never rested")
+end)
+
+H.test("an unplugged pack writes the flight rather than waiting for it", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#lines(), 0, "still holding")
+
+  -- Nothing left to read a rested voltage from, so waiting only risks the row.
+  Mock.removeSensor("Vcel"); Mock.removeSensor("Vbat")
+  run(ZD, 1)
+  H.eq(#lines(), 2, "waited for a reading that was never coming")
+  -- Blank, not the last thing State happened to be holding. That value was
+  -- read seconds after a landing with the pack still climbing, and in this
+  -- column it would be indistinguishable from a settled one.
+  H.eq(column(ZD, lines()[2], "end_cell"), "",
+       "passed off a half-recovered voltage as a rested one")
+  H.truthy(string.find(lines()[2], "1850", 1, true), "and the flight survived")
+end)
+
+H.test("a flight too short to log is not held either", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 5)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.falsy(ZD.FlightLog.waiting(), "a spool-up test is not a landing to wait on")
+  run(ZD, settleSeconds(ZD))
+  H.eq(#lines(), 0)
+  H.eq(#Mock.played, 0, "and nothing to announce")
+end)
+
 
 end

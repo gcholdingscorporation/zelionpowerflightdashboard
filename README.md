@@ -368,9 +368,34 @@ announces a countdown by watching thresholds, so a value drifting back up over
 the flight ends:
 
 ```
-date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack
-2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2
+date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps,max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell
+2026-08-05,14:14:09,GOBLIN 700,245,1850,3.58,44.10,88.0,71,1240,22,50.20,4.18,44.6,88,3.4,2,45.40,3.78
 ```
+
+### The row is written 45 seconds after you land
+
+`end_pack` and `end_cell` are the **rested** voltages after the flight, and a
+pack straight off a hard one reads low and climbs for a minute. Read at the
+landing they would not be rested voltages at all, so the record is formatted
+when the rotor stops and held back until the pack has recovered.
+
+**A three-note chime says the row is on the card.** That is the point of it:
+this is the one place the widget trades reliability for data, and a radio
+switched off inside that window loses the flight. Everything else is handled —
+telemetry dropping, the pack being unplugged, the next flight starting — but a
+power switch cannot be caught. The sensor map shows `HOLDING a landing for its
+rested voltage` while it waits.
+
+The tone is synthesised rather than played from a file, for the same reason
+nothing else here ships a `.wav`: which system sounds exist depends on the
+firmware build and the installed language pack, and a confirmation that is
+silent on somebody's radio is worse than none.
+
+When the row has to go early — the pack unplugged, the next flight started —
+the flight is still written in full and those two columns are left **blank**.
+A voltage read seconds after a landing is several hundredths below a settled
+one and indistinguishable from it in the column, and this column exists to
+calibrate the reserve against a voltage.
 
 `ir_mohm` is the pack's measured internal resistance — see **Pack resistance**
 below. `pack` is which pack was fitted, from the **Pack** widget option, and it

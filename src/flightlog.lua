@@ -44,13 +44,45 @@ FlightLog.MIN_SECONDS = 20
 -- Oldest records fall off the top; the header always survives.
 FlightLog.MAX_RECORDS = 200
 
+-- How long to wait after a landing before writing, so the pack has recovered
+-- and end_cell is a RESTED voltage rather than one still climbing.
+--
+-- This is the one place this widget trades reliability for data, so it is
+-- worth being plain about. Before this, a flight was on the card the instant
+-- it ended and could not be lost. Now a radio switched off inside this window
+-- loses it. Everything else that can go wrong is handled - telemetry dropping,
+-- the pack being unplugged, the next flight starting - but a power switch
+-- cannot be caught, and 45 seconds is chosen to be shorter than the walk back
+-- to the bench rather than long enough for a pack to fully relax.
+--
+-- The melody below exists because of this: it is the sound of the row being
+-- on the card, which is the only honest way to tell a pilot when it is safe.
+FlightLog.SETTLE = Host.seconds(45)
+
+-- Three rising notes, synthesised rather than played from a file.
+--
+-- EdgeTX does have system sounds, but which ones exist depends on the firmware
+-- build and the installed language pack, and a confirmation that is silent on
+-- somebody's radio is worse than no confirmation at all. host.lua has always
+-- taken this line for the alerts - "there is no asset to install or lose" -
+-- and the same reasoning applies here.
+--
+-- A major arpeggio, deliberately unlike anything else this widget makes: the
+-- alerts are a haptic buzz and a spoken number, so there is nothing to confuse
+-- this with. { frequency Hz, duration ms, pause ms }
+FlightLog.MELODY = {
+  { 880, 60, 10 },    -- A5
+  { 1108, 60, 10 },   -- C#6
+  { 1318, 110, 0 },   -- E6
+}
+
 -- Columns are only ever appended, never reordered or removed. A spreadsheet
 -- someone has already built a chart on is a contract, and an existing file
 -- with an older header is migrated rather than abandoned - see FlightLog.read.
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -65,6 +97,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq,ir_mohm",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack",
 }
 
 local function columnCount(header)
@@ -249,6 +284,26 @@ function FlightLog.record()
   }, ",")
 end
 
+-- The rested pair, appended to a record formatted at the landing. Separate
+-- from FlightLog.record because they are the only two figures on the row that
+-- are not known when the flight ends: a pack straight off a hard flight reads
+-- low and climbs for a minute afterwards, so these are read at the write.
+local function restedTail(settled)
+  -- Blank unless the pack actually rested.
+  --
+  -- A row written early - the pack unplugged, the next flight started - still
+  -- has a last-known voltage sitting in State, taken seconds after a landing
+  -- while the pack was climbing. Writing it would put a number in the column
+  -- that is indistinguishable from a settled one and several hundredths below
+  -- it, which is worse than an empty cell: this column exists to calibrate the
+  -- reserve against a voltage, and a column that silently mixes the two units
+  -- calibrates it wrong. Blank, never nearly - the same rule as the rest.
+  if not settled then return ",," end
+  return "," ..
+    safe(function() return num(State.restPackVoltage, "%.2f") end) .. "," ..
+    safe(function() return num(State.restCellVoltage, "%.2f") end)
+end
+
 --------------------------------------------------------------------------
 -- Persistence
 --------------------------------------------------------------------------
@@ -329,22 +384,76 @@ end
 
 FlightLog.enabled = true
 
--- Called every service pass. Does nothing at all until State latches a disarm,
--- so the card is touched exactly once per flight rather than on any kind of
--- timer - file I/O runs in the same loop that draws the screen.
-function FlightLog.service()
-  if not State.disarmPending then return false end
-  local seconds = State.flightSeconds
+-- A flight waiting out its settle window: the row as it was at the landing,
+-- and when that landing happened.
+local pending, pendingSince = nil, nil
 
-  -- Consume it either way. A flight too short to log is still a flight that
-  -- has ended, and leaving the latch set would write it at the next disarm.
-  State.consumeDisarm()
+FlightLog.pending = false     -- shown on the sensor map
 
-  if not FlightLog.enabled then return false end
-  if seconds < FlightLog.MIN_SECONDS then
-    FlightLog.skipped = FlightLog.skipped + 1
+local function chime()
+  for _, note in ipairs(FlightLog.MELODY) do
+    Host.playTone(note[1], note[2], note[3], Host.PLAY_NOW)
+  end
+end
+
+-- Whether the pack is still talking. A row held for its rested voltage is
+-- pointless once there is nothing left to read it from, and holding it any
+-- longer only risks losing the flight.
+local function telemetryGone()
+  return not (State.valid("packVoltage") or State.valid("cellVoltage"))
+end
+
+-- Called every service pass. Until State latches a disarm this does nothing at
+-- all, so the card is touched exactly once per flight rather than on a timer -
+-- file I/O runs in the same loop that draws the screen.
+function FlightLog.service(now)
+  now = now or Host.now()
+
+  if State.disarmPending then
+    local seconds = State.flightSeconds
+
+    -- Consume it either way. A flight too short to log is still a flight that
+    -- has ended, and leaving the latch set would write it at the next disarm.
+    State.consumeDisarm()
+
+    if not FlightLog.enabled then return false end
+    if seconds < FlightLog.MIN_SECONDS then
+      FlightLog.skipped = FlightLog.skipped + 1
+      return false
+    end
+
+    -- Formatted NOW, at the landing, even though it will not be written for
+    -- another three quarters of a minute.
+    --
+    -- Every figure on the row is a session extreme, and State resets those the
+    -- moment the next flight arms. Holding the row unformatted and reading
+    -- State at the write would mean a pilot who relit inside the window logged
+    -- the new flight's numbers under the old flight's timestamp - or, worse,
+    -- a row of blanks. So the wait costs the rested pair and nothing else.
+    FlightLog.lastError = "interrupted before the write"
+    local ok, line = pcall(FlightLog.record)
+    if not ok then
+      FlightLog.lastError = "fmt: " .. tostring(line)
+      return false
+    end
+    pending, pendingSince = line, now
+    FlightLog.pending = true
     return false
   end
+
+  if not pending then return false end
+
+  -- Write early rather than lose it. Re-arming is the case that matters: the
+  -- pack is under load again, so no rested reading is coming, and the flight
+  -- must be on the card before the one now starting can end.
+  local settled = (now - pendingSince) >= FlightLog.SETTLE
+  if not settled and not State.armed and not telemetryGone() then
+    return false
+  end
+
+  local line = pending .. restedTail(settled)
+  pending, pendingSince = nil, nil
+  FlightLog.pending = false
 
   -- Marked before the attempt, cleared on success. Every silent failure so far
   -- has been a throw from somewhere nobody had enumerated, and the status line
@@ -353,17 +462,7 @@ function FlightLog.service()
   -- whatever goes wrong from here, it cannot go wrong quietly.
   FlightLog.lastError = "interrupted before the write"
 
-  local ok, line = pcall(FlightLog.record)
-  if not ok then
-    -- Carry the real message. "could not format the record" cost a round trip
-    -- to hardware and said nothing: the whole point of showing an error on the
-    -- radio is that it names what went wrong.
-    FlightLog.lastError = "fmt: " .. tostring(line)
-    return false
-  end
-
-  local wrote
-  ok, wrote = pcall(FlightLog.append, line)
+  local ok, wrote = pcall(FlightLog.append, line)
   if not ok then
     -- append raising was the one path that reported nothing at all. It is how
     -- a real 27-second flight vanished with the log still saying "no flight
@@ -371,7 +470,17 @@ function FlightLog.service()
     FlightLog.lastError = "write: " .. tostring(wrote)
     return false
   end
+  -- Only on a real write. The chime means "this flight is on the card, the
+  -- radio can go off now" - it is the answer to the window this defers into,
+  -- and saying it for a write that failed would be worse than silence.
+  if wrote == true then chime() end
   return wrote == true
+end
+
+-- A landing that has not reached the card yet. Nothing else knows the widget
+-- is holding a row, and a pilot who switches off during the wait loses it.
+function FlightLog.waiting()
+  return FlightLog.pending == true
 end
 
 function FlightLog.reset()
