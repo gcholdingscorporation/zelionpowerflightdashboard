@@ -47,6 +47,14 @@ Copy the built widget onto the radio's storage:
 The file to copy is `dist/WIDGETS/ZelionDash/main.lua`. Then add ZelionDash to
 a full-screen widget slot on the radio.
 
+The release zip carries a second file, `sensors.cfg.example`, into the same
+folder. It is the documented reference for every overridable role and setting,
+and it does nothing where it lands — the widget reads `sensors.cfg`, not
+`sensors.cfg.example`. To use it, copy it to `sensors.cfg` and uncomment what
+you need. It is shipped under that name deliberately: a live `sensors.cfg`
+inside the download would overwrite your own overrides on every upgrade,
+silently, because merging a folder onto a card does not ask.
+
 ### Updating: delete the .luac
 
 **When you replace `main.lua` with a newer one, delete `main.luac` from the
