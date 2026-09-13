@@ -269,7 +269,8 @@ end
 -- apply to THIS model?
 local function configRow()
   if not Config.present then return nil end
-  local applied, count = Config.appliedFor(Host.modelName(), State.craftName())
+  local applied, count = Config.appliedFor(Host.modelName(), State.craftName(),
+                                           State.cells())
   return {
     label = "-- CONFIG --",
     sensor = (#applied > 0)
@@ -561,7 +562,7 @@ function Widget.update(widget, options)
   Dashboard.noLogo  = false
   Widget.degraded = nil
   pcall(Config.load)
-  pcall(Sensors.reload, Host.modelName(), State.craftName())
+  pcall(Sensors.reload, Host.modelName(), State.craftName(), State.cells())
   pcall(Alerts.reset)
   built = nil
   ensureScreen(widget)

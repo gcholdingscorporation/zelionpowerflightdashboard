@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.8.0
+-- Version 1.9.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.8.0" }
+local ZD = { VERSION = "1.9.0" }
 
 -- ======== src/host.lua ========
 do
@@ -903,6 +903,22 @@ end
 -- alternative - a second file - is worse.
 Config.SETTINGS_SECTION = "battery"
 
+-- The one key inside a model/craft/cells section that is not a role binding:
+-- what to CALL the aircraft this section describes.
+--
+-- It exists for flight controllers that publish no craft name. Rotorflight
+-- reports one and the widget uses it; OMPHOBBY's OSF03 has no provision for
+-- it, so an aircraft on OSF03 has nothing to identify it in the log at all.
+-- What it does have is a cell count, and on a fleet where the OSF03 aircraft
+-- differ in cells - a 2S and a 3S micro - that is enough to tell them apart.
+Config.NAME_KEY = "craftName"
+
+-- Sections keyed on cell count rather than on a name: [cells:3].
+Config.CELLS_PREFIX = "cells:"
+
+-- Section name -> the pilot's name for that aircraft.
+Config.names = {}
+
 -- Numbers, with the range each is allowed to take. Anything outside it is a
 -- typo rather than an intention, and a wrong cell voltage here would quietly
 -- misreport the state of charge in the air.
@@ -931,9 +947,10 @@ function Config.parse(text)
   local sections, problems = {}, {}
   local settings = {}
   local explicit = {}
+  local names = {}
   for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
   if not text or text == "" then
-    Config.explicit = explicit
+    Config.explicit, Config.names = explicit, names
     return sections, problems, settings
   end
 
@@ -976,6 +993,8 @@ function Config.parse(text)
             settings[key] = n
             explicit[key] = true
           end
+        elseif key == Config.NAME_KEY then
+          names[current] = value
         elseif not Roles.get(key) then
           problems[#problems + 1] =
             string.format("line %d: unknown role '%s'", lineNo, key)
@@ -993,7 +1012,7 @@ function Config.parse(text)
     explicit.cellMin, explicit.cellFull = nil, nil
   end
 
-  Config.explicit = explicit
+  Config.explicit, Config.names = explicit, names
   return sections, problems, settings
 end
 
@@ -1053,26 +1072,33 @@ end
 -- one EdgeTX model - deliberately, to keep the setup on the aircraft rather
 -- than on the transmitter - has exactly one model name and four craft names,
 -- so a section keyed on the model name can say nothing about which is flying.
-function Config.appliedFor(modelName, craftName)
+function Config.appliedFor(modelName, craftName, cells)
   if not Config.loaded then Config.load() end
   -- Counted, not merely present. The parser opens an implicit [*] for any
   -- lines before the first header, so that table exists even in a file that
   -- never mentions it - and naming a section that contributed nothing is
   -- exactly the false reassurance this row exists to avoid.
   local names, count = {}, 0
+  local seen = {}
   local function take(key, shown)
+    key = string.lower(trim(key or ""))
+    if key == "" or seen[key] then return end
     local sect = Config.sections[key]
-    if not sect then return end
     local n = 0
-    for _ in pairs(sect) do n = n + 1 end
+    if sect then for _ in pairs(sect) do n = n + 1 end end
+    -- A section that only names the aircraft has carried something too.
+    if Config.names[key] then n = n + 1 end
     if n == 0 then return end
+    seen[key] = true
     names[#names + 1] = shown
     count = count + n
   end
-  take(string.lower(trim(modelName or "")), tostring(modelName))
-  if craftName and trim(craftName) ~= trim(modelName or "") then
-    take(string.lower(trim(craftName)), tostring(craftName))
+  take(modelName, tostring(modelName))
+  if cells then
+    local k = Config.CELLS_PREFIX .. tostring(cells)
+    take(k, k)
   end
+  if craftName then take(craftName, tostring(craftName)) end
   take("*", "*")
 
   -- [battery] counts too. It is a reserved section rather than a role table, so
@@ -1096,18 +1122,49 @@ end
 -- Craft last because it is the most specific thing known. A section named for
 -- the model slot covers every aircraft flown from it; one named for the craft
 -- covers exactly one helicopter, and that is the one whose word should win.
-function Config.overridesFor(modelName, craftName)
+-- The section keys that describe this aircraft, least specific first.
+--
+--   [*]          everything
+--   [model]      the radio's model slot - every aircraft flown from it
+--   [cells:N]    an aircraft identified only by its cell count, which is all
+--                a flight controller without a craft name leaves to go on
+--   [craft]      one named helicopter, straight from the flight controller
+--
+-- Cells before craft: a cell count is an inference and a reported name is not,
+-- so where both speak the name wins. Cells after the model slot for the same
+-- reason it exists at all - on a radio flying several aircraft from one slot,
+-- the slot is the general case and the cell count is the specific one.
+local function keysFor(modelName, craftName, cells)
+  local keys = { "*", modelName }
+  if cells then keys[#keys + 1] = Config.CELLS_PREFIX .. tostring(cells) end
+  keys[#keys + 1] = craftName
+  return keys
+end
+
+Config.keysFor = keysFor
+
+function Config.overridesFor(modelName, craftName, cells)
   if not Config.loaded then Config.load() end
   local out = {}
-  local function layer(key)
+  for _, key in ipairs(keysFor(modelName, craftName, cells)) do
     local sect = key and Config.sections[string.lower(trim(key))]
-    if not sect then return end
-    for role, sensor in pairs(sect) do out[role] = sensor end
+    if sect then
+      for role, sensor in pairs(sect) do out[role] = sensor end
+    end
   end
-  layer("*")
-  layer(modelName)
-  layer(craftName)
   return out
+end
+
+-- What the pilot calls this aircraft, when a flight controller will not say.
+-- Most specific wins, same order as the overrides.
+function Config.nameFor(modelName, craftName, cells)
+  if not Config.loaded then Config.load() end
+  local found = nil
+  for _, key in ipairs(keysFor(modelName, craftName, cells)) do
+    local n = key and Config.names[string.lower(trim(key))]
+    if n and n ~= "" then found = n end
+  end
+  return found
 end
 
 return Config
@@ -1555,10 +1612,11 @@ end
 
 -- Called when the active model changes: overrides differ per model, so every
 -- binding has to be reconsidered from scratch.
-function Sensors.reload(modelName, craftName)
+function Sensors.reload(modelName, craftName, cells)
   Sensors.modelName = modelName or Host.modelName()
   Sensors.craftName = craftName
-  Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName)
+  Sensors.cells     = cells
+  Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName, cells)
   lastProbe = -1e9
   Sensors.resolve(true)
 end
@@ -2022,6 +2080,9 @@ State.startCellVoltage = nil
 -- The flight controller's name for the aircraft last seen, or nil.
 State.craft = nil
 
+-- The cell count the bindings were last built for, or nil while unknown.
+State.cellsSeen = nil
+
 -- Which pack the pilot says is fitted, or nil. Set from the widget option each
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
@@ -2233,18 +2294,27 @@ function State.craftName()
   return n
 end
 
--- The aircraft's name for anything that wants to identify it: the flight
--- controller's, falling back to the radio's.
+-- The aircraft's name, for anything that wants to identify it.
+--
+-- The flight controller's, when it says. Rotorflight does; OMPHOBBY's OSF03
+-- has no provision for one, so an aircraft on OSF03 arrives anonymous. What it
+-- does bring is a cell count, and a fleet whose OSF03 aircraft differ in cells
+-- can name them in sensors.cfg against [cells:N]. Failing both, the radio's
+-- model slot - which is the right answer on a radio that keeps one per
+-- aircraft, and the only answer available otherwise.
 function State.aircraft()
-  return State.craftName() or Host.modelName()
+  return State.craftName()
+         or ZD.Config.nameFor(Host.modelName(), nil, State.cells())
+         or Host.modelName()
 end
 
 function State.reloadModel()
   local name = Host.modelName()
   State.modelName = name
   State.craft     = State.craftName()
+  State.cellsSeen = State.cells()
   State.values = {}
-  Sensors.reload(name, State.craft)
+  Sensors.reload(name, State.craft, State.cellsSeen)
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
@@ -2640,7 +2710,6 @@ function State.service(now, opts)
   if craft and craft ~= State.craft then
     State.reloadModel()
   end
-  State.linkConnected = RF2.connected
 
   -- Pack voltage first, so auto-detection has settled on an aircraft before
   -- anything downstream asks the profile what is plausible. sampleRole runs
@@ -2657,6 +2726,25 @@ function State.service(now, opts)
   end
   deriveFuel()
   derivePower()
+
+  -- And on the cell count settling, for the aircraft that have no name to
+  -- change. It is unknown at power-on - deriving it needs a pack voltage and a
+  -- cell voltage - so a [cells:N] section cannot be applied until telemetry has
+  -- said something.
+  --
+  -- Bindings only. NOT a model reload, which is what this did first: a reload
+  -- resets the session, and the cell count is derived from pack over cell
+  -- voltage, so a supply collapse moves it - which threw away the flight's
+  -- recorded minimum at the exact moment the minimum was the thing worth
+  -- having. A different cell count means different overrides; it does not mean
+  -- a different flight.
+  local cells = State.cells()
+  if cells and cells ~= State.cellsSeen then
+    State.cellsSeen = cells
+    Sensors.reload(State.modelName, State.craft, cells)
+  end
+  State.linkConnected = RF2.connected
+
 
   -- After sampling, because the rotor fallback reads headspeed.
   local wasArmed = State.armed
@@ -3766,7 +3854,8 @@ FlightLog.MELODY = {
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell," ..
+  "craft,cells"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -3787,6 +3876,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack,end_pack,end_cell,craft",
 }
 
 local function columnCount(header)
@@ -3985,13 +4077,26 @@ local function restedTail(settled)
   -- it, which is worse than an empty cell: this column exists to calibrate the
   -- reserve against a voltage, and a column that silently mixes the two units
   -- calibrates it wrong. Blank, never nearly - the same rule as the rest.
-  local craft = "," .. safe(function()
-    return field(State.craft or State.craftName() or "")
-  end)
-  if not settled then return ",," .. craft end
+  -- The aircraft's name and its cell count.
+  --
+  -- The name is the RESOLVED one, not just the flight controller's: on an
+  -- OSF03 there is no craft name to report, and a [cells:N] section in
+  -- sensors.cfg is the only thing that can supply one. Blank when nothing
+  -- anywhere names it, rather than repeating the model slot into a column that
+  -- already sits beside it.
+  --
+  -- Cells is logged in its own right because it is the discriminator of last
+  -- resort. It is what separated five aircraft in a log that had been flying
+  -- them all under one model name, and it costs four characters a row.
+  local tail = "," .. safe(function()
+    local name = State.aircraft()
+    if not name or name == Host.modelName() then return "" end
+    return field(name)
+  end) .. "," .. safe(function() return num(State.cells(), "%d") end)
+  if not settled then return ",," .. tail end
   return "," ..
     safe(function() return num(State.restPackVoltage, "%.2f") end) .. "," ..
-    safe(function() return num(State.restCellVoltage, "%.2f") end) .. craft
+    safe(function() return num(State.restCellVoltage, "%.2f") end) .. tail
 end
 
 --------------------------------------------------------------------------
@@ -5789,7 +5894,8 @@ end
 -- apply to THIS model?
 local function configRow()
   if not Config.present then return nil end
-  local applied, count = Config.appliedFor(Host.modelName(), State.craftName())
+  local applied, count = Config.appliedFor(Host.modelName(), State.craftName(),
+                                           State.cells())
   return {
     label = "-- CONFIG --",
     sensor = (#applied > 0)
@@ -6081,7 +6187,7 @@ function Widget.update(widget, options)
   Dashboard.noLogo  = false
   Widget.degraded = nil
   pcall(Config.load)
-  pcall(Sensors.reload, Host.modelName(), State.craftName())
+  pcall(Sensors.reload, Host.modelName(), State.craftName(), State.cells())
   pcall(Alerts.reset)
   built = nil
   ensureScreen(widget)

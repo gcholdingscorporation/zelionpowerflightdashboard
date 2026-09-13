@@ -57,6 +57,9 @@ State.startCellVoltage = nil
 -- The flight controller's name for the aircraft last seen, or nil.
 State.craft = nil
 
+-- The cell count the bindings were last built for, or nil while unknown.
+State.cellsSeen = nil
+
 -- Which pack the pilot says is fitted, or nil. Set from the widget option each
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
@@ -268,18 +271,27 @@ function State.craftName()
   return n
 end
 
--- The aircraft's name for anything that wants to identify it: the flight
--- controller's, falling back to the radio's.
+-- The aircraft's name, for anything that wants to identify it.
+--
+-- The flight controller's, when it says. Rotorflight does; OMPHOBBY's OSF03
+-- has no provision for one, so an aircraft on OSF03 arrives anonymous. What it
+-- does bring is a cell count, and a fleet whose OSF03 aircraft differ in cells
+-- can name them in sensors.cfg against [cells:N]. Failing both, the radio's
+-- model slot - which is the right answer on a radio that keeps one per
+-- aircraft, and the only answer available otherwise.
 function State.aircraft()
-  return State.craftName() or Host.modelName()
+  return State.craftName()
+         or ZD.Config.nameFor(Host.modelName(), nil, State.cells())
+         or Host.modelName()
 end
 
 function State.reloadModel()
   local name = Host.modelName()
   State.modelName = name
   State.craft     = State.craftName()
+  State.cellsSeen = State.cells()
   State.values = {}
-  Sensors.reload(name, State.craft)
+  Sensors.reload(name, State.craft, State.cellsSeen)
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
@@ -675,7 +687,6 @@ function State.service(now, opts)
   if craft and craft ~= State.craft then
     State.reloadModel()
   end
-  State.linkConnected = RF2.connected
 
   -- Pack voltage first, so auto-detection has settled on an aircraft before
   -- anything downstream asks the profile what is plausible. sampleRole runs
@@ -692,6 +703,25 @@ function State.service(now, opts)
   end
   deriveFuel()
   derivePower()
+
+  -- And on the cell count settling, for the aircraft that have no name to
+  -- change. It is unknown at power-on - deriving it needs a pack voltage and a
+  -- cell voltage - so a [cells:N] section cannot be applied until telemetry has
+  -- said something.
+  --
+  -- Bindings only. NOT a model reload, which is what this did first: a reload
+  -- resets the session, and the cell count is derived from pack over cell
+  -- voltage, so a supply collapse moves it - which threw away the flight's
+  -- recorded minimum at the exact moment the minimum was the thing worth
+  -- having. A different cell count means different overrides; it does not mean
+  -- a different flight.
+  local cells = State.cells()
+  if cells and cells ~= State.cellsSeen then
+    State.cellsSeen = cells
+    Sensors.reload(State.modelName, State.craft, cells)
+  end
+  State.linkConnected = RF2.connected
+
 
   -- After sampling, because the rotor fallback reads headspeed.
   local wasArmed = State.armed
