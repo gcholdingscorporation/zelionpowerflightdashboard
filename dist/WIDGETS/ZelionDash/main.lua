@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.6.0
+-- Version 1.6.1
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.6.0" }
+local ZD = { VERSION = "1.6.1" }
 
 -- ======== src/host.lua ========
 do
@@ -1066,6 +1066,19 @@ function Config.appliedFor(modelName)
   end
   take(string.lower(trim(modelName or "")), tostring(modelName))
   take("*", "*")
+
+  -- [battery] counts too. It is a reserved section rather than a role table, so
+  -- it lives in Config.explicit and was invisible here - and a file whose only
+  -- override was a threshold or a reserve read "no section for this model", in
+  -- amber, while that override was in force. That is the precise false negative
+  -- this row exists to prevent, pointed the wrong way: it told a pilot their
+  -- settings were doing nothing at the moment they started working.
+  local n = 0
+  for _ in pairs(Config.explicit) do n = n + 1 end
+  if n > 0 then
+    names[#names + 1] = "battery"
+    count = count + n
+  end
   return names, count
 end
 

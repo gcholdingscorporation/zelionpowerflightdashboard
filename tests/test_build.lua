@@ -787,6 +787,26 @@ H.test("a config that reached this model at all says so", function()
   H.truthy(string.find(t, "0 overrides", 1, true))
 end)
 
+H.test("a settings-only config counts as having applied", function()
+  -- [battery] is a reserved section rather than a role table, so it was
+  -- invisible to the row that reports what applied: a file whose only override
+  -- was a reserve or a threshold read "no section for this model", in amber,
+  -- while that override was in force. The row exists to catch a config that is
+  -- silently doing nothing, and this was it pointed the wrong way.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, function()
+    flying()
+    Mock.state.modelName = "Omphobby M7R"
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+                   "[battery]\nreservePct = 40\n")
+  end)
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.falsy(string.find(t, "no section for this model", 1, true),
+          "a reserve that IS in force must not read as one that applied nothing")
+  H.truthy(string.find(t, "battery", 1, true), "and names the section")
+  H.truthy(string.find(t, "1 override", 1, true))
+end)
+
 H.test("a config that applied nothing does not look like one that worked", function()
   -- The words alone are not enough. This row is read at a glance among a dozen
   -- others, and if the failure is drawn in the same colour as the success it
