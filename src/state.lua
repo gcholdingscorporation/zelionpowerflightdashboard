@@ -53,6 +53,10 @@ State.sessionStarted  = false
 -- one number this is useless without, since sag is the whole point.
 State.startPackVoltage = nil
 State.startCellVoltage = nil
+
+-- Which pack the pilot says is fitted, or nil. Set from the widget option each
+-- service; nothing here derives or guesses it, because nothing can.
+State.pack = nil
 State.lastServiceTick = -1e9
 
 local lastSecondTick = nil

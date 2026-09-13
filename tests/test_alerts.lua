@@ -240,7 +240,7 @@ H.test("works on a bench with no telemetry at all", function()
        .. table.concat(Mock.spokenValues(), ", "))
 end)
 
-H.test("a test alert already switched on does not fire on every model change", function()
+H.test("a rebuilt widget does not announce a test by itself", function()
   -- Switching models rebuilds the widget. The off-to-on memory used to live on
   -- the module, which does not survive that - so an option left switched on
   -- read as a fresh transition every time, and the widget announced a test
@@ -253,16 +253,21 @@ H.test("a test alert already switched on does not fire on every model change", f
   Mock.install(); Mock.installLvgl(); Mock.installLogos()
   local def = assert(loadfile("dist/WIDGETS/ZelionDash/main.lua"))()
 
-  local opts = { TestAlert = 1 }
+  local opts = { SensorMap = 1 }
   local w = def.create({ x = 0, y = 0, w = 800, h = 480 }, opts)
   def.update(w, opts)
+  def.refresh(w, 0, nil)
   H.eq(#Mock.played, 0,
        "a model switch is not the pilot asking for a test")
 
-  -- And the option still works when it is actually toggled.
-  def.update(w, { TestAlert = 0 })
-  def.update(w, { TestAlert = 1 })
-  H.truthy(#Mock.played > 0, "off and on again must still sound one")
+  -- And the press still works. This is the whole reason the self-test stopped
+  -- being an option: a toggle left switched on read as a fresh off-to-on every
+  -- time the widget was rebuilt, so changing model announced a test alert - and
+  -- with no telemetry yet it spoke the low-cell threshold, so a heli that was
+  -- not even powered appeared to report a flat cell. A press has no position to
+  -- be left in.
+  def.refresh(w, EVT_VIRTUAL_ENTER, nil)
+  H.truthy(#Mock.played > 0, "the press must still sound one")
 end)
 
 H.test("does not disturb the real alerts", function()

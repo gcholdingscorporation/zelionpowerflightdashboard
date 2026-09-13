@@ -231,17 +231,83 @@ H.test("a supply collapse is not a resistance", function()
          "the decay was fitted as a pack resistance")
 end)
 
-H.test("each flight measures its own pack", function()
-  local ZD = fresh()
-  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
-  H.truthy(ZD.PackHealth.milliohms ~= nil)
-  Mock.setSensor("Hspd", 0)                 -- land
-  for _ = 1, 100 do
+-- The figure is measured in the air and written on the ground, and for a while
+-- nothing tested the handover between the two. There WAS a test here, and it
+-- asserted the bug: it required the figure to be gone the moment the rotor
+-- stopped, which is the one thing that guarantees the column can never be
+-- filled. Forty-seven real flights were logged with ir_mohm blank on every row
+-- before the CSV said so out loud.
+H.group("packhealth: handing the figure to the log")
+
+-- Land, servicing in the order the widget does: PackHealth first, the logging
+-- layer after. That order is the bug's whole opportunity.
+local function land(ZD, seconds)
+  Mock.setSensor("Hspd", 0)
+  for _ = 1, math.floor((seconds or 1) * 10) do
     Mock.advanceSeconds(0.1)
     ZD.State.service(Mock.state.time)
     ZD.PackHealth.service(Mock.state.time)
   end
-  H.nilv(ZD.PackHealth.milliohms, "the next pack starts from nothing")
+end
+
+H.test("the figure survives the disarm that writes it", function()
+  local ZD = fresh()
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  H.truthy(ZD.PackHealth.milliohms ~= nil, "nothing was measured in the air")
+  land(ZD, 10)
+  H.truthy(ZD.State.disarmPending, "the flight did not end")
+  H.near(ZD.PackHealth.milliohms, 3.5, 0.2,
+         "the figure was discarded before the row could be written")
+end)
+
+-- The assertion that would actually have caught it: not the field, the column.
+H.test("and reaches the flight log as a number", function()
+  local ZD = fresh()
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  land(ZD, 10)
+  -- Found by name. Reading the last field worked until a column was appended
+  -- after it, and a test that breaks when an unrelated column is added is a
+  -- test people learn to edit rather than believe.
+  local function column(ZD_, row, want)
+    local want_at, k = nil, 0
+    for name in string.gmatch(ZD_.FlightLog.HEADER, "[^,]+") do
+      k = k + 1
+      if name == want then want_at = k end
+    end
+    H.truthy(want_at ~= nil, "no " .. want .. " column in the header")
+    k = 0
+    for field in string.gmatch(row .. ",", "([^,]*),") do
+      k = k + 1
+      if k == want_at then return field end
+    end
+    return nil
+  end
+
+  local row = ZD.FlightLog.record()
+  local ir = column(ZD, row, "ir_mohm")
+  H.truthy(ir ~= nil and ir ~= "", "ir_mohm was blank in the row: " .. row)
+  H.near(tonumber(ir), 3.5, 0.2, "logged " .. tostring(ir))
+end)
+
+H.test("each flight measures its own pack", function()
+  local ZD = fresh()
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  land(ZD, 10)
+  -- Still held: this pack's row may not have been written yet.
+  H.truthy(ZD.PackHealth.milliohms ~= nil, "the landed flight lost its figure")
+
+  -- The next pack goes on. The previous flight's answer must not be sitting
+  -- there waiting to be logged against it.
+  Mock.setSensor("Hspd", 1850)
+  Mock.advanceSeconds(0.1)
+  ZD.State.service(Mock.state.time)
+  ZD.PackHealth.service(Mock.state.time)
+  H.nilv(ZD.PackHealth.milliohms, "the next pack started with the last one\'s figure")
+  H.eq(ZD.PackHealth.windows, 0)
+
+  fly(ZD, 60, 18.0, { base = 12, swing = 18 })
+  H.near(ZD.PackHealth.milliohms, 18.0, 1.5,
+         "the second pack read " .. tostring(ZD.PackHealth.milliohms))
 end)
 
 end

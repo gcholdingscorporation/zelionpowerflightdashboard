@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.5.1
+-- Version 1.6.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.5.1" }
+local ZD = { VERSION = "1.6.0" }
 
 -- ======== src/host.lua ========
 do
@@ -1977,6 +1977,10 @@ State.sessionStarted  = false
 -- one number this is useless without, since sag is the whole point.
 State.startPackVoltage = nil
 State.startCellVoltage = nil
+
+-- Which pack the pilot says is fitted, or nil. Set from the widget option each
+-- service; nothing here derives or guesses it, because nothing can.
+State.pack = nil
 State.lastServiceTick = -1e9
 
 local lastSecondTick = nil
@@ -3276,6 +3280,9 @@ end
 
 PackHealth.reset = reset
 
+-- Which side of the arm edge the last service saw.
+local wasArmed = false
+
 -- Least squares through the window. Returns milliohms per cell, or nil when
 -- the window cannot support a slope.
 local function solve()
@@ -3334,9 +3341,21 @@ end
 function PackHealth.service(now)
   now = now or Host.now()
 
+  -- Cleared when a flight STARTS, not when one ends.
+  --
+  -- State resets its extremes on the arm edge for a reason: the row is written
+  -- after the rotor stops, so anything cleared at disarm is cleared before the
+  -- logging layer can read it. This reset was on the wrong edge, and since
+  -- PackHealth.service runs ahead of FlightLog.service on the very frame that
+  -- latches the disarm, the figure was always nil by the time the record was
+  -- formatted. Forty-seven flights, ir_mohm blank on every one.
   if not State.armed then
-    reset()
+    wasArmed = false
     return
+  end
+  if not wasArmed then
+    wasArmed = true
+    reset()
   end
   -- Deliberately parked with the model powered. Same reasoning as the extremes.
   if State.holdActive then return end
@@ -3628,7 +3647,7 @@ FlightLog.MAX_RECORDS = 200
 FlightLog.HEADER =
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
-  "start_pack,start_cell,avg_amps,min_lq,ir_mohm"
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm,pack"
 
 -- Every header this file has ever had, oldest first, so a log written by an
 -- earlier build is widened rather than orphaned. Without this, changing the
@@ -3640,6 +3659,9 @@ FlightLog.LEGACY_HEADERS = {
   "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
   "max_esc_c,used_mah,end_pct," ..
   "start_pack,start_cell,avg_amps,min_lq",
+  "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+  "max_esc_c,used_mah,end_pct," ..
+  "start_pack,start_cell,avg_amps,min_lq,ir_mohm",
 }
 
 local function columnCount(header)
@@ -3817,6 +3839,10 @@ function FlightLog.record()
     -- is not: those are the extremes of the whole flight and need not have
     -- happened together. See packhealth.lua.
     safe(function() return num(ZD.PackHealth.milliohms, "%.1f") end),
+    -- The pilot's half of a pack's identity; the model column is the other
+    -- half. Blank when unset, never 0: a pack numbered zero and a pack nobody
+    -- named are different things, and only one of them should group.
+    safe(function() return num(State.pack, "%d") end),
   }, ",")
 end
 
@@ -5605,6 +5631,34 @@ local function profileRow()
   }
 end
 
+-- Which pack is on the aircraft. Nothing in telemetry knows, so this row is
+-- both the readout and the reminder to set it: an unset pack is not an error,
+-- but every flight logged without one is a flight that cannot be attributed.
+local function packRow()
+  local pack = State.pack
+  return {
+    label = "-- PACK --",
+    sensor = pack and (Host.modelName() .. " pack " .. pack)
+                  or "not set - flights unnamed",
+    value = pack and ("#" .. pack) or "unsaid",
+    status = pack and "ok" or "unbound",
+    important = true,
+  }
+end
+
+-- Whether the alerts are armed, and where the self-test moved to. A control
+-- nobody can discover is not a control, and the footer already carries the
+-- config faults and the arm state - it is the wrong place to hide one.
+local function alertsRow()
+  return {
+    label = "-- ALERTS --",
+    sensor = Alerts.enabled and "on - ENTER sounds one" or "off",
+    value = Alerts.count .. " fired",
+    status = Alerts.enabled and "ok" or "unbound",
+    important = true,
+  }
+end
+
 -- The flight log is silent by design: it writes once, at landing, and says
 -- nothing. That leaves no way to tell it is working without pulling the card,
 -- so it reports itself here - where it writes, how many records are in the
@@ -5669,7 +5723,7 @@ local function sensorMapRows()
   local rfRow, statsRow = rfToolRows()
   local logRow, flightRow = flightLogRows()
   add(rfRow); add(statsRow); add(configRow()); add(profileRow()); add(escRow())
-  add(logRow); add(flightRow)
+  add(packRow()); add(alertsRow()); add(logRow); add(flightRow)
 
   -- A role that bound to nothing has no sensor, no reading and no status worth
   -- a line of its own - only its name. There are usually ten of them, and as
@@ -5723,6 +5777,8 @@ local function serviceOpts(widget)
   local opts = widget.options or {}
   State.armSwitch = opts.ArmSwitch
   State.armInvert = opts.ArmInvert == 1
+  local pack = tonumber(opts.Pack) or 0
+  State.pack = (pack >= 1) and math.floor(pack) or nil
   local hold = false
   if opts.HoldSwitch and opts.HoldSwitch ~= 0 then
     local v = Host.read(opts.HoldSwitch)
@@ -5788,10 +5844,7 @@ function Widget.create(zone, options)
   pcall(State.reloadModel)
   built = nil
   zoneW, zoneH = nil, nil
-  -- Seeded, not defaulted to false: an option already on when the widget is
-  -- built is the state it is in, not a transition into it.
-  return { zone = zone, options = options,
-           lastTest = (options and options.TestAlert == 1) or false }
+  return { zone = zone, options = options }
 end
 
 function Widget.update(widget, options)
@@ -5806,19 +5859,12 @@ function Widget.update(widget, options)
   FlightTime.timerIndex = (t >= 1 and t <= 3) and (t - 1) or nil
   FlightTime.resetTimerWrite()
 
-  -- Edge-triggered: switching Test Alert on sounds one alert, switching it off
-  -- and on again sounds another.
-  --
-  -- The memory lives on the WIDGET, not on the module, and create() seeds it
-  -- from the option as found. Module state does not survive the widget being
-  -- rebuilt, so an option left switched on read as off-to-on every time the
-  -- pilot changed model - the widget announced a test alert on every switch to
-  -- that model, and with no telemetry yet the test speaks its fallback, which
-  -- is the low-cell threshold itself. A phantom "3.40 volts", on the ground,
-  -- from a helicopter that was not even powered.
-  local test = (options and options.TestAlert == 1) or false
-  if test and not widget.lastTest then pcall(Alerts.selfTest) end
-  widget.lastTest = test
+  -- The alert self-test used to be an option here, edge-triggered on being
+  -- switched from off to on. It is a key press on the sensor map now: EdgeTX
+  -- 2.11 allows ten widget options and this widget wants eleven, so the least
+  -- valuable slot paid for the pack number. A press is the better home anyway
+  -- - a toggle that fires on its rising edge is a control whose position does
+  -- not mean anything, and it took two bugs to get it behaving like one.
   -- There used to be a Level option here, stepping the renderer down one
   -- construct at a time. It existed only to bisect the emergency-mode reboot
   -- on hardware; the cause turned out to be XXLSIZE + BOLD selecting a font
@@ -5849,7 +5895,12 @@ function Widget.refresh(widget, event, touchState)
 
   if Widget.showSensors then
     if event == flag("EVT_VIRTUAL_NEXT", -1) then scroll = scroll + 1
-    elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1 end
+    elseif event == flag("EVT_VIRTUAL_PREV", -2) then scroll = scroll - 1
+    -- The alert self-test, on the page that already exists to answer "is this
+    -- thing working". It proves the volume is up and the haptic is on, which
+    -- are radio settings this widget cannot read - so it is the one pre-flight
+    -- check that has to be a physical press rather than something inferred.
+    elseif event == flag("EVT_VIRTUAL_ENTER", -3) then pcall(Alerts.selfTest) end
     local ok, rows, bound, note, bad = pcall(sensorMapRows)
     if ok then
       local clamped = Dashboard.updateSensorMap(rows, scroll, bound, note, bad)
@@ -5905,7 +5956,21 @@ Widget.options = {
   { "HoldInvert", BOOL,   0 },
   { "SensorMap",  BOOL,   0 },
   { "Alerts",     BOOL,   1 },
-  { "TestAlert",  BOOL,   0 },
+  -- Which pack is on the aircraft, 0 when unsaid. Written to the flight log,
+  -- where it is the pilot's half of a pack's identity - the model name is the
+  -- other half, so pack 3 on the M7R and pack 3 on the micro are two packs.
+  --
+  -- Nothing about a pack reaches telemetry. Five packs were flown on one
+  -- afternoon and nothing in the log could tell them apart, which makes a
+  -- resistance trend an average over whichever packs happened to fly. This is
+  -- the one number only the pilot can supply.
+  --
+  -- It sits in the slot the alert self-test used to hold, rather than on the
+  -- end: EdgeTX stores widget options positionally, so appending after a
+  -- removal would shift FlightLog up one and quietly read its setting out of
+  -- the slot beside it. A radio upgrading from 1.5.x reads its old TestAlert
+  -- 0 or 1 as pack 0 or 1, which is harmless and visible on the sensor map.
+  { "Pack",       VALUE,  0, 0, 20 },
   { "FlightLog",  BOOL,   1 },
 }
 
@@ -5914,7 +5979,7 @@ Widget.OPTION_LABELS = {
   HoldSwitch = "Hold Switch",
   SensorMap  = "Show Sensor Map",
   Alerts     = "Audio + Vibe Alerts",
-  TestAlert  = "Test Alert (toggle)",
+  Pack       = "Pack Number (0 = unsaid)",
   FlightLog  = "Log Flights",
 }
 
