@@ -558,6 +558,19 @@ the full list of role names.
 
 A missing config file is entirely normal — everything auto-detects.
 
+### The radio allows 60 telemetry sensors per model
+
+That is EdgeTX's cap, not the widget's, and it is worth knowing because a model
+that has reached it stops accepting new ones — quietly, at the point where you
+are re-discovering telemetry and expecting the list to grow. Rotorflight
+publishes a lot of sensors, so a full list is closer than it sounds.
+
+The widget reads all 60 slots, so nothing on the radio is out of its reach, and
+binding a sensor by name does not walk the list at all. The cap only bites when
+the sensor you wanted was never created. If a role stays unbound and the
+diagnostics screen shows nothing to bind it to, the fix is on the radio rather
+than in `sensors.cfg`: delete the sensors you do not use and re-discover.
+
 ## Development
 
 Requires Lua 5.4 on the desktop (`apt install lua5.4`).
