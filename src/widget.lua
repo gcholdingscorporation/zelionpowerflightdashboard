@@ -383,6 +383,21 @@ local function flightLogRows()
                              FlightLog.MIN_SECONDS),
     status = State.armed and "ok" or "unbound",
   }
+
+  -- Only when there is something to say. Moving a row out of the log is not a
+  -- fault and needs no colour, but it is a thing that happened to a pilot's
+  -- data behind their back, and the one screen that reports this widget to
+  -- itself is where it belongs. Naming the file is the point: the rows are
+  -- still there, and nobody would guess where.
+  if FlightLog.quarantined > 0 then
+    return logRow, {
+      label = "  unreadable",
+      sensor = "moved to " .. FlightLog.QUARANTINE .. ", not deleted",
+      value = string.format("%d row%s", FlightLog.quarantined,
+                            FlightLog.quarantined == 1 and "" or "s"),
+      status = "unbound",
+    }, flightRow
+  end
   return logRow, flightRow
 end
 
