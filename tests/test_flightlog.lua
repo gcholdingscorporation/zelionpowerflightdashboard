@@ -664,6 +664,19 @@ H.test("two helicopters on one model slot are told apart", function()
        "both flights logged as the same aircraft: " .. b)
 end)
 
+H.test("the craft is written even when it matches the model slot", function()
+  -- It used to be suppressed in that case, to avoid repeating the column
+  -- beside it - which made an empty cell mean two different things: "nothing
+  -- named this aircraft" and "its name happens to match the slot". A real log
+  -- came back with the craft column blank on every row of an aircraft the
+  -- flight controller had named perfectly well.
+  local ZD = fresh(withFc("OMP M4 Max", "OMP M4 Max"))
+  flight(ZD, 40)
+  local rec = lines()[2]
+  H.eq(column(ZD, rec, "craft"), "OMP M4 Max",
+       "the flight controller named it and the log dropped it: " .. rec)
+end)
+
 H.test("a craft with no flight controller name still logs the flight", function()
   local ZD = fresh(loaded)                  -- no RF Tool at all
   flight(ZD, 40)

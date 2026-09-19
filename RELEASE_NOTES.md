@@ -1,54 +1,65 @@
-The aircraft that cannot name themselves are now identified by their cell count.
+The countdown now survives a landing, and the craft column stops hiding itself.
 
 ## Install
 
-`ZelionDash-1.9.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.10.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## When the flight controller will not say
+## The second flight of a pack counted down in silence
 
-1.8.0 let the flight controller identify the aircraft, so one EdgeTX model
-could fly several helicopters. That works on Rotorflight, which reports a craft
-name. OMPHOBBY's **OSF03 has no provision for one**, so those aircraft arrive
-anonymous — and on one model slot, anonymous means indistinguishable.
+Land with pack left, launch again, and the timer made no callouts.
 
-What they do bring is a **cell count**. A fleet whose unnamed aircraft differ
-in cells is fully separable by it:
+On disarm the estimate was cleared along with its monotonic floor. Re-arming
+rebuilt it from scratch, so the timer **jumped back up** — and EdgeTX announces
+a threshold as a timer walks down through it, and will not speak one it has
+already passed. The first flight said sixty, thirty, twenty, ten. The second
+flight walked down through the same values in silence.
 
-```ini
-[cells:3]
-craftName = Omphobby M2 V3
+The floor now survives a landing. The rate is still re-measured every flight;
+only the floor persists, because it belongs to the pack and the pack is still
+on the aircraft.
 
-[cells:2]
-craftName = Omphobby M1 V3
-```
+## A pack change still wipes it
 
-That name is written to the log's `craft` column exactly as a reported one
-would be. A `[cells:N]` section takes role overrides like any other, so an
-aircraft on a different flight controller can have its own sensor bindings
-without its own model slot.
+This is the trap, and it is worth being explicit about. Keeping the floor
+across a landing is right. Keeping it across a **pack** is a full battery
+reading forty seconds remaining, with no way back up, because a floor only
+falls.
 
-Layering is `[*]` → `[model slot]` → `[cells:N]` → `[craft]`, most specific
-last. **A reported craft name always wins over a cell count** — a name is a
-fact and a count is an inference. That is what keeps two aircraft that share a
-cell count apart when only their names differ.
+The existing new-pack guard could not catch it: it compares against the first
+sample of the current flight, and the samples are cleared on every landing, so
+it only ever saw a counter reset **mid**-flight. Two checks now bracket the
+gap between flights:
 
-## `cells` column
+- the consumed figure opening lower than the last flight closed at, which is a
+  flight controller that lost power;
+- a pack reading over 95%, which cannot be the one just landed on — belt and
+  braces for a flight controller that kept power through the swap, or a
+  percentage published from voltage rather than counted coulombs.
 
-The cell count is now logged in its own right. It is the discriminator of last
-resort, it costs four characters a row, and it is what separated five aircraft
-in a log that had been flying them all under one model name.
+## No stale number on the timer
 
-## A reload that was far too big
+With no estimate, `driveTimer` used to write nothing, which leaves the previous
+flight's value on the timer. Arm on a fresh pack and it read four minutes —
+from the pack before it — until the new one fell below 95%. It writes zero now.
+A stale number that looks live is the one thing this widget exists not to do.
 
-The first version of this reloaded the model when the cell count changed. The
-cell count is derived from pack voltage over cell voltage, so a **supply
-collapse moves it** — and a model reload resets the session, throwing away the
-flight's recorded minimum at the exact moment that minimum was worth having.
+## `craft` stops hiding itself
 
-It re-resolves the sensor bindings now and nothing else. A different cell count
-means different overrides; it does not mean a different flight.
+The column was suppressed when the resolved name matched the EdgeTX model name,
+to avoid repeating the column beside it. That made an empty cell mean two
+different things: "nothing named this aircraft" and "its name happens to match
+the slot". A real log came back blank on every row of an aircraft the flight
+controller had named perfectly well.
+
+It is written whenever anything names the aircraft. Blank now means only that
+nothing did.
 
 ## Tests
 
-361, up five. Three mutations verified. Restoring the oversized reload fails 35
-tests, which is a fair measure of what it was doing.
+365, up four. Four mutations verified, including the naive version of this fix
+— keep the floor, skip the cross-flight pack check — which passes every other
+test in the file and fails exactly the two that matter.
+
+One existing test had to be rewritten twice. It compared the two flights'
+estimates directly, which proves nothing: the pack is emptier the second time,
+so the number falls either way. It passed with the bug still in place.

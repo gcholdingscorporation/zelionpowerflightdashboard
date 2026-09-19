@@ -279,10 +279,19 @@ end
 -- can name them in sensors.cfg against [cells:N]. Failing both, the radio's
 -- model slot - which is the right answer on a radio that keeps one per
 -- aircraft, and the only answer available otherwise.
-function State.aircraft()
+-- What actually NAMES this aircraft, or nil when nothing does.
+--
+-- Separate from State.aircraft below, which falls back to the model slot. The
+-- distinction matters to the log: an empty craft column has to mean "nothing
+-- named this", and if the fallback were written there it would also mean "the
+-- name matches the slot" - two different facts in one blank cell.
+function State.namedAircraft()
   return State.craftName()
          or ZD.Config.nameFor(Host.modelName(), nil, State.cells())
-         or Host.modelName()
+end
+
+function State.aircraft()
+  return State.namedAircraft() or Host.modelName()
 end
 
 function State.reloadModel()
