@@ -916,6 +916,15 @@ Config.NAME_KEY = "craftName"
 -- Sections keyed on cell count rather than on a name: [cells:3].
 Config.CELLS_PREFIX = "cells:"
 
+-- Settings written inside an ordinary section rather than in [battery], so a
+-- threshold or a reserve can belong to one aircraft instead of the whole radio.
+--   { [sectionLower] = { [settingName] = number } }
+--
+-- [battery] stays exactly what it was, and is the base every scoped value is
+-- layered over. It had to: a radio-wide reserve is the common case and the
+-- files already in the field are written that way.
+Config.sectionSettings = {}
+
 -- Section name -> the pilot's name for that aircraft.
 Config.names = {}
 
@@ -948,9 +957,11 @@ function Config.parse(text)
   local settings = {}
   local explicit = {}
   local names = {}
+  local scoped = {}
   for k, spec in pairs(SETTINGS) do settings[k] = spec.default end
   if not text or text == "" then
     Config.explicit, Config.names = explicit, names
+    Config.sectionSettings = scoped
     return sections, problems, settings
   end
 
@@ -995,6 +1006,20 @@ function Config.parse(text)
           end
         elseif key == Config.NAME_KEY then
           names[current] = value
+        elseif SETTINGS[key] then
+          -- The same key, scoped to whatever this section describes. Range
+          -- checking is the [battery] path's, word for word: a typo is a typo
+          -- wherever it is written, and a reserve of 400 is not a reserve.
+          local spec = SETTINGS[key]
+          local n = tonumber(value)
+          if not n or n < spec.min or n > spec.max then
+            problems[#problems + 1] =
+              string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
+                            spec.min, spec.max)
+          else
+            scoped[current] = scoped[current] or {}
+            scoped[current][key] = n
+          end
         elseif not Roles.get(key) then
           problems[#problems + 1] =
             string.format("line %d: unknown role '%s'", lineNo, key)
@@ -1012,7 +1037,25 @@ function Config.parse(text)
     explicit.cellMin, explicit.cellFull = nil, nil
   end
 
+  -- The same inversion check the [battery] pair gets, but per section and
+  -- against the base the section is layered over - a section setting only one
+  -- half of the pair still has to land above the other half. Checked here and
+  -- not at resolve time because resolve runs on every craft change and would
+  -- report the one bad line once per helicopter.
+  for key, vals in pairs(scoped) do
+    if vals.cellMin or vals.cellFull then
+      local lo = vals.cellMin or settings.cellMin
+      local hi = vals.cellFull or settings.cellFull
+      if lo >= hi then
+        problems[#problems + 1] =
+          string.format("[%s]: cellMin must be below cellFull", key)
+        vals.cellMin, vals.cellFull = nil, nil
+      end
+    end
+  end
+
   Config.explicit, Config.names = explicit, names
+  Config.sectionSettings = scoped
   return sections, problems, settings
 end
 
@@ -1025,9 +1068,60 @@ Config.loaded   = false
 -- "the file the pilot thinks they wrote is not where the widget looks".
 Config.present  = false
 
--- The reserved section is not model-scoped: one pack chemistry per radio is
--- the common case, and per-model curves would need a second lookup for a
--- setting almost nobody changes.
+-- What [battery] and the defaults alone say, before any aircraft is known.
+-- Kept apart from Config.settings because the scoped view is rebuilt from it
+-- every time the aircraft changes, and rebuilding from an already-scoped table
+-- would let the last helicopter's reserve leak into the next one.
+Config.baseSettings = {}
+Config.baseExplicit = {}
+
+-- Which aircraft the resolved settings currently describe. Set by whoever
+-- knows, which is Sensors.reload - the same call that re-resolves the bindings
+-- when the flight controller reports a different craft.
+Config.scopeModel, Config.scopeCraft, Config.scopeCells = nil, nil, nil
+
+-- Collapse [battery] and the sections describing this aircraft into the flat
+-- view Config.setting reads.
+--
+-- The chain is the bindings' own, [*] -> [model] -> [cells:N] -> [craft], with
+-- [battery] beneath all of it as the radio-wide base. So a reserve written in
+-- [battery] still applies to every helicopter, and one written against a craft
+-- applies to that helicopter only - which is the whole point: a 45% reserve
+-- suits a 6S 2200 and lands the 2S micro several minutes early, and one number
+-- could never be both.
+function Config.applyScope()
+  local settings, explicit = {}, {}
+  for k, v in pairs(Config.baseSettings) do settings[k] = v end
+  for k, v in pairs(Config.baseExplicit) do explicit[k] = v end
+  for _, key in ipairs(Config.keysFor(Config.scopeModel, Config.scopeCraft,
+                                      Config.scopeCells)) do
+    local vals = key and Config.sectionSettings[string.lower(trim(key))]
+    if vals then
+      for k, v in pairs(vals) do
+        settings[k] = v
+        -- Explicit in the scoped sense: somebody wrote this down for THIS
+        -- helicopter. Profiles.setting reads it to decide whether an aircraft
+        -- profile may fill a threshold in, and a profile must not overrule a
+        -- number a pilot scoped to the aircraft in front of them.
+        explicit[k] = true
+      end
+    end
+  end
+  Config.settings, Config.explicit = settings, explicit
+end
+
+-- Point the settings at an aircraft. Cheap and idempotent, so callers that are
+-- not sure whether anything changed can simply call it.
+function Config.scope(modelName, craftName, cells)
+  if not Config.loaded then Config.load() end
+  Config.scopeModel, Config.scopeCraft, Config.scopeCells =
+    modelName, craftName, cells
+  Config.applyScope()
+end
+
+-- Resolved for whatever aircraft Config.scope was last pointed at. With no
+-- scope set this is [battery] and the defaults, which is what a radio flying
+-- one helicopter from one model slot has always got.
 function Config.setting(name)
   if not Config.loaded then Config.load() end
   local v = Config.settings[name]
@@ -1045,10 +1139,14 @@ function Config.load()
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.
     local _, _, defaults = Config.parse(nil)
-    Config.settings = defaults
+    Config.baseSettings, Config.baseExplicit = defaults, {}
+    Config.applyScope()
     return false
   end
-  Config.sections, Config.problems, Config.settings = Config.parse(text)
+  local sections, problems, settings = Config.parse(text)
+  Config.sections, Config.problems = sections, problems
+  Config.baseSettings, Config.baseExplicit = settings, Config.explicit
+  Config.applyScope()
   Config.present = true
   return true
 end
@@ -1088,6 +1186,9 @@ function Config.appliedFor(modelName, craftName, cells)
     if sect then for _ in pairs(sect) do n = n + 1 end end
     -- A section that only names the aircraft has carried something too.
     if Config.names[key] then n = n + 1 end
+    -- So has one that only sets a threshold or a reserve for this aircraft.
+    local vals = Config.sectionSettings[key]
+    if vals then for _ in pairs(vals) do n = n + 1 end end
     if n == 0 then return end
     seen[key] = true
     names[#names + 1] = shown
@@ -1107,8 +1208,11 @@ function Config.appliedFor(modelName, craftName, cells)
   -- amber, while that override was in force. That is the precise false negative
   -- this row exists to prevent, pointed the wrong way: it told a pilot their
   -- settings were doing nothing at the moment they started working.
+  -- baseExplicit, not explicit: explicit is the resolved view and now carries
+  -- the scoped settings too, which the sections above have already counted.
+  -- Counting it here again would report a craft's one reserve as two.
   local n = 0
-  for _ in pairs(Config.explicit) do n = n + 1 end
+  for _ in pairs(Config.baseExplicit) do n = n + 1 end
   if n > 0 then
     names[#names + 1] = "battery"
     count = count + n
@@ -1617,6 +1721,12 @@ function Sensors.reload(modelName, craftName, cells)
   Sensors.craftName = craftName
   Sensors.cells     = cells
   Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName, cells)
+  -- Settings are scoped to the same aircraft as the bindings, and this is the
+  -- one call that already knows which aircraft that is. A reserve written for
+  -- a craft has to arrive the moment that craft does, not at the next reload:
+  -- the flight controller renaming itself mid-session is exactly the case
+  -- [craft] sections exist for.
+  Config.scope(Sensors.modelName, craftName, cells)
   lastProbe = -1e9
   Sensors.resolve(true)
 end
