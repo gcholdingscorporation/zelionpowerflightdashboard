@@ -107,8 +107,11 @@
 # [Goblin 700]
 # escTemperature = Tmp1
 #
-# Settings in [battery] are radio-wide and cannot be scoped to a model or a
-# craft. Everything above can be.
+# Settings can be scoped exactly like the bindings above. Writing one inside
+# [battery] applies it to the whole radio, which is usually what a pack setting
+# means; writing the same key inside [*], a model, a [cells:N] or a craft
+# section applies it to that aircraft and nothing else, with the most specific
+# winning. See "scoping a setting" at the end of this file.
 
 
 # ---------------------------------------------------------------------------
@@ -176,3 +179,38 @@
 #
 # [battery]
 # reservePct = 20
+
+
+# ---------------------------------------------------------------------------
+# SCOPING A SETTING TO ONE AIRCRAFT
+# ---------------------------------------------------------------------------
+#
+# The five [battery] settings can be written in any section, and resolve down
+# the same chain the sensor bindings use:
+#
+#   [battery]  ->  [*]  ->  [model]  ->  [cells:N]  ->  [craft]
+#
+# most specific last. [battery] is the base, so a fleet that wants one number
+# everywhere keeps writing exactly what it wrote before.
+#
+# reservePct is the one that needed this. Calibrated against where a pilot
+# actually lands - rested cell voltage against the percentage the pack was at -
+# a 6S 2200 and a 2S micro do not agree: the same 3.80 V rested is about 45% on
+# one and about 41% on the other. A single radio-wide figure is short on one
+# helicopter or early on the other, and the midpoint is both.
+#
+#   [battery]
+#   reservePct = 40          # everything, unless something below says otherwise
+#
+#   [ALZRC Devil 380]
+#   reservePct = 45          # this helicopter only, by the name its FC reports
+#
+#   [cells:2]
+#   reservePct = 41          # the 2S micro, which has no name to go by
+#
+# A setting written against an aircraft also counts as explicitly set, so an
+# aircraft profile will not overrule it - the same rule [battery] has always
+# had, now applying at whatever scope it was written.
+#
+# The sensor map's CONFIG row counts these like any other override, so a
+# section carrying nothing but a reserve still shows up as having applied.
