@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.9.0
+-- Version 1.10.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.9.0" }
+local ZD = { VERSION = "1.10.0" }
 
 -- ======== src/host.lua ========
 do
@@ -2302,10 +2302,19 @@ end
 -- can name them in sensors.cfg against [cells:N]. Failing both, the radio's
 -- model slot - which is the right answer on a radio that keeps one per
 -- aircraft, and the only answer available otherwise.
-function State.aircraft()
+-- What actually NAMES this aircraft, or nil when nothing does.
+--
+-- Separate from State.aircraft below, which falls back to the model slot. The
+-- distinction matters to the log: an empty craft column has to mean "nothing
+-- named this", and if the fallback were written there it would also mean "the
+-- name matches the slot" - two different facts in one blank cell.
+function State.namedAircraft()
   return State.craftName()
          or ZD.Config.nameFor(Host.modelName(), nil, State.cells())
-         or Host.modelName()
+end
+
+function State.aircraft()
+  return State.namedAircraft() or Host.modelName()
 end
 
 function State.reloadModel()
@@ -3226,14 +3235,30 @@ FlightTime.why     = "idle"     -- why there is no estimate, in a pilot's terms
 local samples = {}
 local floorSeconds = nil        -- monotonic clamp, see below
 
+-- The largest consumed-capacity figure seen, ACROSS flights.
+--
+-- The floor below outlives a landing, so something has to say when it must
+-- not. This is that something: a flight controller resets its consumed-mAh
+-- counter when it loses power, so a flight that opens lower than the last one
+-- closed is a flight on a different pack.
+local lastUsed = nil
+
+-- Clears the per-flight measurement. The floor is deliberately NOT cleared
+-- here - see newPack().
 local function reset()
   samples = {}
-  floorSeconds = nil
   FlightTime.seconds = nil
   FlightTime.rate    = nil
 end
 
-FlightTime.reset = reset
+-- Clears everything, including the floor and the pack memory.
+local function newPack()
+  reset()
+  floorSeconds = nil
+  lastUsed = nil
+end
+
+FlightTime.reset = newPack
 
 local function reserve()
   return Config.setting("reservePct")
@@ -3246,6 +3271,21 @@ local function estimate(now)
   if not usedOk then return nil, "no capacity sensor" end
   if not pctOk  then return nil, "no battery percent" end
 
+  -- A new pack, detected across the gap between two flights.
+  --
+  -- The check below this one compares against the first sample of the CURRENT
+  -- flight, and the samples are cleared on every landing - so on its own it
+  -- can only catch a counter reset mid-flight, never a pack swapped between
+  -- two. That was fine while the floor died at the landing too. It is not fine
+  -- now: without this, a fresh pack inherits the last pack's floor, and a full
+  -- battery reads forty seconds remaining with no way to climb back.
+  if lastUsed and used < lastUsed - 1 then
+    newPack()
+    lastUsed = used
+    return nil, "new pack"
+  end
+  lastUsed = used
+
   samples[#samples + 1] = { t = now, used = used }
   while #samples > 1 and (now - samples[1].t) > FlightTime.WINDOW do
     table.remove(samples, 1)
@@ -3255,12 +3295,13 @@ local function estimate(now)
   local span  = now - first.t
   if span < FlightTime.MIN_SPAN then return nil, "measuring" end
 
-  -- Capacity used only ever increases. A decrease means the flight controller
-  -- reset its counter - a new pack - so start over rather than reporting a
-  -- negative draw.
+  -- Capacity used only ever increases. The cross-flight check above catches a
+  -- counter reset; this one catches a drift smaller than its threshold that
+  -- has still accumulated backwards across the window, which would otherwise
+  -- give a negative rate and an estimate that grows as the pack empties.
   local drawn = used - first.used
   if drawn < 0 then
-    reset()
+    newPack()
     return nil, "new pack"
   end
 
@@ -3269,7 +3310,20 @@ local function estimate(now)
   FlightTime.rate = rate
   if rate <= 0 then return nil, "not drawing" end
 
-  if pct > FlightTime.MAX_PCT then return nil, "pack too full to tell" end
+  -- Belt and braces on the same question. A pack reading this full cannot be
+  -- the one just landed on, whatever the capacity counter says - a flight
+  -- controller that kept power through the swap, or a percentage published
+  -- from voltage rather than coulombs, would slip past the check above.
+  if pct > FlightTime.MAX_PCT then
+    -- The floor only. Not newPack(), which also throws away the samples and so
+    -- restarts the eight-second measuring window - and since this branch is
+    -- reached on every pass while the pack reads full, it never got past it:
+    -- measure for eight seconds, wipe, measure for eight seconds, forever.
+    -- The rate is a fine measurement here; it is the remainder arithmetic that
+    -- cannot be done on a pack this full.
+    floorSeconds = nil
+    return nil, "pack too full to tell"
+  end
   local left = pct - reserve()
   if left <= 0 then return 0, nil end
 
@@ -3286,6 +3340,11 @@ function FlightTime.service(now)
   now = now or Host.now()
 
   if not State.armed then
+    -- reset(), not newPack(): the rate has to be re-measured on the next
+    -- flight, but the floor belongs to the PACK and the pack is still on the
+    -- aircraft. Clearing it here is what silenced the countdown on a second
+    -- flight - the estimate was rebuilt from scratch, the timer jumped back
+    -- up, and EdgeTX does not re-announce a threshold it has already spoken.
     reset()
     FlightTime.why = "idle"
     return
@@ -3331,9 +3390,14 @@ function FlightTime.driveTimer()
   local idx = FlightTime.timerIndex
   if idx == nil then return false end
 
+  -- No estimate means write zero, not write nothing.
+  --
+  -- Writing nothing leaves the timer showing whatever the last flight left
+  -- there: arm on a fresh pack and it reads four minutes, from the pack before
+  -- it, until the new one falls below 95% and the estimate appears. A stale
+  -- number that looks live is the one thing this widget exists not to do.
   local secs = FlightTime.seconds
-  if secs == nil then return false end
-  secs = math.floor(secs + 0.5)
+  if secs == nil then secs = 0 else secs = math.floor(secs + 0.5) end
 
   -- Once a second at most. The estimate is a 30 second average; writing it at
   -- 10 Hz would be ten times the work for the same number.
@@ -4088,10 +4152,16 @@ local function restedTail(settled)
   -- Cells is logged in its own right because it is the discriminator of last
   -- resort. It is what separated five aircraft in a log that had been flying
   -- them all under one model name, and it costs four characters a row.
+  -- Written whenever anything names the aircraft, even when that name matches
+  -- the model slot.
+  --
+  -- It used to be suppressed in that case, to avoid repeating the column
+  -- beside it. That made blank mean two different things - "nothing named
+  -- this" and "the name happens to match the slot" - and a log where an empty
+  -- cell is ambiguous is a log that has to be cross-checked before it can be
+  -- read. It cost nothing and it hid which aircraft flew.
   local tail = "," .. safe(function()
-    local name = State.aircraft()
-    if not name or name == Host.modelName() then return "" end
-    return field(name)
+    return field(State.namedAircraft() or "")
   end) .. "," .. safe(function() return num(State.cells(), "%d") end)
   if not settled then return ",," .. tail end
   return "," ..

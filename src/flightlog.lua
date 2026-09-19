@@ -316,10 +316,16 @@ local function restedTail(settled)
   -- Cells is logged in its own right because it is the discriminator of last
   -- resort. It is what separated five aircraft in a log that had been flying
   -- them all under one model name, and it costs four characters a row.
+  -- Written whenever anything names the aircraft, even when that name matches
+  -- the model slot.
+  --
+  -- It used to be suppressed in that case, to avoid repeating the column
+  -- beside it. That made blank mean two different things - "nothing named
+  -- this" and "the name happens to match the slot" - and a log where an empty
+  -- cell is ambiguous is a log that has to be cross-checked before it can be
+  -- read. It cost nothing and it hid which aircraft flew.
   local tail = "," .. safe(function()
-    local name = State.aircraft()
-    if not name or name == Host.modelName() then return "" end
-    return field(name)
+    return field(State.namedAircraft() or "")
   end) .. "," .. safe(function() return num(State.cells(), "%d") end)
   if not settled then return ",," .. tail end
   return "," ..

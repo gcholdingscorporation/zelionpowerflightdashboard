@@ -253,7 +253,13 @@ H.test("does not rewrite the same second over and over", function()
   H.eq(Mock.state.timerWrites, 0, "the value has not changed, so neither has the timer")
 end)
 
-H.test("no estimate means the timer is left alone", function()
+H.test("no estimate means the timer reads zero, not the last flight's number", function()
+  -- This test used to assert the opposite - that the timer was left alone -
+  -- with the comment "a stale countdown is worse than none" attached to the
+  -- behaviour that produces exactly that. Leaving it alone does not clear it:
+  -- it leaves the previous pack's estimate sitting on the screen. Arm on a
+  -- fresh battery and the timer reads four minutes, from the pack before it,
+  -- until the new one falls under 95% and a real estimate appears.
   local ZD = fresh(function()
     Mock.addSensor("Hspd", 18, 0)
     Mock.addSensor("Capa", 14, 0)
@@ -262,7 +268,115 @@ H.test("no estimate means the timer is left alone", function()
   ZD.FlightTime.timerIndex = 1
   run(ZD, 20)
   ZD.FlightTime.driveTimer()
-  H.eq(Mock.state.timerWrites, 0, "a stale countdown is worse than none")
+  H.eq(Mock.state.timers[1].value, 0, "a stale countdown is worse than none")
+
+  -- Once, though. Zero is a value like any other and the per-second dedupe
+  -- still applies; rewriting it every pass would be ten writes a second.
+  local writes = Mock.state.timerWrites
+  for _ = 1, 20 do ZD.FlightTime.driveTimer() end
+  H.eq(Mock.state.timerWrites, writes, "rewrote a value that had not changed")
 end)
+
+
+H.group("flighttime: two flights on one pack")
+
+-- Land with pack left, launch again, and the countdown has to carry on rather
+-- than start over. It used to start over: the monotonic floor was cleared at
+-- the landing, the estimate was rebuilt from scratch, the timer jumped back UP
+-- - and EdgeTX announces a threshold as a timer walks DOWN through it and will
+-- not speak one it has already passed. So the second flight of a pack counted
+-- down in silence, which is the flight where the callouts matter most.
+
+local function land(ZD)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  Mock.setSensor("Hspd", 5000)
+end
+
+H.test("the countdown carries on rather than starting over", function()
+  -- Flown hard, then landed and flown gently. A fresh estimate on the second
+  -- flight would be far LARGER - the draw is a fifth of what it was - so this
+  -- only passes if the floor from the first flight survived the landing.
+  --
+  -- An earlier version of this test compared the two estimates directly, which
+  -- proves nothing: the pack is emptier the second time, so the number falls
+  -- either way. It passed with the bug still in place.
+  local ZD, h = nil, nil
+  ZD = fresh(function() h = heli(1000) end)
+  local used = fly(ZD, h, 60, 600)
+  local before = ZD.FlightTime.seconds
+  H.truthy(before, "no estimate on the first flight")
+
+  land(ZD)
+  H.nilv(ZD.FlightTime.seconds, "an estimate while disarmed")
+
+  fly(ZD, h, 40, 120, used)          -- a fifth of the draw
+  local after = ZD.FlightTime.seconds
+  H.truthy(after, "the second flight never produced one")
+  H.truthy(after <= before,
+           string.format("the timer jumped back up on the same pack: "
+                         .. "%.0f -> %.0f", before, after))
+end)
+
+H.test("but a pack change wipes it", function()
+  -- The trap. Keeping the floor across a landing is right; keeping it across a
+  -- PACK is a full battery reading forty seconds remaining, with no way back up
+  -- because a floor only falls. The naive version of this fix passes every
+  -- other test in this file and fails exactly here.
+  local ZD, h = nil, nil
+  ZD = fresh(function() h = heli(1000) end)
+  fly(ZD, h, 90, 600)
+  local low = ZD.FlightTime.seconds
+  H.truthy(low, "no estimate to inherit")
+
+  land(ZD)
+  h.burn(0)                          -- unplugged, replugged: counter and pack reset
+  run(ZD, 0.1)                       -- the single pass that spots it
+  H.eq(ZD.FlightTime.why, "new pack", "the swap went unnoticed")
+
+  -- Fly the fresh pack down past 95% so an estimate is possible at all.
+  fly(ZD, h, 40, 600)
+  local fresh_ = ZD.FlightTime.seconds
+  H.truthy(fresh_, "no estimate on the new pack")
+  H.truthy(fresh_ > low,
+           string.format("the new pack inherited the old one's floor: %.0f vs %.0f",
+                         fresh_, low))
+end)
+
+H.test("a pack too full to be the one just landed on also wipes it", function()
+  -- Belt and braces for a flight controller that keeps power across the swap,
+  -- or a percentage published from voltage rather than counted coulombs - both
+  -- leave the capacity counter looking continuous.
+  local ZD, h = nil, nil
+  ZD = fresh(function() h = heli(1000) end)
+  fly(ZD, h, 90, 600)
+  local low = ZD.FlightTime.seconds
+  H.truthy(low, "no estimate to inherit")
+  land(ZD)
+
+  -- A swap the capacity counter never saw: percent jumps back to full while
+  -- the consumed figure carries on climbing, so nothing looks discontinuous.
+  local used = 900
+  for _ = 1, 12 do
+    used = used + 10
+    Mock.setSensor("Capa", used)
+    Mock.setSensor("Bat%", 100)
+    run(ZD, 1)
+  end
+  H.eq(ZD.FlightTime.why, "pack too full to tell")
+
+  for _ = 1, 40 do
+    used = used + 10
+    Mock.setSensor("Capa", used)
+    Mock.setSensor("Bat%", math.max(0, 100 - (used - 900) / 1000 * 100))
+    run(ZD, 1)
+  end
+  local after = ZD.FlightTime.seconds
+  H.truthy(after, "no estimate after the swap")
+  H.truthy(after > low,
+           string.format("the full pack kept the old floor: %.0f vs %.0f",
+                         after, low))
+end)
+
 
 end

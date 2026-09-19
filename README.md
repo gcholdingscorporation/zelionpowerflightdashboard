@@ -355,6 +355,18 @@ so a wrong choice is visible on the ground rather than in the air.
 The estimate reaches zero at a reserve rather than at a flat pack. Default 20%;
 change it with `reservePct` in `sensors.cfg`.
 
+The countdown **survives a landing**. Land with pack left, launch again, and it
+carries on from where it stopped rather than starting over — because EdgeTX
+announces a threshold as a timer walks down through it and will not speak one
+it has already passed. Rebuilding the estimate from scratch made the timer jump
+back up, and the second flight of a pack counted down in silence.
+
+A **pack change** wipes it, detected two ways: the flight controller's consumed
+figure opening lower than the last flight closed at, and a pack reading over
+95%, which cannot be the one you just landed on. With no estimate the timer is
+written as **zero** rather than left alone — leaving it alone leaves the
+previous pack's number sitting there looking live.
+
 It refuses to answer rather than guess — in the first seconds of a flight,
 off a pack too full for the arithmetic to mean anything, or with no capacity or
 percent sensor. The `flight` row on the sensor map says which. It also only
