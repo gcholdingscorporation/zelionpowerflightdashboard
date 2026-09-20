@@ -11,14 +11,14 @@ name: tests
 # for one commit is worse than one: a red result appears twice and neither run
 # is obviously the authoritative one.
 #
-# So push covers the two long-lived branches, where there is no pull request to
-# cover them, and pull_request covers everything else. A working branch gets its
+# So push covers main, the only long-lived branch and the one no pull request
+# covers, and pull_request covers everything else. A working branch gets its
 # first run when its pull request opens rather than on its first push - which is
 # also the only arrangement that covers a pull request from a fork, since a fork
 # pushes nothing to this repository.
 on:
   push:
-    branches: [main, claude/rc-heli-widget-b1zu1o]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

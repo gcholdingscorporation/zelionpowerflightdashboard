@@ -33,15 +33,24 @@ the loader, and anything in `widget.lua` is reachable only from
 
 ## Branches
 
-- `main` is the released branch. Every release tag is cut from it.
-- `claude/rc-heli-widget-b1zu1o` is the development branch.
-- Work happens on a branch off the development branch, and its pull request
-  targets the development branch — not `main`.
-- `main` receives work through one pull request per version, titled
-  `ZelionDash <version>`, merged with a merge commit.
+`main` is the only long-lived branch. It is the default branch, it is protected,
+and every release tag is cut from it.
 
-A branch that has been merged is finished. Restart from the current development
-branch rather than stacking new commits on merged history.
+- Work happens on a branch off `main`, and its pull request targets `main`,
+  merged with a merge commit.
+- `main` requires the `test` check to pass before a pull request merges. The
+  repository owner can bypass that; nobody else can.
+- Merged branches are deleted automatically on merge. A branch that has been
+  merged is finished — start a new one from the current `main` rather than
+  stacking commits on merged history.
+
+There was a long-lived development branch, `claude/rc-heli-widget-b1zu1o`, that
+every change passed through on its way to `main`. It is gone, and staying gone.
+`main` became the default branch and took on the required check that the
+development branch had only been providing by convention, which left the second
+branch costing an extra merge per release and buying nothing. It also could not
+survive automatic branch deletion: it was the head branch of every version pull
+request, so merging one deleted it.
 
 ## Releasing
 
@@ -53,10 +62,14 @@ will tag. They move together or the run refuses:
 3. `dist/WIDGETS/ZelionDash/main.lua` — written by the build, so rebuild after 1
 4. `RELEASE_NOTES.md` — must name `ZelionDash-<version>.zip`
 
-Then dispatch `.github/workflows/release.yml` **with the ref set to `main`**,
-typing the same version as the input. The workflow re-runs the build, the
-`dist/` check and the suite before it tags, so a bad tree stops the release
-rather than shipping it.
+Put the version bump on the work branch as its own commit rather than in a
+separate pull request: one CI run then covers both the change and the bump, and
+`main` gets them in a single merge.
+
+After that merge, dispatch `.github/workflows/release.yml` **with the ref set to
+`main`** — now the default, so the Actions UI offers it first — typing the same
+version as the input. The workflow re-runs the build, the `dist/` check and the
+suite before it tags, so a bad tree stops the release rather than shipping it.
 
 `RELEASE_NOTES.md` is the body of the next release, not a changelog. It is
 replaced wholesale each time; past notes live on the releases page.
