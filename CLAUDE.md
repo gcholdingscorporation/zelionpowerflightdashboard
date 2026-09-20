@@ -63,8 +63,14 @@ replaced wholesale each time; past notes live on the releases page.
 
 ## Configuration
 
-`docs/sensors.cfg` is the ready-to-install reference config. `sensors.cfg` on a
-radio is per-pilot, so the release zip ships the example as
+`docs/sensors.cfg.example` is the documented reference config and the only one
+that ships. `docs/GCsensor.cfg` is the maintainer's own fleet, kept as a worked
+example with measured reserves — it is read, never installed, and it is allowed
+to lag the radio it came from. There is deliberately no `docs/sensors.cfg`: a
+file by that name reads as "install me", and this repository has no config that
+is right for someone else's helicopters.
+
+`sensors.cfg` on a radio is per-pilot, so the release zip ships the example as
 `sensors.cfg.example` and **never** as `sensors.cfg` — merging a folder onto a
 card does not ask before overwriting, and a live config in the download would
 silently replace a pilot's own settings on every upgrade.

@@ -55,6 +55,12 @@ you need. It is shipped under that name deliberately: a live `sensors.cfg`
 inside the download would overwrite your own overrides on every upgrade,
 silently, because merging a folder onto a card does not ask.
 
+If you would rather read a finished one than a blank one,
+[`docs/GCsensor.cfg`](docs/GCsensor.cfg) is the maintainer's own file: four
+helicopters, each scoped as narrowly as it can be, with reserve percentages
+measured off real landings rather than chosen. None of it applies to your
+aircraft — it is there to show what the settings look like in use.
+
 ### Updating: delete the .luac
 
 **When you replace `main.lua` with a newer one, delete `main.luac` from the
