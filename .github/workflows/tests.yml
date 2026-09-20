@@ -6,11 +6,27 @@ name: tests
 # radio and nowhere else. Running the widget can never find that - only a scan
 # of the built file can, and a scan nobody runs finds nothing.
 
+# A branch with a pull request open used to run this twice on the same commit,
+# once for the push and once for the pull request, seconds apart. Two results
+# for one commit is worse than one: a red result appears twice and neither run
+# is obviously the authoritative one.
+#
+# So push covers the two long-lived branches, where there is no pull request to
+# cover them, and pull_request covers everything else. A working branch gets its
+# first run when its pull request opens rather than on its first push - which is
+# also the only arrangement that covers a pull request from a fork, since a fork
+# pushes nothing to this repository.
 on:
   push:
-    branches: ["**"]
+    branches: [main, claude/rc-heli-widget-b1zu1o]
   pull_request:
   workflow_dispatch:
+
+# A push that supersedes an earlier one cancels its run, except on main, where
+# the run history is the record of what each released commit did.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:

@@ -727,3 +727,13 @@ Read from the [Rotorflight source](https://github.com/rotorflight):
 
 - **CRSF / ExpressLRS** telemetry frame and sensor naming conventions, which
   are what the role resolver's candidate names are drawn from.
+
+## Licence
+
+[MIT](LICENSE). Use it, change it, ship it — the widget is written from scratch
+and carries no third-party code, so nothing here is copyleft by inheritance.
+
+The **Zelion Power** name and the logo files under `assets/` and
+`dist/WIDGETS/ZelionDash/` are brand marks rather than code, and the licence
+above is not permission to use them to identify your own work. Fork the widget
+freely; swap the branding if you publish the fork.
