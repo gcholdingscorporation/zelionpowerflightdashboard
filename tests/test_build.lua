@@ -916,6 +916,22 @@ H.test("the roles come first; healthy artwork does not lead the list", function(
   H.truthy(string.find(bottom, "2 ok", 1, true), "and says whether they loaded")
 end)
 
+H.test("holding the sensor map open does not re-probe the artwork", function()
+  -- The dashboard's rebuild path has been guarded against this since the heap
+  -- exhaustion that faulted the script; the sensor map's had not been. It
+  -- rebuilds its rows on EVERY refresh, and the artwork block was the one part
+  -- of them that touches the card - a directory listing and a Bitmap.open per
+  -- PNG, where probing costs what displaying costs. Left open, that decoded
+  -- the whole artwork set at the radio's frame rate: the map dropped frames,
+  -- and the heap it churned was no longer enough for Dashboard.build to afford
+  -- its own bitmap, so the logo silently fell off the dashboard.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  local after = Mock.bitmapOpens
+  for _ = 1, 30 do def.refresh(widget, 0, nil) end
+  H.eq(Mock.bitmapOpens, after, "the artwork must be probed once, not per frame")
+end)
+
 H.test("the artwork detail is still reachable, at the bottom", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
