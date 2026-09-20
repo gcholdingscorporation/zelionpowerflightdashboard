@@ -1,41 +1,47 @@
-The sensor map no longer costs the dashboard its logo.
+The sensor map stops rebuilding itself every frame, and a degraded screen now
+says so.
 
 ## Install
 
-`ZelionDash-1.11.2.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.11.3.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## Holding the sensor map open was decoding the artwork at the frame rate
+## The sensor map was rebuilt on every frame
 
-The sensor map rebuilds its rows on every refresh, which is the right thing for
-rows that read live telemetry. One block in it was not live telemetry: the
-`-- ARTWORK --` summary, which lists the folder and opens each PNG to report
-whether it loads and how wide it measures.
+1.11.2 took the artwork probe out of that screen's refresh path. That was one
+half of what it cost. Rebuilding the whole list was the other, and it went
+untouched.
 
-`Bitmap.open` allocates. Probing a file costs as much memory as displaying it,
-and `Host.imageLoads` has carried that warning since the heap exhaustion that
-faulted the script - which is why the dashboard's rebuild path has a test named
-"a rebuild does not re-open the artwork". The sensor map's path never had one.
-So leaving the sensor map on screen opened and dropped the whole artwork set
-several times a second.
+`sensorMapRows()` ran on every refresh: re-reading every role, re-formatting
+every reading, re-measuring the folded names against the column width. Counting
+what each screen asks the radio for, the dashboard makes two `lcd.sizeText`
+calls per frame and the sensor map made eleven - five times the text
+measurement, for the one screen nobody flies on.
 
-Two things came out of that, and pilots reported both without knowing they were
-the same fault. The frame rate fell while the sensor map was up. And the heap
-it churned was no longer enough for `Dashboard.build` to afford its own bitmap,
-so the degradation ladder caught the raise and rebuilt without it - leaving the
-**ZELION POWER wordmark in place of the logo**, with everything else looking
-healthy and nothing on screen saying why.
+The built list is kept and reused for half a second now. That is faster than
+anyone reads a row and slow enough to cost nothing. Scrolling reuses it rather
+than rebuilding, because scrolling picks a different slice of the same list.
 
-`Host.probeImage` now caches per path and drops its bitmap through
-`Host.collect`, which is what `imageLoads` already did. `assetRows` memoises the
-block it builds. `Host.resetImageProbes()` clears both, and the options screen
-calls it, so swapping a PNG over USB is still picked up without a reboot.
+## A screen that came back degraded now says which rung, and why
 
-Caching the probe has a second effect worth naming: the sensor map and the
-dashboard now agree about the same file. The screen you consult when something
-is wrong should not be reading a different answer from the screen that is wrong.
+The widget catches every screen build, because an unhandled raise from a Lua
+widget is what puts EdgeTX into emergency mode. When one fails it steps down -
+first without the logo, then without rounded corners, then to a minimal screen -
+and one of those usually works.
+
+That is the right behaviour and it has a cost nobody had paid attention to: the
+widget comes back a rung down looking perfectly healthy apart from whatever it
+dropped, and the message naming the fault was thrown away by the `pcall` that
+saved the radio. A logo quietly replaced by the ZELION POWER wordmark, with no
+error anywhere, is what that looks like - and the sensor map's own artwork block
+will happily report both files loading, because the probe (`Bitmap.open`) is not
+the loader (`lvgl.image`) and only one of them has to fail.
+
+The first attempt's error is kept now, and the sensor map carries a
+`-- SCREEN --` row **above everything else** naming the rung and the reason. It
+is the first row on the page, so it needs no scrolling to read.
 
 ## Tests
 
-390, up one. The new guard holds the sensor map open for thirty refreshes and
-asserts `Bitmap.open` is not called again - verified failing on the code this
-release fixes.
+393, up three. Two hold the sensor map open and assert the list is built on a
+clock rather than a frame; one breaks the image draw and asserts the screen
+reports both the rung and the message. All verified failing without the change.

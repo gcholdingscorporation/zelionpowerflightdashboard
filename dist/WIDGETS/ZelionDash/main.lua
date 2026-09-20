@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.11.2
+-- Version 1.11.3
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.11.2" }
+local ZD = { VERSION = "1.11.3" }
 
 -- ======== src/host.lua ========
 do
@@ -6123,6 +6123,20 @@ local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 -- so one table can serve every frame. Widget.update drops it.
 local assetCache = nil
 
+-- The rest of the rows are rebuilt rather than cached, and that is the other
+-- half of the same cost. Every refresh re-reads every role, re-formats every
+-- reading and re-measures the folded names against the column width, which is
+-- five times the text measurement the dashboard does for a screen that is not
+-- flown on. The dashboard earns its frame rate by only touching what changed;
+-- this screen had no equivalent, so it gets the cheap version of one - the
+-- whole list, rebuilt on a clock rather than on every frame.
+--
+-- Half a second is chosen against the reader, not the telemetry: it is faster
+-- than anyone reads a row and slow enough to cost nothing. Scrolling does not
+-- invalidate it, because scrolling picks a different slice of the same list.
+local SENSOR_MAP_REBUILD = Host.seconds(0.5)
+local rowCache, rowCacheAt = nil, nil
+
 local function assetRows()
   if assetCache then
     return assetCache[1], assetCache[2], assetCache[3]
@@ -6172,9 +6186,24 @@ local function assetRows()
   return summary, header, detail
 end
 
+-- The screen the pilot is actually looking at, when it is not the one the code
+-- meant to build. The degradation ladder exists so a raise cannot fault the
+-- transmitter, and it works - but it also means the widget can come back a rung
+-- down and look perfectly healthy apart from whatever it dropped. That is worth
+-- one row on the screen whose whole job is answering "is this thing working".
+--
+-- Wide, and carrying the reason rather than a value: an EdgeTX error string is
+-- longer than the value column and it is the part worth reading.
+local function screenRow()
+  if not Widget.degraded then return nil end
+  return { label = "-- SCREEN --", wide = true, status = "insane", important = true,
+           sensor = Widget.degraded .. " - " .. (Widget.buildError or "no reason recorded") }
+end
+
 -- For Widget.update, which is the pilot saying something changed.
 local function resetAssetProbe()
   assetCache = nil
+  rowCache, rowCacheAt = nil, nil
   Host.resetImageProbes()
 end
 
@@ -6456,6 +6485,11 @@ local function sensorMapRows()
   end
   for _, r in ipairs(detail) do add(r) end
 
+  -- Above everything, including the artwork: a screen that did not build the
+  -- way it was written outranks anything it then managed to report.
+  local degraded = screenRow()
+  if degraded then table.insert(rows, 1, degraded) end
+
   local note, bad = footerNote()
   return rows, bound, note, bad
 end
@@ -6512,7 +6546,18 @@ local function ensureScreen(widget)
     -- memory exhaustion, and an unhandled raise from a widget is what puts
     -- EdgeTX into emergency mode - so every build is caught, and each failure
     -- steps down to something cheaper rather than propagating.
-    local ok = pcall(Dashboard.build, zoneW, zoneH)
+    --
+    -- The rung it settles on is kept, and so is the reason the FIRST attempt
+    -- gave. Three rounds went into working out why a radio was showing the
+    -- wordmark, because a caught error is a silent one: the screen that comes
+    -- back looks healthy apart from the missing artwork, and the message that
+    -- would have named the fault was thrown away by the pcall that saved the
+    -- transmitter. Keeping it costs one string and turns a guess into a
+    -- reading. Only the first is kept - the later rungs fail for whatever the
+    -- first did, and it is the first that says what actually went wrong.
+    Widget.degraded, Widget.buildError = nil, nil
+    local ok, err = pcall(Dashboard.build, zoneW, zoneH)
+    if not ok then Widget.buildError = tostring(err) end
     if not ok and not Dashboard.noLogo then
       Dashboard.noLogo = true          -- retry without any bitmap
       Widget.degraded = "no-logo"
@@ -6568,7 +6613,12 @@ function Widget.update(widget, options)
   -- protects a radio nobody is standing next to.
   Dashboard.noRound = false
   Dashboard.noLogo  = false
-  Widget.degraded = nil
+  -- Widget.degraded and Widget.buildError are deliberately NOT cleared here.
+  -- Switching the sensor map on is an option change, so it lands in this
+  -- function - and that screen is where the verdict is read. Clearing it here
+  -- would wipe the reason at the exact moment the pilot went looking for it,
+  -- because turning the map on does not rebuild the dashboard. They are reset
+  -- where they are set instead: at the top of the dashboard build.
   -- Re-probe the artwork. The ladder above is being given another go, so the
   -- cached verdict that the bitmap could not be afforded has to go with it -
   -- and this is also the one hook a pilot who just replaced a PNG can reach
@@ -6582,6 +6632,7 @@ function Widget.update(widget, options)
 end
 
 Widget.degraded = nil
+Widget.buildError = nil
 
 function Widget.refresh(widget, event, touchState)
   local now = Host.now()
@@ -6601,9 +6652,19 @@ function Widget.refresh(widget, event, touchState)
     -- are radio settings this widget cannot read - so it is the one pre-flight
     -- check that has to be a physical press rather than something inferred.
     elseif event == flag("EVT_VIRTUAL_ENTER", -3) then pcall(Alerts.selfTest) end
-    local ok, rows, bound, note, bad = pcall(sensorMapRows)
-    if ok then
-      local clamped = Dashboard.updateSensorMap(rows, scroll, bound, note, bad)
+    if rowCacheAt == nil or (now - rowCacheAt) >= SENSOR_MAP_REBUILD then
+      rowCacheAt = now
+      local ok, rows, bound, note, bad = pcall(sensorMapRows)
+      -- A failed build keeps the last good list on screen rather than blanking
+      -- it: a diagnostic screen that empties itself the moment something goes
+      -- wrong is the screen you needed at exactly that moment. The timestamp
+      -- moves either way, so a build that keeps failing is not retried at the
+      -- frame rate - which is the state the radio can least afford it in.
+      if ok then rowCache = { rows, bound, note, bad } end
+    end
+    if rowCache then
+      local clamped = Dashboard.updateSensorMap(rowCache[1], scroll, rowCache[2],
+                                                 rowCache[3], rowCache[4])
       if clamped then scroll = clamped end
     end
   else

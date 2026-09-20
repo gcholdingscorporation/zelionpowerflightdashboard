@@ -932,6 +932,70 @@ H.test("holding the sensor map open does not re-probe the artwork", function()
   H.eq(Mock.bitmapOpens, after, "the artwork must be probed once, not per frame")
 end)
 
+H.test("a degraded screen says so, and says why, on the sensor map", function()
+  -- Three rounds of diagnosis went into a radio showing the wordmark instead of
+  -- the logo, because the ladder that keeps a raise from faulting the
+  -- transmitter also swallowed the message that named the fault. The screen
+  -- came back one rung down and looked healthy. Now it says which rung, and
+  -- what the first attempt raised.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, function()
+    flying()
+  end)
+  -- Break the draw the way a PNG the image decoder will not take breaks it:
+  -- the probe is happy, the draw raises.
+  local realImage = lvgl.image
+  lvgl.image = function() error("cannot open logo_panel.png", 0) end
+  def.update(widget, { SensorMap = 0 })
+  def.refresh(widget, 0, nil)
+  lvgl.image = realImage
+
+  -- The pilot now goes looking on the sensor map, which is an option change.
+  def.update(widget, { SensorMap = 1 })
+  def.refresh(widget, 0, nil)
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "-- SCREEN --", 1, true), "the fault is reported")
+  H.truthy(string.find(t, "no-logo", 1, true), "naming the rung it settled on")
+  H.truthy(string.find(t, "cannot open logo_panel.png", 1, true),
+           "and so is the reason the build gave")
+end)
+
+H.test("holding the sensor map open does not rebuild its rows every frame", function()
+  -- The artwork probe was one half of what that screen cost; rebuilding the
+  -- whole list was the other. Every refresh re-read every role, re-formatted
+  -- every reading and re-measured the folded names against the column - five
+  -- times the text measurement the dashboard does, for a screen nobody flies
+  -- on. Counting lcd.sizeText is how the difference was found, so it is what
+  -- this asserts: the list is rebuilt on a clock now, not on a frame.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+
+  local measured = 0
+  local realSizeText = lcd.sizeText
+  lcd.sizeText = function(...) measured = measured + 1; return realSizeText(...) end
+  for _ = 1, 30 do def.refresh(widget, 0, nil) end
+  lcd.sizeText = realSizeText
+
+  H.eq(measured, 0, "thirty refreshes inside one interval must rebuild nothing")
+end)
+
+H.test("the sensor map still follows the telemetry", function()
+  -- The cache must expire, or the screen freezes on whatever it read first -
+  -- which would be a worse bug than the one it fixes.
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850 rpm", 1, true), "reads the headspeed")
+
+  Mock.setSensor("Hspd", 1420)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850 rpm", 1, true),
+           "and does not chase it inside the interval")
+
+  Mock.advanceSeconds(1)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1420 rpm", 1, true),
+           "but catches up once the interval is past")
+end)
+
 H.test("the artwork detail is still reachable, at the bottom", function()
   local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
   def.refresh(widget, 0, nil)
