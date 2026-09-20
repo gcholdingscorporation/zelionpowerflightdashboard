@@ -199,18 +199,44 @@ FlightTime.timerIndex = nil     -- nil = off, else 0-based EdgeTX timer index
 
 local lastWritten = nil
 
+-- What the timer should read when there is no estimate.
+--
+-- The pilot's own configured start, which is what the timer reads after a
+-- reset: a countdown sitting at its start says "ready", which is exactly true
+-- and is neither the last pack's number nor an announcement. EdgeTX already
+-- puts it there itself at model load on a non-persistent timer; this stops the
+-- widget overwriting it with something worse.
+--
+-- A timer with no start configured - counting up, or simply never set - has
+-- nothing better available, so it keeps the zero.
+local function idleValue(idx)
+  local t = Host.timer(idx)
+  local start = t and tonumber(t.start)
+  if start and start > 0 then return math.floor(start) end
+  return 0
+end
+
 function FlightTime.driveTimer()
   local idx = FlightTime.timerIndex
   if idx == nil then return false end
 
-  -- No estimate means write zero, not write nothing.
+  -- No estimate means write the pilot's own start value, not zero and not
+  -- nothing.
   --
   -- Writing nothing leaves the timer showing whatever the last flight left
   -- there: arm on a fresh pack and it reads four minutes, from the pack before
   -- it, until the new one falls below 95% and the estimate appears. A stale
   -- number that looks live is the one thing this widget exists not to do.
+  --
+  -- Zero was the first answer to that and it is wrong for a reason that only
+  -- shows up on a radio: zero is not a neutral value on a countdown timer, it
+  -- is a state, and EdgeTX announces it. Power the radio on with nothing
+  -- flying, this writes zero before any flight exists, and the radio says
+  -- "timer elapsed" on every boot. We meant it as "nothing to say" and the
+  -- radio read it as "you are out of time" - an alert with no flight behind
+  -- it, which is the same way alerts stop being believed.
   local secs = FlightTime.seconds
-  if secs == nil then secs = 0 else secs = math.floor(secs + 0.5) end
+  if secs == nil then secs = idleValue(idx) else secs = math.floor(secs + 0.5) end
 
   -- Once a second at most. The estimate is a 30 second average; writing it at
   -- 10 Hz would be ten times the work for the same number.

@@ -253,13 +253,17 @@ H.test("does not rewrite the same second over and over", function()
   H.eq(Mock.state.timerWrites, 0, "the value has not changed, so neither has the timer")
 end)
 
-H.test("no estimate means the timer reads zero, not the last flight's number", function()
+H.test("a timer with no start configured still reads zero", function()
   -- This test used to assert the opposite - that the timer was left alone -
   -- with the comment "a stale countdown is worse than none" attached to the
   -- behaviour that produces exactly that. Leaving it alone does not clear it:
   -- it leaves the previous pack's estimate sitting on the screen. Arm on a
   -- fresh battery and the timer reads four minutes, from the pack before it,
   -- until the new one falls under 95% and a real estimate appears.
+  --
+  -- Zero is still what a timer with nothing configured gets, because there is
+  -- nothing better to put there. A timer that HAS a start gets that instead -
+  -- see below for why.
   local ZD = fresh(function()
     Mock.addSensor("Hspd", 18, 0)
     Mock.addSensor("Capa", 14, 0)
@@ -275,6 +279,54 @@ H.test("no estimate means the timer reads zero, not the last flight's number", f
   local writes = Mock.state.timerWrites
   for _ = 1, 20 do ZD.FlightTime.driveTimer() end
   H.eq(Mock.state.timerWrites, writes, "rewrote a value that had not changed")
+end)
+
+-- Zero is not a neutral value on a countdown timer. It is a state, and the
+-- radio announces it: "timer elapsed", spoken at power-on, before anything has
+-- flown, because this is the first thing the widget writes. An alert with no
+-- flight behind it is how alerts stop being believed, so it is a real fault
+-- and not a cosmetic one.
+--
+-- The pilot's own start is the value that says "ready" rather than "spent",
+-- and it is the value EdgeTX itself puts there at model load. It is also still
+-- not the last pack's number, so the fault these tests were written for stays
+-- fixed.
+H.test("no estimate reads the pilot's start, so the radio says nothing", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Hspd", 18, 0)
+    Mock.addSensor("Capa", 14, 0)
+    Mock.addSensor("Bat%", 13, 100)
+    Mock.state.timers[1] = { value = 0, start = 300, name = "ZD TIMER" }
+  end)
+  ZD.FlightTime.timerIndex = 1
+  run(ZD, 20)
+  ZD.FlightTime.driveTimer()
+  H.eq(Mock.state.timers[1].value, 300, "wrote a value the radio announces")
+  H.eq(Mock.state.timers[1].start, 300, "the start is the pilot's, not ours to move")
+end)
+
+H.test("and the last pack's number is still cleared, not left sitting", function()
+  -- The whole reason the zero was there. A start value has to clear a stale
+  -- estimate just as thoroughly, or this trades one fault for the other.
+  local ZD, h = nil, nil
+  ZD = fresh(function()
+    h = heli(1000)
+    Mock.state.timers[1] = { value = 0, start = 300 }
+  end)
+  ZD.FlightTime.timerIndex = 1
+  fly(ZD, h, 50, 600)
+  ZD.FlightTime.driveTimer()
+  local flown = Mock.state.timers[1].value
+  H.truthy(flown > 0 and flown < 300, "no estimate landed on the timer at all")
+
+  -- Pack off, radio still on: the estimate goes, and the number it left must
+  -- go with it.
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  ZD.FlightTime.driveTimer()
+  H.nilv(ZD.FlightTime.seconds, "still an estimate, so this proves nothing")
+  H.eq(Mock.state.timers[1].value, 300,
+       "the last flight's number is still on the timer")
 end)
 
 
