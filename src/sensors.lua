@@ -207,6 +207,12 @@ function Sensors.reload(modelName, craftName, cells)
   Sensors.craftName = craftName
   Sensors.cells     = cells
   Sensors.overrides = Config.overridesFor(Sensors.modelName, craftName, cells)
+  -- Settings are scoped to the same aircraft as the bindings, and this is the
+  -- one call that already knows which aircraft that is. A reserve written for
+  -- a craft has to arrive the moment that craft does, not at the next reload:
+  -- the flight controller renaming itself mid-session is exactly the case
+  -- [craft] sections exist for.
+  Config.scope(Sensors.modelName, craftName, cells)
   lastProbe = -1e9
   Sensors.resolve(true)
 end

@@ -34,6 +34,22 @@ ZD.FlightLog = FlightLog
 -- cannot tell the difference. It is just the radio's storage.
 FlightLog.DIR      = "/LOGS/"
 FlightLog.FILE     = "zeliondash.csv"
+
+-- Where a record that is not a record goes.
+--
+-- The log rewrites the whole file on every flight, so a radio losing power
+-- mid-rewrite leaves a row of binary fragments in the middle of it - one such
+-- row has been sitting in a real log since 13 Sep, and one is enough to stop a
+-- spreadsheet opening the file at all.
+--
+-- Dropping the row would be two lines and is the reason this went unfixed:
+-- deleting a pilot's data to tidy up is not the widget's call to make, and a
+-- row that looks like garbage here is still the only trace of that flight.
+-- So it is MOVED rather than removed, and the move happens before the main log
+-- is rewritten without it. If the quarantine file cannot be written the row
+-- stays exactly where it is, corrupt log and all, because a corrupt log a
+-- pilot can still recover from beats a tidy one missing a flight.
+FlightLog.QUARANTINE = "zeliondash.bad.csv"
 FlightLog.FALLBACK = nil       -- set if /LOGS/ turns out not to be writable
 
 -- Below this a "flight" is a spool-up test, a bench run, or a bounced start.
@@ -132,6 +148,10 @@ FlightLog.madeDir    = nil    -- whether mkdir reported the folder usable
 -- How many records the file holds. nil means "not counted yet"; counting costs
 -- a file read, so it is done once and then maintained by the writes.
 FlightLog.inFile     = nil
+-- Rows the last read refused, waiting to be moved aside. Not a count of a
+-- problem so much as a count of flights whose record is unreadable.
+FlightLog.rejected   = {}
+FlightLog.quarantined = 0     -- moved aside this session
 
 -- Why nothing has been written, in the pilot's terms. "No file appeared" has
 -- three completely different causes and they were indistinguishable: the log
@@ -178,6 +198,16 @@ end
 function FlightLog.path()
   if FlightLog.FALLBACK then return FlightLog.FALLBACK end
   return FlightLog.DIR .. FlightLog.FILE
+end
+
+-- Beside the log, wherever the log ended up - including the fallback, since a
+-- radio that could not write /LOGS/ cannot write a quarantine file there
+-- either.
+function FlightLog.quarantinePath()
+  if FlightLog.FALLBACK then
+    return string.gsub(FlightLog.FALLBACK, "[^/]+$", FlightLog.QUARANTINE)
+  end
+  return FlightLog.DIR .. FlightLog.QUARANTINE
 end
 
 -- If /LOGS/ cannot be written - a radio whose firmware lays things out
@@ -345,6 +375,41 @@ local function splitLines(text)
   return out
 end
 
+-- Whether a line is a record at all, as opposed to the wreckage of one.
+--
+-- Exactly one check, and it stays that way. A control character is the whole
+-- signature of the damage this exists for: an interrupted rewrite leaves
+-- fragments of the old file's bytes behind, and nothing this widget writes
+-- contains a control character.
+--
+-- The obvious second check - the wrong number of columns - was written, and
+-- two tests immediately failed on rows that are genuinely short. Columns are
+-- only ever appended, so a record written by an older build is narrower than
+-- today's header and is still that flight; widen() only runs when the HEADER
+-- is a legacy one, which does nothing for a short row sitting under a current
+-- header, and a spreadsheet that drops trailing empty fields on save produces
+-- the same thing. Width says nothing about damage, and a check that quarantines
+-- a real flight is worse than the corruption it was cleaning up.
+local function looksLikeRecord(line)
+  return string.find(line, "%c") == nil
+end
+
+-- Splits what was read into the records the log keeps and the wreckage it sets
+-- aside. The rejects are held, not dropped: FlightLog.append moves them to the
+-- quarantine file before it rewrites the log without them.
+local function sift(lines)
+  local keep = {}
+  FlightLog.rejected = {}
+  for _, line in ipairs(lines) do
+    if looksLikeRecord(line) then
+      keep[#keep + 1] = line
+    else
+      FlightLog.rejected[#FlightLog.rejected + 1] = line
+    end
+  end
+  return keep
+end
+
 -- Returns the records already on the card, header excluded. A file that is
 -- unreadable or has the wrong header is treated as absent rather than
 -- appended to: half a flight log is more confusing than a fresh one, and the
@@ -356,12 +421,12 @@ function FlightLog.read()
   if #lines == 0 then return {} end
 
   local header = table.remove(lines, 1)
-  if header == FlightLog.HEADER then return lines end
+  if header == FlightLog.HEADER then return sift(lines) end
 
   for _, old in ipairs(FlightLog.LEGACY_HEADERS) do
     if header == old then
       for i = 1, #lines do lines[i] = widen(lines[i], old) end
-      return lines
+      return sift(lines)
     end
   end
 
@@ -369,6 +434,51 @@ function FlightLog.read()
   -- appended to: half a flight log is more confusing than a fresh one, and
   -- Host.writeFile leaves the previous file as a .bak.
   return {}
+end
+
+-- Moves the rows the last read refused into the quarantine file, appending to
+-- whatever is already there. Returns whether they are safely elsewhere.
+--
+-- The note at the top is for whoever opens this file wondering what it is, and
+-- it is written once. Nothing here is ever trimmed: these rows only appear
+-- when a write was interrupted, so the file growing at all is news, and
+-- capping it would mean deleting the very thing this exists to preserve.
+local QUARANTINE_NOTE =
+  "# ZelionDash: rows moved out of " .. FlightLog.FILE .. " because they " ..
+  "were not readable as records. Nothing here has been deleted."
+
+local function flushQuarantine()
+  if #FlightLog.rejected == 0 then return true end
+  local parts = {}
+  local existing = Host.readFile(FlightLog.quarantinePath())
+  if existing and existing ~= "" then
+    parts[#parts + 1] = (string.gsub(existing, "%s+$", ""))
+  else
+    parts[#parts + 1] = QUARANTINE_NOTE
+  end
+  for _, bad in ipairs(FlightLog.rejected) do parts[#parts + 1] = bad end
+
+  if not Host.writeFile(FlightLog.quarantinePath(),
+                        table.concat(parts, "\n") .. "\n") then
+    return false
+  end
+  FlightLog.quarantined = FlightLog.quarantined + #FlightLog.rejected
+  FlightLog.rejected = {}
+  return true
+end
+
+-- The log as it should be written, with the wreckage taken out - but only once
+-- the wreckage is somewhere else. A failed quarantine write puts every refused
+-- row straight back, so the rewrite preserves the file it found rather than
+-- quietly finishing the job the power cut started.
+local function keptRecords()
+  local records = FlightLog.read()
+  if not flushQuarantine() then
+    for i = #FlightLog.rejected, 1, -1 do
+      table.insert(records, 1, FlightLog.rejected[i])
+    end
+  end
+  return records
 end
 
 function FlightLog.append(line)
@@ -379,7 +489,7 @@ function FlightLog.append(line)
   -- used to sit, meant the read went first and took the flight with it.
   FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
 
-  local records = FlightLog.read()
+  local records = keptRecords()
   records[#records + 1] = line
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
@@ -388,7 +498,7 @@ function FlightLog.append(line)
   if not ok and not FlightLog.FALLBACK then
     fallBack()
     -- Re-read: the fallback location may already hold a history of its own.
-    records = FlightLog.read()
+    records = keptRecords()
     records[#records + 1] = line
     while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
     body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
@@ -518,6 +628,7 @@ function FlightLog.reset()
   FlightLog.FALLBACK = nil
   -- The path can move with the fallback, so the count belongs to the old one.
   FlightLog.inFile = nil
+  FlightLog.rejected, FlightLog.quarantined = {}, 0
 end
 
 return FlightLog

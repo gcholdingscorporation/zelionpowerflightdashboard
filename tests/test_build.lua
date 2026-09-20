@@ -862,6 +862,38 @@ H.test("a failed write says so on the sensor map", function()
            "a card that will not take the write must not fail quietly")
 end)
 
+-- Moving a pilot's data, even wreckage, happens behind their back, so the one
+-- screen that reports this widget to itself has to say it did.
+--
+-- The wreckage is injected into a log the widget wrote rather than into a
+-- hand-built file: that is how the damage actually happens - a power cut
+-- during the whole-file rewrite - and it keeps the header out of this test,
+-- where a hard-coded copy would go stale on the next column.
+H.test("rows moved out of the log are reported, with the file that has them",
+function()
+  local def, widget = boot(800, 480, { SensorMap = 1 }, flying)
+  local function fly()
+    Mock.setSensor("Hspd", 1850)
+    for _ = 1, 300 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+    Mock.setSensor("Hspd", 0)
+    for _ = 1, 600 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+  end
+
+  fly()
+  local log = Mock.state.files["/LOGS/zeliondash.csv"]
+  H.truthy(log, "a flight reached the card")
+  Mock.state.files["/LOGS/zeliondash.csv"] = log .. "2026-08-02,10:0\0\1GOB\4\0,3.6\n"
+
+  fly()
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "unreadable", 1, true), "the screen says so")
+  H.truthy(string.find(t, "zeliondash.bad.csv", 1, true),
+           "and names the file the rows are in")
+  H.truthy(string.find(Mock.state.files["/LOGS/zeliondash.bad.csv"] or "",
+                       "GOB", 1, true),
+           "which really does hold them")
+end)
+
 H.test("the roles come first; healthy artwork does not lead the list", function()
   -- The full artwork block used to lead, from when a missing PNG was the open
   -- problem. Seven rows of it pushed the governor - the row actually being

@@ -107,6 +107,7 @@ function Mock.reset()
                           hour = 0, min = 0, sec = 0 }
   Mock.state.writes = 0
   Mock.state.readOnly = false
+  Mock.state.blockWrite = nil
   Mock.state.missingDirs = {}
   Mock.state.timers = { [0] = { value = 0, start = 0 } }
   Mock.state.timerWrites = 0
@@ -263,6 +264,10 @@ function Mock.install()
         return { path = path, mode = "r", pos = 1, content = content }
       end
       if Mock.state.readOnly then return nil end
+      -- One path that refuses writes while the rest of the card works. A
+      -- global readOnly cannot express "the log wrote but its sidecar did
+      -- not", which is the case the flight log's quarantine ordering turns on.
+      if Mock.state.blockWrite == path then return nil end
       return { path = path, mode = "w", parts = {} }
     end,
     read = function(f, n)
