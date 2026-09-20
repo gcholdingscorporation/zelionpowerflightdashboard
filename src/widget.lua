@@ -140,7 +140,20 @@ local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 -- the fold. The summary carries the only bit worth seeing every time: whether
 -- the artwork loaded. Detail goes to the bottom, where it is still one scroll
 -- away when something breaks.
+-- Built once and kept. sensorMapRows runs on every refresh the sensor map is
+-- up, and this block is the only part of it that touches the card: a directory
+-- listing and a probe of each PNG, where probing costs what displaying costs.
+-- Uncached that is the whole artwork set decoded at the radio's frame rate,
+-- which is exactly what it felt like.
+--
+-- The rows are read-only once built - updateSensorMap only ever reads them -
+-- so one table can serve every frame. Widget.update drops it.
+local assetCache = nil
+
 local function assetRows()
+  if assetCache then
+    return assetCache[1], assetCache[2], assetCache[3]
+  end
   local dir = Host.widgetDir()
   local detail, bad = {}, 0
 
@@ -182,7 +195,14 @@ local function assetRows()
   -- is only worth reading when the folder is the problem.
   local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
                    status = "ok", important = true }
+  assetCache = { summary, header, detail }
   return summary, header, detail
+end
+
+-- For Widget.update, which is the pilot saying something changed.
+local function resetAssetProbe()
+  assetCache = nil
+  Host.resetImageProbes()
 end
 
 -- Wraps the folded role names across as few rows as they fit in, measured
@@ -576,6 +596,11 @@ function Widget.update(widget, options)
   Dashboard.noRound = false
   Dashboard.noLogo  = false
   Widget.degraded = nil
+  -- Re-probe the artwork. The ladder above is being given another go, so the
+  -- cached verdict that the bitmap could not be afforded has to go with it -
+  -- and this is also the one hook a pilot who just replaced a PNG can reach
+  -- without rebooting.
+  resetAssetProbe()
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName(), State.craftName(), State.cells())
   pcall(Alerts.reset)

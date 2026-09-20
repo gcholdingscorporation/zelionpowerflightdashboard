@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.11.1
+-- Version 1.11.2
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.11.1" }
+local ZD = { VERSION = "1.11.2" }
 
 -- ======== src/host.lua ========
 do
@@ -334,7 +334,23 @@ end
 -- Report what each method thinks of a file, separately. Collapsing them into
 -- one boolean is what left "the file is right there" and "the widget cannot
 -- see it" impossible to tell apart.
+--
+-- Cached per path, for the same reason Host.imageLoads below is - Bitmap.open
+-- allocates as much as displaying the file does. This one is called from the
+-- sensor map, which rebuilds its rows on EVERY refresh, so uncached it decoded
+-- the whole artwork set at the radio's frame rate: the sensor map visibly
+-- dropped frames, and it left the heap too churned for Dashboard.build to
+-- afford its own bitmap afterwards, which is what quietly took the logo off
+-- the dashboard.
+--
+-- Caching it also makes this agree with imageLoads. The two answering
+-- differently about the same file - one live, one cached - is a worse
+-- diagnostic than either alone, on the screen that exists to be trusted.
+local probeCache = {}
+
 function Host.probeImage(path)
+  local cached = probeCache[path]
+  if cached ~= nil then return cached end
   local r = { fstat = false, io = false, bmp = false, size = nil, w = nil }
   if fstatFn then
     local ok, info = pcall(fstatFn, path)
@@ -359,7 +375,14 @@ function Host.probeImage(path)
         if sized then r.w = tonumber(w) end
       end
     end
+    -- Dropped and collected before returning, exactly as imageLoads does. The
+    -- bitmap is dead the moment its width has been read, and leaving it for
+    -- the collector to find later is leaving it during the build that cannot
+    -- afford it.
+    bmp = nil
+    if Host.collect then Host.collect() end
   end
+  probeCache[path] = r
   return r
 end
 
@@ -477,6 +500,14 @@ function Host.imageLoads(path)
 end
 
 Host.collect = collect
+
+-- Throws both image caches away. Nothing rewrites the card underneath a
+-- running radio, so this is not on any timer - it hangs off the widget's
+-- options screen, which is the one moment a pilot who just swapped a PNG over
+-- USB is telling the widget that something changed.
+function Host.resetImageProbes()
+  probeCache, imageProbeCache = {}, {}
+end
 
 function Host.imageExists(path)
   if Host.imageLoads(path) then return true end
@@ -6082,7 +6113,20 @@ local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 -- the fold. The summary carries the only bit worth seeing every time: whether
 -- the artwork loaded. Detail goes to the bottom, where it is still one scroll
 -- away when something breaks.
+-- Built once and kept. sensorMapRows runs on every refresh the sensor map is
+-- up, and this block is the only part of it that touches the card: a directory
+-- listing and a probe of each PNG, where probing costs what displaying costs.
+-- Uncached that is the whole artwork set decoded at the radio's frame rate,
+-- which is exactly what it felt like.
+--
+-- The rows are read-only once built - updateSensorMap only ever reads them -
+-- so one table can serve every frame. Widget.update drops it.
+local assetCache = nil
+
 local function assetRows()
+  if assetCache then
+    return assetCache[1], assetCache[2], assetCache[3]
+  end
   local dir = Host.widgetDir()
   local detail, bad = {}, 0
 
@@ -6124,7 +6168,14 @@ local function assetRows()
   -- is only worth reading when the folder is the problem.
   local header = { label = "-- ARTWORK --", sensor = Host.widgetDirSource,
                    status = "ok", important = true }
+  assetCache = { summary, header, detail }
   return summary, header, detail
+end
+
+-- For Widget.update, which is the pilot saying something changed.
+local function resetAssetProbe()
+  assetCache = nil
+  Host.resetImageProbes()
 end
 
 -- Wraps the folded role names across as few rows as they fit in, measured
@@ -6518,6 +6569,11 @@ function Widget.update(widget, options)
   Dashboard.noRound = false
   Dashboard.noLogo  = false
   Widget.degraded = nil
+  -- Re-probe the artwork. The ladder above is being given another go, so the
+  -- cached verdict that the bitmap could not be afforded has to go with it -
+  -- and this is also the one hook a pilot who just replaced a PNG can reach
+  -- without rebooting.
+  resetAssetProbe()
   pcall(Config.load)
   pcall(Sensors.reload, Host.modelName(), State.craftName(), State.cells())
   pcall(Alerts.reset)
