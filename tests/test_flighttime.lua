@@ -378,5 +378,76 @@ H.test("a pack too full to be the one just landed on also wipes it", function()
                          after, low))
 end)
 
+H.group("flighttime: a reserve that belongs to one helicopter")
+
+-- A reserve can now be written against a craft name rather than against the
+-- whole radio, and the craft name arrives from the flight controller a moment
+-- AFTER the link comes up - so the number the countdown is built on can change
+-- underneath a live estimate. Normally that moment is long before the pack is
+-- below 95% and long before the eight-second window has filled, so no pilot
+-- ever sees it. This forces the worst case anyway: the name lands mid-flight,
+-- on an estimate that already exists.
+--
+-- The property that has to hold is the one the whole countdown rests on. The
+-- estimate may only fall. A helicopter-specific reserve is the more
+-- conservative number of the two - it is measured on that aircraft - so
+-- applying it late must shorten the countdown, never lengthen it, and never
+-- make it jump back up over a threshold EdgeTX has already announced.
+H.test("a craft reserve arriving late only ever shortens the countdown", function()
+  local ZD, h = nil, nil
+  ZD = fresh(function()
+    h = heli(2200)
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+      "[battery]\nreservePct = 20\n[Late Heli]\nreservePct = 50\n")
+  end)
+
+  local used, prev, climbed = 0, nil, 0
+  for s = 1, 60 do
+    used = used + 260 / 60
+    h.burn(used)
+    -- The flight controller finally says what it is flying.
+    if s == 30 then Mock.installRf2({ apiVersion = 12.09, modelName = "Late Heli" }) end
+    run(ZD, 1)
+    local cur = ZD.FlightTime.seconds
+    if cur and prev and cur > prev + 0.001 then climbed = climbed + 1 end
+    if cur then prev = cur end
+  end
+
+  H.eq(ZD.Config.setting("reservePct"), 50, "the craft reserve never applied")
+  H.eq(climbed, 0, "the countdown climbed when the reserve changed")
+  H.truthy(ZD.FlightTime.seconds, "no estimate left at all")
+end)
+
+-- The other direction, which is the dangerous one: a craft whose reserve is
+-- LOWER than the radio-wide number would, on the arithmetic alone, hand back
+-- time a pilot has already been told they do not have.
+H.test("a lower craft reserve does not hand time back", function()
+  local ZD, h = nil, nil
+  ZD = fresh(function()
+    h = heli(2200)
+    Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg",
+      "[battery]\nreservePct = 50\n[Late Heli]\nreservePct = 0\n")
+  end)
+
+  local used = 0
+  for s = 1, 30 do
+    used = used + 260 / 60
+    h.burn(used); run(ZD, 1)
+  end
+  local before = ZD.FlightTime.seconds
+  H.truthy(before, "no estimate to hold onto")
+
+  Mock.installRf2({ apiVersion = 12.09, modelName = "Late Heli" })
+  for s = 1, 10 do
+    used = used + 260 / 60
+    h.burn(used); run(ZD, 1)
+  end
+
+  H.eq(ZD.Config.setting("reservePct"), 0, "the craft reserve never applied")
+  H.truthy(ZD.FlightTime.seconds <= before,
+           string.format("the countdown grew: %.0f -> %.0f",
+                         before, ZD.FlightTime.seconds))
+end)
+
 
 end

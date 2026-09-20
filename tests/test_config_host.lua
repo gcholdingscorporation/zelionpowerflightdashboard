@@ -171,4 +171,112 @@ H.test("an unknown setting is named, not silently ignored", function()
   H.truthy(string.find(problems[1], "cellNominal", 1, true))
 end)
 
+H.group("config: settings scoped to an aircraft")
+
+-- Loads a real file through Config.load and points it at one aircraft, which
+-- is how the widget gets there: Sensors.reload sets the scope.
+local function scoped(text, modelName, craftName, cells)
+  Mock.reset()
+  Mock.state.modelName = modelName
+  Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", text)
+  Mock.install()
+  local ZD = Loader.load()
+  ZD.Config.load()
+  ZD.Config.scope(modelName, craftName, cells)
+  return ZD
+end
+
+local FLEET = table.concat({
+  "[battery]", "reservePct = 40", "",
+  "[OMP Microheli]", "reservePct = 30", "",
+  "[cells:2]", "reservePct = 25", "",
+  "[ALZRC Devil 380]", "reservePct = 45", "",
+}, "\n")
+
+H.test("with nothing scoped, [battery] is still radio-wide", function()
+  local ZD = scoped(FLEET, ">Rotorflight", nil, 12)
+  H.eq(ZD.Config.setting("reservePct"), 40)
+end)
+
+H.test("a reserve scoped to the model beats the radio-wide one", function()
+  local ZD = scoped(FLEET, "OMP Microheli", nil, 3)
+  H.eq(ZD.Config.setting("reservePct"), 30)
+end)
+
+H.test("a cell count is more specific than the model slot", function()
+  local ZD = scoped(FLEET, "OMP Microheli", nil, 2)
+  H.eq(ZD.Config.setting("reservePct"), 25)
+end)
+
+H.test("a reported craft name beats every other scope", function()
+  local ZD = scoped(FLEET, ">Rotorflight", "ALZRC Devil 380", 6)
+  H.eq(ZD.Config.setting("reservePct"), 45)
+end)
+
+-- The bug this whole change exists to prevent, and the one a flat table makes
+-- almost inevitable: resolve has to rebuild from the base every time, or the
+-- helicopter that just landed keeps deciding the reserve for the next one.
+H.test("changing aircraft does not leave the last one's reserve behind", function()
+  local ZD = scoped(FLEET, ">Rotorflight", "ALZRC Devil 380", 6)
+  H.eq(ZD.Config.setting("reservePct"), 45)
+  ZD.Config.scope(">Rotorflight", nil, 12)
+  H.eq(ZD.Config.setting("reservePct"), 40, "back to the radio-wide figure")
+end)
+
+H.test("a setting a pilot scoped to an aircraft counts as explicit", function()
+  local ZD = scoped(FLEET, "OMP Microheli", nil, 2)
+  H.truthy(ZD.Config.explicit.reservePct)
+end)
+
+-- Profiles.setting may fill in a threshold nobody set and must never overrule
+-- one that was written down. Scoping is writing it down.
+H.test("an aircraft profile cannot overrule a scoped threshold", function()
+  local ZD = scoped("[OMP Microheli]\nalertEsc = 70\n", "OMP Microheli", nil, 2)
+  H.eq(ZD.Profiles.setting("alertEsc"), 70)
+end)
+
+H.test("a scoped setting shows up on the config row", function()
+  local ZD = scoped(FLEET, "OMP Microheli", nil, 2)
+  local applied, count = ZD.Config.appliedFor("OMP Microheli", nil, 2)
+  H.eq(count, 3, "[OMP Microheli] + [cells:2] + [battery], one each")
+  local joined = table.concat(applied, ",")
+  H.truthy(string.find(joined, "cells:2", 1, true))
+  H.truthy(string.find(joined, "battery", 1, true))
+end)
+
+H.test("an out-of-range scoped setting is reported, not applied", function()
+  local s, problems = parse("[Goblin 700]\nreservePct = 400\n")
+  H.truthy(#problems > 0)
+  H.eq(s.reservePct, 20, "the default stands")
+end)
+
+-- A section may set one half of the pair and inherit the other, so the check
+-- has to be against the base rather than within the section.
+H.test("a scoped cell range that inverts is refused", function()
+  local _, problems = parse("[battery]\ncellFull = 4.00\n\n[Goblin 700]\ncellMin = 4.10\n")
+  H.truthy(#problems > 0)
+  H.truthy(string.find(problems[1], "cellMin", 1, true))
+end)
+
+-- The wiring rather than the resolution. Every other test in this group sets
+-- the scope itself, so all of them keep passing with the scope call commented
+-- out of Sensors.reload - and that call is the only thing connecting any of
+-- this to the radio. This one goes through the call the widget actually makes.
+H.test("reloading the bindings re-scopes the settings with them", function()
+  Mock.reset()
+  Mock.state.modelName = ">Rotorflight"
+  Mock.writeFile("/WIDGETS/ZelionDash/sensors.cfg", FLEET)
+  Mock.install()
+  local ZD = Loader.load()
+  ZD.Sensors.reload(">Rotorflight", "ALZRC Devil 380", 6)
+  H.eq(ZD.Config.setting("reservePct"), 45, "the craft's reserve, not [battery]'s")
+end)
+
+H.test("a role binding and a setting coexist in one section", function()
+  local ZD = scoped("[Goblin 700]\nheadspeed = Hspd\nreservePct = 35\n",
+                    "Goblin 700", nil, 6)
+  H.eq(ZD.Config.overridesFor("Goblin 700").headspeed, "Hspd")
+  H.eq(ZD.Config.setting("reservePct"), 35)
+end)
+
 end

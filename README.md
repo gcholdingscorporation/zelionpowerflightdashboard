@@ -355,6 +355,15 @@ so a wrong choice is visible on the ground rather than in the air.
 The estimate reaches zero at a reserve rather than at a flat pack. Default 20%;
 change it with `reservePct` in `sensors.cfg`.
 
+The reserve can belong to one helicopter rather than to the radio. Written in
+`[battery]` it applies everywhere, which is usually what a pack setting means;
+written in a model, `[cells:N]` or craft section it applies to that aircraft
+only, resolving down the same chain as the sensor bindings with the most
+specific winning. This matters on a mixed fleet: measured against where a pilot
+actually lands, the same 3.80 V rested cell is about 45% on a 6S 2200 and about
+41% on a 2S micro, so one radio-wide figure is short on one helicopter or early
+on the other. The other `[battery]` settings scope the same way.
+
 The countdown **survives a landing**. Land with pack left, launch again, and it
 carries on from where it stopped rather than starting over — because EdgeTX
 announces a threshold as a timer walks down through it and will not speak one
@@ -514,6 +523,24 @@ flight, and it ends five seconds after the head drops below 100. That last
 fallback is what makes the log, the flight timer and the session peaks work on
 a non-Rotorflight stack.
 
+### A row that is not readable is moved, not deleted
+
+The log rewrites the whole file on every flight, so a radio that loses power
+mid-rewrite can leave fragments of the old bytes in the middle of it. One such
+row is enough to stop a spreadsheet opening the file.
+
+Those rows are moved to `zeliondash.bad.csv` beside the log, and the move
+happens **before** the log is rewritten without them — if that file cannot be
+written, the row stays exactly where it is. Nothing is deleted: a row that
+looks like garbage is still the only trace of that flight, and which trade to
+make with it is yours rather than the widget's. The sensor map says when rows
+have been set aside and names the file holding them.
+
+Only a control character marks a row as unreadable, because that is the whole
+signature of an interrupted write. Width does not: columns are only ever
+appended, so a record written by an older build is narrower than today's header
+and is still that flight.
+
 ## Rotorflight RF Tool integration (optional)
 
 If Rotorflight's **RF Tool** widget is installed, ZelionDash uses it for two
@@ -557,6 +584,19 @@ than silently ignored, so a typo is visible. See `docs/sensors.cfg.example` for
 the full list of role names.
 
 A missing config file is entirely normal — everything auto-detects.
+
+### The radio allows 60 telemetry sensors per model
+
+That is EdgeTX's cap, not the widget's, and it is worth knowing because a model
+that has reached it stops accepting new ones — quietly, at the point where you
+are re-discovering telemetry and expecting the list to grow. Rotorflight
+publishes a lot of sensors, so a full list is closer than it sounds.
+
+The widget reads all 60 slots, so nothing on the radio is out of its reach, and
+binding a sensor by name does not walk the list at all. The cap only bites when
+the sensor you wanted was never created. If a role stays unbound and the
+diagnostics screen shows nothing to bind it to, the fix is on the radio rather
+than in `sensors.cfg`: delete the sensors you do not use and re-discover.
 
 ## Development
 

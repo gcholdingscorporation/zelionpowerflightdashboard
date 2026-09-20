@@ -1,65 +1,94 @@
-The countdown now survives a landing, and the craft column stops hiding itself.
+A reserve can now belong to one helicopter instead of to the whole radio, and a
+corrupted row in the flight log is moved aside rather than deleted.
 
 ## Install
 
-`ZelionDash-1.10.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.11.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
-## The second flight of a pack counted down in silence
+## One reserve could never suit the whole fleet
 
-Land with pack left, launch again, and the timer made no callouts.
+`reservePct` decides where the countdown reaches zero, and it lived in
+`[battery]`, which means it applied to every aircraft the radio flew. On a fleet
+that is the wrong shape of setting. The number that lands a 6S 2200 with
+something left in the pack lands a 2S micro several minutes early, and a number
+between the two satisfies neither.
 
-On disarm the estimate was cleared along with its monotonic floor. Re-arming
-rebuilt it from scratch, so the timer **jumped back up** — and EdgeTX announces
-a threshold as a timer walks down through it, and will not speak one it has
-already passed. The first flight said sixty, thirty, twenty, ten. The second
-flight walked down through the same values in silence.
+The five `[battery]` settings — `cellFull`, `cellMin`, `alertCell`, `alertEsc`
+and `reservePct` — can now be written inside an ordinary section as well:
 
-The floor now survives a landing. The rate is still re-measured every flight;
-only the floor persists, because it belongs to the pack and the pack is still
-on the aircraft.
+```
+[battery]
+reservePct = 40        # the radio-wide default, as before
 
-## A pack change still wipes it
+[OMP M4 Max]
+reservePct = 45        # this helicopter only
+```
 
-This is the trap, and it is worth being explicit about. Keeping the floor
-across a landing is right. Keeping it across a **pack** is a full battery
-reading forty seconds remaining, with no way back up, because a floor only
-falls.
+They resolve through the same chain the sensor bindings already used,
+`[*]` → `[model]` → `[cells:N]` → `[craft]`, with `[battery]` underneath all of
+it. Most specific wins, and a reported craft name always beats a cell count,
+because a name is what the flight controller says and a cell count is something
+the widget worked out.
 
-The existing new-pack guard could not catch it: it compares against the first
-sample of the current flight, and the samples are cleared on every landing, so
-it only ever saw a counter reset **mid**-flight. Two checks now bracket the
-gap between flights:
+Nothing changes for a radio that flies one helicopter. `[battery]` on its own
+resolves to exactly the numbers it did before, defaults included.
 
-- the consumed figure opening lower than the last flight closed at, which is a
-  flight controller that lost power;
-- a pack reading over 95%, which cannot be the one just landed on — belt and
-  braces for a flight controller that kept power through the swap, or a
-  percentage published from voltage rather than counted coulombs.
+A section whose header does not match what the flight controller reports is
+inert, not wrong: that aircraft falls back to `[battery]`. The sensor map's
+`-- CONFIG --` row is still the place to check which sections actually applied.
 
-## No stale number on the timer
+## The reserve can move while you fly, and only downwards
 
-With no estimate, `driveTimer` used to write nothing, which leaves the previous
-flight's value on the timer. Arm on a fresh pack and it read four minutes —
-from the pack before it — until the new one fell below 95%. It writes zero now.
-A stale number that looks live is the one thing this widget exists not to do.
+The craft name arrives from the flight controller a moment after the link comes
+up, so a reserve scoped to a craft lands slightly after power-on — which means
+it can change under a countdown that is already running.
 
-## `craft` stops hiding itself
+In practice you will never see it. The name arrives within a second or two,
+long before the pack is under 95% and long before eight seconds of flight have
+been measured, so there is no estimate on screen yet to move.
 
-The column was suppressed when the resolved name matched the EdgeTX model name,
-to avoid repeating the column beside it. That made an empty cell mean two
-different things: "nothing named this aircraft" and "its name happens to match
-the slot". A real log came back blank on every row of an aircraft the flight
-controller had named perfectly well.
+Forced anyway, it is safe in both directions. A helicopter-specific reserve is
+usually the higher number, so the countdown gets shorter — you land earlier,
+which is the side to be wrong on. A lower one would, on the arithmetic alone,
+hand back time you have already been told you do not have; the monotonic floor
+refuses, and there are now tests saying so out loud in both directions.
 
-It is written whenever anything names the aircraft. Blank now means only that
-nothing did.
+## A row that is not a row is moved, not deleted
+
+The flight log is rewritten whole on every flight. A row that cannot be parsed
+back — a card pulled mid-write, a file opened in something that mangled it —
+used to be dropped on the next rewrite, taking whatever was still readable in
+it with it.
+
+Unreadable rows are now written to `zeliondash.bad.csv` beside the log first,
+and only then left out of the rewrite. If that file cannot be written the log is
+left exactly as it was, wreckage included. Losing a flight to a failed recovery
+is worse than carrying a bad line.
+
+The sensor map gains a row when it happens, naming the file rather than
+reporting a count and leaving you to guess where the rows went.
+
+A row is only wreckage if it carries a control character. A column-count check
+was written first and two existing tests caught it: columns are only ever
+appended to this log, and a spreadsheet drops trailing empty fields when it
+saves, so a genuinely short record is a record. That check would have
+quarantined real flights.
+
+## The shipped `sensors.cfg.example` is worth re-reading
+
+It previously stated that a setting could not be scoped, which is now the
+opposite of true. It has a worked section on scoping one, and the reference
+copy lands on the card as `sensors.cfg.EXAMPLE`, never as `sensors.cfg` — your
+own overrides are never overwritten by an upgrade.
+
+## Also
+
+The README now says that EdgeTX holds 60 telemetry sensors, which is the cap
+that matters on a radio flying several aircraft from one model slot.
 
 ## Tests
 
-365, up four. Four mutations verified, including the naive version of this fix
-— keep the floor, skip the cross-flight pack check — which passes every other
-test in the file and fails exactly the two that matter.
-
-One existing test had to be rewritten twice. It compared the two flights'
-estimates directly, which proves nothing: the pack is emptier the second time,
-so the number falls either way. It passed with the bug still in place.
+387, up 22 on 1.10.0. Every behavioural change was mutation-verified, including
+the two that had no coverage at all until a mutation proved it: the call that
+re-scopes the settings when the bindings reload, and the monotonic floor holding
+a reserve that arrives late.

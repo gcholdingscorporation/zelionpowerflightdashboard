@@ -685,5 +685,93 @@ H.test("a craft with no flight controller name still logs the flight", function(
   H.eq(column(ZD, rec, "model"), "GOBLIN 700", "and the slot name carries it")
 end)
 
+H.group("flightlog: a row that is not a row")
+
+local BAD_PATH = "/LOGS/zeliondash.bad.csv"
+local GOOD = "2026-08-01,10:00:00,GOBLIN 700,300,2100,3.60,44.0,90.0,70,1800,22"
+-- What an interrupted rewrite leaves: fragments of the old file's bytes.
+local WRECKAGE = "2026-08-02,10:0\0\1\0GOBL\4\0\0,3.6"
+
+local function withCorruptLog(ZD)
+  Mock.state.files[PATH] = ZD.FlightLog.HEADER .. "\n"
+    .. GOOD .. "\n" .. WRECKAGE .. "\n"
+end
+
+H.test("a row of wreckage is moved out of the log", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  for _, l in ipairs(lines()) do
+    H.falsy(string.find(l, "%c"), "nothing unreadable is left in the log")
+  end
+end)
+
+-- The reason this went unfixed for so long: the two-line version deletes it.
+H.test("the wreckage is moved, never deleted", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  local kept = Mock.state.files[BAD_PATH]
+  H.truthy(kept, "a quarantine file exists")
+  H.truthy(string.find(kept, WRECKAGE, 1, true), "holding the row verbatim")
+end)
+
+H.test("the real flights either side of it survive", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  local l = lines()
+  H.eq(#l, 3, "header, the old flight, the new one")
+  H.truthy(string.find(l[2], "2026-08-01", 1, true))
+  H.truthy(string.find(l[3], "2026-08-05", 1, true))
+end)
+
+-- The ordering is the whole guarantee. If the row cannot be put somewhere
+-- safe, it does not leave the log - otherwise "moved, never deleted" is only
+-- true on a card that happens to be writable.
+H.test("a quarantine that cannot be written leaves the log alone", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  Mock.state.blockWrite = BAD_PATH
+  flight(ZD, 40)
+  Mock.state.blockWrite = nil
+  local found = false
+  for _, l in ipairs(lines()) do
+    if string.find(l, WRECKAGE, 1, true) then found = true end
+  end
+  H.truthy(found, "the row is still in the log rather than gone from both")
+  H.falsy(Mock.state.files[BAD_PATH], "and no quarantine file was written")
+end)
+
+-- Columns are only ever appended, so a record from an older build is narrower
+-- than today's header and is still that flight. An earlier version of this
+-- checked column count and would have quarantined every one of them.
+H.test("a short record is a record, not wreckage", function()
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = ZD.FlightLog.HEADER .. "\n"
+    .. "2026-08-01,09:00,OLD,300" .. string.rep(",", 11) .. "\n"
+  flight(ZD, 40)
+  H.falsy(Mock.state.files[BAD_PATH], "nothing was quarantined")
+  H.eq(#lines(), 3, "and the short row is still in the log")
+end)
+
+H.test("a second bad row joins the first rather than replacing it", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  local other = "2026-08-03,11:00\0\0\7broken"
+  Mock.state.files[PATH] = Mock.state.files[PATH] .. other .. "\n"
+  flight(ZD, 40)
+  local kept = Mock.state.files[BAD_PATH]
+  H.truthy(string.find(kept, WRECKAGE, 1, true), "the first is still there")
+  H.truthy(string.find(kept, other, 1, true), "with the second under it")
+end)
+
+H.test("the log says how many rows it set aside", function()
+  local ZD = fresh(loaded)
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  H.eq(ZD.FlightLog.quarantined, 1)
+end)
 
 end
