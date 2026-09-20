@@ -323,7 +323,23 @@ end
 -- Report what each method thinks of a file, separately. Collapsing them into
 -- one boolean is what left "the file is right there" and "the widget cannot
 -- see it" impossible to tell apart.
+--
+-- Cached per path, for the same reason Host.imageLoads below is - Bitmap.open
+-- allocates as much as displaying the file does. This one is called from the
+-- sensor map, which rebuilds its rows on EVERY refresh, so uncached it decoded
+-- the whole artwork set at the radio's frame rate: the sensor map visibly
+-- dropped frames, and it left the heap too churned for Dashboard.build to
+-- afford its own bitmap afterwards, which is what quietly took the logo off
+-- the dashboard.
+--
+-- Caching it also makes this agree with imageLoads. The two answering
+-- differently about the same file - one live, one cached - is a worse
+-- diagnostic than either alone, on the screen that exists to be trusted.
+local probeCache = {}
+
 function Host.probeImage(path)
+  local cached = probeCache[path]
+  if cached ~= nil then return cached end
   local r = { fstat = false, io = false, bmp = false, size = nil, w = nil }
   if fstatFn then
     local ok, info = pcall(fstatFn, path)
@@ -348,7 +364,14 @@ function Host.probeImage(path)
         if sized then r.w = tonumber(w) end
       end
     end
+    -- Dropped and collected before returning, exactly as imageLoads does. The
+    -- bitmap is dead the moment its width has been read, and leaving it for
+    -- the collector to find later is leaving it during the build that cannot
+    -- afford it.
+    bmp = nil
+    if Host.collect then Host.collect() end
   end
+  probeCache[path] = r
   return r
 end
 
@@ -466,6 +489,14 @@ function Host.imageLoads(path)
 end
 
 Host.collect = collect
+
+-- Throws both image caches away. Nothing rewrites the card underneath a
+-- running radio, so this is not on any timer - it hangs off the widget's
+-- options screen, which is the one moment a pilot who just swapped a PNG over
+-- USB is telling the widget that something changed.
+function Host.resetImageProbes()
+  probeCache, imageProbeCache = {}, {}
+end
 
 function Host.imageExists(path)
   if Host.imageLoads(path) then return true end
