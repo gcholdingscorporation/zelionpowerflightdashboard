@@ -6123,6 +6123,20 @@ local ASSET_FILES = { "logo_panel.png", "logo_small.png" }
 -- so one table can serve every frame. Widget.update drops it.
 local assetCache = nil
 
+-- The rest of the rows are rebuilt rather than cached, and that is the other
+-- half of the same cost. Every refresh re-reads every role, re-formats every
+-- reading and re-measures the folded names against the column width, which is
+-- five times the text measurement the dashboard does for a screen that is not
+-- flown on. The dashboard earns its frame rate by only touching what changed;
+-- this screen had no equivalent, so it gets the cheap version of one - the
+-- whole list, rebuilt on a clock rather than on every frame.
+--
+-- Half a second is chosen against the reader, not the telemetry: it is faster
+-- than anyone reads a row and slow enough to cost nothing. Scrolling does not
+-- invalidate it, because scrolling picks a different slice of the same list.
+local SENSOR_MAP_REBUILD = Host.seconds(0.5)
+local rowCache, rowCacheAt = nil, nil
+
 local function assetRows()
   if assetCache then
     return assetCache[1], assetCache[2], assetCache[3]
@@ -6175,6 +6189,7 @@ end
 -- For Widget.update, which is the pilot saying something changed.
 local function resetAssetProbe()
   assetCache = nil
+  rowCache, rowCacheAt = nil, nil
   Host.resetImageProbes()
 end
 
@@ -6601,9 +6616,19 @@ function Widget.refresh(widget, event, touchState)
     -- are radio settings this widget cannot read - so it is the one pre-flight
     -- check that has to be a physical press rather than something inferred.
     elseif event == flag("EVT_VIRTUAL_ENTER", -3) then pcall(Alerts.selfTest) end
-    local ok, rows, bound, note, bad = pcall(sensorMapRows)
-    if ok then
-      local clamped = Dashboard.updateSensorMap(rows, scroll, bound, note, bad)
+    if rowCacheAt == nil or (now - rowCacheAt) >= SENSOR_MAP_REBUILD then
+      rowCacheAt = now
+      local ok, rows, bound, note, bad = pcall(sensorMapRows)
+      -- A failed build keeps the last good list on screen rather than blanking
+      -- it: a diagnostic screen that empties itself the moment something goes
+      -- wrong is the screen you needed at exactly that moment. The timestamp
+      -- moves either way, so a build that keeps failing is not retried at the
+      -- frame rate - which is the state the radio can least afford it in.
+      if ok then rowCache = { rows, bound, note, bad } end
+    end
+    if rowCache then
+      local clamped = Dashboard.updateSensorMap(rowCache[1], scroll, rowCache[2],
+                                                 rowCache[3], rowCache[4])
       if clamped then scroll = clamped end
     end
   else
