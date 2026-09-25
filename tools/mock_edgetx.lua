@@ -652,6 +652,16 @@ function Mock.lvglText()
   return table.concat(out, "|")
 end
 
+-- True when some label's CURRENT text is exactly this. Exact, because a
+-- substring search over every label answers "is this string anywhere on the
+-- screen", which a stale label elsewhere can satisfy by accident.
+function Mock.lvglShows(text)
+  for _, o in ipairs((Mock.lv or {}).objects or {}) do
+    if o.kind == "label" and tostring(o.props.text) == text then return true end
+  end
+  return false
+end
+
 function Mock.lvglImages()
   local out = {}
   for _, o in ipairs((Mock.lv or {}).objects or {}) do

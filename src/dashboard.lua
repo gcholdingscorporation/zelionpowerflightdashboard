@@ -37,6 +37,9 @@ local ALIGN_CENTER = flag("CENTER", flag("CENTERED", 0))
 local ALIGN_RIGHT  = flag("RIGHT", 0)
 
 local V, SHADOW = {}, {}
+-- Declared together and up here because resetMemos has to close over both, and
+-- it runs from the three places that clear SHADOW, which are above one of them.
+local extremeMemo, numMemo, lazyMemo, resetMemos
 
 --------------------------------------------------------------------------
 -- Retained-object helpers
@@ -144,6 +147,91 @@ local function setPanel(p, fill, border)
   setp(p.border, { color = border })
 end
 
+-- setp's table is built by the caller, so the change gate above saves the LVGL
+-- write but not the garbage: an unchanged reading still allocated a table every
+-- frame, and the update path writes about forty of them. These check the shadow
+-- first and only build a table when there is something to write. Same shadow,
+-- same comparison, same result - the allocation just moves to the side of the
+-- branch that was going to do work anyway.
+local function setText(obj, text)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if st and st.text == text then return end
+  setp(obj, { text = text })
+end
+
+local function setTextColor(obj, text, color)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if st and st.text == text and st.color == color then return end
+  setp(obj, { text = text, color = color })
+end
+
+local function setColor(obj, color)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if st and st.color == color then return end
+  setp(obj, { color = color })
+end
+
+-- The sensor map's middle column carries a width as well, because a folded row
+-- and an ordinary role want different ones in the same slot.
+local function setTextColorW(obj, text, color, w)
+  if not obj then return end
+  local st = SHADOW[obj]
+  if st and st.text == text and st.color == color and st.w == w then return end
+  setp(obj, { text = text, color = color, w = w })
+end
+
+-- Formatting is the other half of the same waste: the writers above skip the
+-- LVGL write when the string matches, but the string had to be built to find
+-- that out, and the dashboard built about thirty a frame. These remember the
+-- NUMBER the string came from, so an unchanged reading costs a comparison
+-- instead of a string.format. Callers hand over the value already rounded the
+-- way it will be displayed, which is the point: a current wobbling between
+-- 41.6 and 41.8 still reads "42", and now it is not rebuilt to say so.
+--
+-- Every path that writes a memoised label must go through here. One that did
+-- not would leave the memo describing a string the label no longer shows.
+local function setNumber(obj, value, pattern, blank, color, suffix)
+  if not obj then return end
+  local m = numMemo[obj]
+  if m and m.v == value and m.c == color then return end
+  local text = blank
+  if value ~= nil then
+    text = string.format(pattern, value)
+    if suffix then text = text .. suffix end
+  end
+  if m then m.v, m.c = value, color else numMemo[obj] = { v = value, c = color } end
+  setTextColor(obj, text, color)
+end
+
+-- Same idea for a line that is not one number: hand over the readings the text
+-- is made of and the function that builds it. `build` is a module-level
+-- function and the keys are passed to it, so nothing is allocated to make the
+-- call - a closure here would have cost a table a frame to save a string.
+--
+-- The keys have to determine the text completely. A reading the builder uses
+-- but the caller does not pass would freeze the line the moment that reading
+-- was the only thing to move.
+local function setLazy(obj, k1, k2, build)
+  if not obj then return end
+  local m = lazyMemo[obj]
+  if m and m.a == k1 and m.b == k2 then return end
+  if m then m.a, m.b = k1, k2 else lazyMemo[obj] = { a = k1, b = k2 } end
+  setText(obj, build(k1, k2))
+end
+
+-- Weak keys drop these when a rebuilt screen drops the objects, but a rebuild
+-- clears SHADOW outright and the two have to agree: a memo that outlived its
+-- shadow would skip a write the blank shadow was counting on.
+resetMemos = function()
+  extremeMemo = setmetatable({}, { __mode = "k" })
+  numMemo     = setmetatable({}, { __mode = "k" })
+  lazyMemo    = setmetatable({}, { __mode = "k" })
+end
+resetMemos()
+
 --------------------------------------------------------------------------
 -- Formatting
 --------------------------------------------------------------------------
@@ -151,6 +239,27 @@ end
 local function fmtExtreme(prefix, value, pattern)
   if value == nil then return prefix .. " --" end
   return prefix .. " " .. string.format(pattern, value)
+end
+
+-- Session extremes are the least volatile thing on the screen and this ran six
+-- times a frame, formatting numbers that had not moved since the last landing.
+-- Keyed on the label rather than on the prefix, because MAX/%d writes both the
+-- current and the ESC temperature footnote and a shared slot would thrash.
+local function setExtreme(obj, prefix, value, pattern)
+  if not obj then return end
+  local m = extremeMemo[obj]
+  if m and m.v == value then return end
+  if m then m.v = value else extremeMemo[obj] = { v = value } end
+  setp(obj, { text = fmtExtreme(prefix, value, pattern) })
+end
+
+-- Cell count qualifies the pack voltage rather than standing on its own, so
+-- the two readings build one string. Kept out of the update so setLazy has a
+-- plain function to call.
+local function packVoltText(pack, cells)
+  if pack == nil then return "--" end
+  if cells then return string.format("%dS %.1f V", cells, pack) end
+  return string.format("%.1f V", pack)
 end
 
 local function clockText(seconds)
@@ -367,12 +476,32 @@ end
 -- away from a two-digit value. lcd.sizeText is pure - it reads font metrics and
 -- touches no draw buffer - so it is safe to call here.
 local function setHeroValue(value, geom, unit, text)
+  -- Identical text measures identically, so a reading that has not moved needs
+  -- neither the write nor the lcd.sizeText below. That measurement was two
+  -- font-metric calls a frame for two readings that mostly sit still.
+  local st = SHADOW[value]
+  if st and st.text == text then return end
   setp(value, { text = text })
   if not (unit and geom) then return end
   local w = Host.textWidth(text, geom.font, geom.lineH)
   local x = geom.x0 + w + geom.gap
   if x > geom.maxX then x = geom.maxX end
   setp(unit, { x = x, w = geom.width + (geom.maxX - x) })
+end
+
+-- The hero readings are the two that move most, so they were also the two
+-- being formatted most: a headspeed hunting by one RPM rebuilt its string
+-- every frame for a screen that already showed that number. Callers round
+-- first and the rounded number is the key.
+local function setHeroNumber(value, geom, unit, num, pattern, blank)
+  -- Guarded like the rest of them. A nil label here is not a skipped write but
+  -- a raise, because the memo below is a table write and nil is not a key -
+  -- and a raise in the update path costs the pilot the screen.
+  if not value then return end
+  local m = numMemo[value]
+  if m and m.v == num then return end
+  if m then m.v = num else numMemo[value] = { v = num } end
+  setHeroValue(value, geom, unit, num and string.format(pattern, num) or blank)
 end
 
 local function buildHero()
@@ -474,6 +603,7 @@ function Dashboard.buildMinimal(w, h)
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  resetMemos()
   Host.collect()
   mode = "minimal"
   local F = Theme.font
@@ -518,6 +648,7 @@ function Dashboard.build(w, h)
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  resetMemos()
   -- lvgl.clear() drops the previous screen's objects and bitmaps; reclaim them
   -- before allocating the next screen rather than letting both coexist.
   Host.collect()
@@ -572,6 +703,7 @@ function Dashboard.buildSensorMap(w, h)
   Theme.build()
   lvgl.clear()
   V, SHADOW = {}, {}
+  resetMemos()
   Host.collect()
   w = w or Host.lcdW
   h = h or Host.lcdH
@@ -666,8 +798,8 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
   if scroll > #rows - n then scroll = math.max(0, #rows - n) end
   if scroll < 0 then scroll = 0 end
 
-  setp(V.smCount, { text = string.format("%d bound", bound or 0) })
-  setp(V.smNote, { text = note or "", color = noteBad and Theme.crit or Theme.dim })
+  setText(V.smCount, string.format("%d bound", bound or 0))
+  setTextColor(V.smNote, note or "", noteBad and Theme.crit or Theme.dim)
   setp(V.smPage, { text = (#rows > n)
                           and string.format("%d-%d/%d", scroll + 1,
                                             math.min(#rows, scroll + n), #rows)
@@ -677,8 +809,7 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
     local r = SM.rows[i]
     local row = rows[i + scroll]
     if not row then
-      setp(r.role, { text = "" }); setp(r.sensor, { text = "" })
-      setp(r.value, { text = "" })
+      setText(r.role, ""); setText(r.sensor, ""); setText(r.value, "")
     else
       local color = Theme.dim
       if row.status == "ok" or row.status == "derived" then color = Theme.lime
@@ -687,14 +818,13 @@ function Dashboard.updateSensorMap(rows, scroll, bound, note, noteBad)
 
       local sensor = row.sensor or "-"
       if row.how then sensor = sensor .. " (" .. row.how .. ")" end
-      setp(r.role,   { text = row.label or "",
-                       color = row.important and Theme.steel or Theme.ink })
+      setTextColor(r.role, row.label or "",
+                   row.important and Theme.steel or Theme.ink)
       -- Set every frame, not once at build: the same slot shows a folded row
       -- on one scroll position and an ordinary role on the next, and a slot
       -- left wide would run its sensor name through the value column.
-      setp(r.sensor, { text = sensor, color = color,
-                       w = row.wide and SM.wideW or SM.sensorW })
-      setp(r.value,  { text = row.value or "", color = color })
+      setTextColorW(r.sensor, sensor, color, row.wide and SM.wideW or SM.sensorW)
+      setTextColor(r.value, row.value or "", color)
     end
   end
   return scroll
@@ -724,8 +854,9 @@ local function flightsText()
 end
 
 local function updateTopBar()
-  setp(V.modelName, { text = RF2.craftName or Host.modelName() })
-  setp(V.timer, { text = clockText(State.flightSeconds) })
+  setText(V.modelName, RF2.craftName or State.modelName or Host.modelName())
+  -- Whole seconds, so the ten-or-so frames inside one do not rebuild it.
+  setLazy(V.timer, math.floor(State.flightSeconds or 0), nil, clockText)
 
   local lq = State.valid("linkQuality") and State.num("linkQuality") or nil
   local bars = 0
@@ -735,7 +866,7 @@ local function updateTopBar()
   end
   local col = Theme.linkColor(lq)
   for i = 1, 4 do
-    setp(V.signal[i], { color = (i <= bars) and col or Theme.rule })
+    setColor(V.signal[i], (i <= bars) and col or Theme.rule)
   end
 
   local tx = State.valid("txVoltage") and State.num("txVoltage") or nil
@@ -748,18 +879,18 @@ local function updateTopBar()
                      color = fh <= 0 and Theme.track
                              or (pct > 0.5 and Theme.lime
                                  or (pct > 0.25 and Theme.warn or Theme.crit)) })
-    setp(V.txText, { text = string.format("%.1f", tx) })
+    setNumber(V.txText, tx, "%.1f", "--")
   else
     setHidden(V.txFill, true, Theme.track)
-    setp(V.txText, { text = "--" })
+    setNumber(V.txText, nil, "%.1f", "--")
   end
 end
 
 local function updateLeftColumn()
   local cell, ok = State.get("cellVoltage")
-  setp(V.cellValue, { text = ok and string.format("%.2f", cell) or "--",
-                      color = ok and Theme.cellColor(cell) or Theme.dim })
-  setp(V.cellMin, { text = fmtExtreme("MIN", State.min("cellVoltage"), "%.2f") })
+  setNumber(V.cellValue, ok and cell or nil, "%.2f", "--",
+            ok and Theme.cellColor(cell) or Theme.dim)
+  setExtreme(V.cellMin, "MIN", State.min("cellVoltage"), "%.2f")
 
   local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
   if pct then
@@ -776,76 +907,71 @@ local function updateHero()
   local roomy = L.class == "roomy"
 
   local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
-  setHeroValue(V.batValue, V.batUnitGeom, V.batUnit,
-               pct and string.format("%d", math.floor(pct + 0.5)) or "--")
-  setp(V.batValue, { color = pct and Theme.ink or Theme.dim })
+  setHeroNumber(V.batValue, V.batUnitGeom, V.batUnit,
+                pct and math.floor(pct + 0.5) or nil, "%d", "--")
+  setColor(V.batValue, pct and Theme.ink or Theme.dim)
   -- Cell count qualifies the pack voltage, so it rides with it: "12S 47.3 V".
   local pack, packOk = State.get("packVoltage")
-  local packText = packOk and string.format("%.1f V", pack) or "--"
-  if packOk and State.valid("cellCount") then
-    packText = string.format("%dS %s", math.floor(State.num("cellCount")), packText)
-  end
-  setp(V.batPack, { text = packText,
-                    color = packOk and Theme.ink or Theme.dim })
+  setLazy(V.batPack, packOk and pack or nil,
+          State.valid("cellCount") and math.floor(State.num("cellCount")) or nil,
+          packVoltText)
+  setColor(V.batPack, packOk and Theme.ink or Theme.dim)
 
-  local foots = {
-    fmtExtreme("MIN", State.min("packVoltage"), "%.1fV"),
-    fmtExtreme("SAG", cellSag(), "%.2f"),
-    State.valid("capacity") and string.format("%d mAh", math.floor(State.num("capacity")))
-      or "-- mAh",
-  }
-  for i = 1, #V.batFoot do
-    setp(V.batFoot[i], { text = foots[i] or "" })
-  end
+  -- A slot at a time instead of a table of three strings built every frame.
+  -- The slots are fixed when the tile is built, so the table and the strings
+  -- in it only ever existed to be thrown away; a slot the layout did not build
+  -- is nil here and the writers ignore it, which is what the old `or ""` did.
+  setExtreme(V.batFoot[1], "MIN", State.min("packVoltage"), "%.1fV")
+  setExtreme(V.batFoot[2], "SAG", cellSag(), "%.2f")
+  setNumber(V.batFoot[3],
+            State.valid("capacity") and math.floor(State.num("capacity")) or nil,
+            "%d", "-- mAh", nil, " mAh")
 
   local hs, hsOk = State.get("headspeed")
-  setHeroValue(V.hsValue, V.hsUnitGeom, V.hsUnit,
-               hsOk and string.format("%d", math.floor(hs + 0.5)) or "--")
-  setp(V.hsValue, { color = hsOk and Theme.ink or Theme.dim })
-  local hfoots = {
-    fmtExtreme("MAX", State.max("headspeed"), "%d"),
-    State.valid("tailSpeed") and string.format("TAIL %d", math.floor(State.num("tailSpeed")))
-      or "TAIL --",
-    State.valid("throttle") and string.format("THR %d%%", math.floor(State.num("throttle")))
-      or "THR --",
-  }
-  for i = 1, #V.hsFoot do
-    setp(V.hsFoot[i], { text = hfoots[i] or "" })
-  end
+  setHeroNumber(V.hsValue, V.hsUnitGeom, V.hsUnit,
+                hsOk and math.floor(hs + 0.5) or nil, "%d", "--")
+  setColor(V.hsValue, hsOk and Theme.ink or Theme.dim)
+  setExtreme(V.hsFoot[1], "MAX", State.max("headspeed"), "%d")
+  setExtreme(V.hsFoot[2], "TAIL",
+             State.valid("tailSpeed") and math.floor(State.num("tailSpeed")) or nil, "%d")
+  setExtreme(V.hsFoot[3], "THR",
+             State.valid("throttle") and math.floor(State.num("throttle")) or nil, "%d%%")
 end
 
 local function updateRightColumn()
   local g = govText()
   local fg, bg, br = Theme.govColors(g)
   setPanel(V.govPanel, bg, br)
-  setp(V.govState, { text = g, color = fg })
+  setTextColor(V.govState, g, fg)
 
   local cur, curOk = State.get("current")
-  setp(V.tiles[1].value, { text = curOk and string.format("%d", math.floor(cur + 0.5)) or "--",
-                           color = curOk and Theme.ink or Theme.dim })
-  setp(V.tiles[1].foot, { text = fmtExtreme("MAX", State.max("current"), "%d") })
+  setNumber(V.tiles[1].value, curOk and math.floor(cur + 0.5) or nil, "%d", "--",
+            curOk and Theme.ink or Theme.dim)
+  setExtreme(V.tiles[1].foot, "MAX", State.max("current"), "%d")
 
   local esc, escOk = State.get("escTemperature")
-  setp(V.tiles[2].value, { text = escOk and string.format("%d", math.floor(esc + 0.5)) or "--",
-                           color = escOk and Theme.tempColor(esc) or Theme.dim })
-  setp(V.tiles[2].foot, { text = fmtExtreme("MAX", State.max("escTemperature"), "%d") })
+  setNumber(V.tiles[2].value, escOk and math.floor(esc + 0.5) or nil, "%d", "--",
+            escOk and Theme.tempColor(esc) or Theme.dim)
+  setExtreme(V.tiles[2].foot, "MAX", State.max("escTemperature"), "%d")
 
   local bec, becOk = State.get("becVoltage")
-  setp(V.tiles[3].value, { text = becOk and string.format("%.1f", bec) or "--",
-                           color = becOk and Theme.becColor(bec) or Theme.dim })
-  setp(V.tiles[3].foot, { text = fmtExtreme("MIN", State.min("becVoltage"), "%.1f") })
+  setNumber(V.tiles[3].value, becOk and bec or nil, "%.1f", "--",
+            becOk and Theme.becColor(bec) or Theme.dim)
+  setExtreme(V.tiles[3].foot, "MIN", State.min("becVoltage"), "%.1f")
 end
 
 local function updateStrip()
-  setp(V.flights, { text = flightsText() })
+  -- Keyed on both readings the line is made of: the count alone would freeze
+  -- the running total, and the total alone would freeze the count.
+  setLazy(V.flights, RF2.statsStatus == "ok" and RF2.totalFlights or nil,
+          RF2.totalFlightSeconds, flightsText)
   local text, color = "", Theme.steel
   if Dashboard.logoMissing then
     -- Name the exact path that failed: "missing" is not actionable, a path is.
     -- It needs the whole strip, so the slogan stands down - an error outranks
     -- a tagline, and the two were printing through each other.
-    setp(V.tagline, { text = "" })
-    setp(V.link, { text = "NO IMAGE: " .. tostring(Dashboard.missingPath),
-                   color = Theme.warn })
+    setText(V.tagline, "")
+    setTextColor(V.link, "NO IMAGE: " .. tostring(Dashboard.missingPath), Theme.warn)
     return
   end
   -- A sounding alert takes the strip. The radio may be muted, the pilot may
@@ -854,12 +980,11 @@ local function updateStrip()
   local ZD_Alerts = ZD.Alerts
   local active = ZD_Alerts and ZD_Alerts.active() or {}
   if #active > 0 then
-    setp(V.tagline, { text = "" })
-    setp(V.link, { text = "ALERT: " .. string.upper(table.concat(active, " + ")),
-                   color = Theme.crit })
+    setText(V.tagline, "")
+    setTextColor(V.link, "ALERT: " .. string.upper(table.concat(active, " + ")), Theme.crit)
     return
   end
-  setp(V.tagline, { text = "NO HYPE / JUST VOLTAGE / REAL POWER" })
+  setText(V.tagline, "NO HYPE / JUST VOLTAGE / REAL POWER")
   if RF2.available() then
     if State.linkConnected == false then
       text, color = "RF2 DISCONNECTED", Theme.dim
@@ -867,22 +992,22 @@ local function updateStrip()
       text = "RF2 LINKED"
     end
   end
-  setp(V.link, { text = text, color = color })
+  setTextColor(V.link, text, color)
 end
 
 function Dashboard.update()
   if type(lvgl) ~= "table" or mode == "toosmall" then return end
   if mode == "minimal" then
-    setp(V.modelName, { text = RF2.craftName or Host.modelName() })
+    setText(V.modelName, RF2.craftName or State.modelName or Host.modelName())
     local pct = State.valid("batteryPercent") and State.num("batteryPercent") or nil
-    setp(V.minBat, { text = pct and (string.format("%d", math.floor(pct + 0.5)) .. "%") or "--",
-                     color = pct and Theme.batteryColor(pct) or Theme.dim })
+    setNumber(V.minBat, pct and math.floor(pct + 0.5) or nil, "%d", "--",
+              pct and Theme.batteryColor(pct) or Theme.dim, "%")
     local hs, hsOk = State.get("headspeed")
-    setp(V.minHs, { text = hsOk and (string.format("%d", math.floor(hs + 0.5)) .. " RPM") or "-- RPM",
-                    color = hsOk and Theme.ink or Theme.dim })
+    setNumber(V.minHs, hsOk and math.floor(hs + 0.5) or nil, "%d", "-- RPM",
+              hsOk and Theme.ink or Theme.dim, " RPM")
     local cv, cvOk = State.get("cellVoltage")
-    setp(V.minCell, { text = cvOk and (string.format("%.2f", cv) .. " V/cell") or "-- V/cell",
-                      color = cvOk and Theme.cellColor(cv) or Theme.dim })
+    setNumber(V.minCell, cvOk and cv or nil, "%.2f", "-- V/cell",
+              cvOk and Theme.cellColor(cv) or Theme.dim, " V/cell")
     return
   end
   if not V.flights then return end

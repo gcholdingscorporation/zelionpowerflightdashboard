@@ -932,6 +932,109 @@ H.test("holding the sensor map open does not re-probe the artwork", function()
   H.eq(Mock.bitmapOpens, after, "the artwork must be probed once, not per frame")
 end)
 
+H.test("a reading that comes back to where it was is drawn again", function()
+  -- The per-frame writers skip the work when the value has not changed, which
+  -- means the record of what a label shows has to be updated by EVERY path
+  -- that writes it. A "--" written around the gate would leave the memo
+  -- claiming a number the label no longer shows, and the radio going quiet and
+  -- returning at the same voltage would keep "--" on screen.
+  -- "TxBt" is the name the transmitter battery role actually binds; a name
+  -- that binds nothing lands on a spare tile instead and exercises a
+  -- different writer, which is how an earlier version of this test passed
+  -- while the top bar was broken.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, function()
+    flying()
+    Mock.addSensor("TxBt", 1, 7.9)
+  end)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("7.9"), "drawn to begin with")
+
+  Mock.removeSensor("TxBt")
+  Mock.advanceSeconds(5)
+  def.refresh(widget, 0, nil)
+  H.falsy(Mock.lvglShows("7.9"), "gone when the sensor is")
+
+  Mock.addSensor("TxBt", 1, 7.9)
+  Mock.advanceSeconds(5)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("7.9"), "and drawn again on its return")
+end)
+
+H.test("a rebuilt screen is drawn from scratch, not from what the last one showed", function()
+  -- The shadow is cleared on a rebuild and the memos have to go with it.
+  -- One outliving the other would skip writes the empty shadow was counting
+  -- on, and the screen would come back with holes in it.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850", 1, true), "headspeed is drawn")
+
+  def.update(widget, { SensorMap = 0 })     -- an options change rebuilds
+  def.refresh(widget, 0, nil)
+  H.truthy(string.find(Mock.lvglText(), "1850", 1, true), "and drawn again after a rebuild")
+  H.truthy(string.find(Mock.lvglText(), "3.94", 1, true), "cell voltage too")
+end)
+
+H.test("a screen that is not moving stops building strings for it", function()
+  -- The point of the memos. Before them the dashboard formatted about
+  -- thirty-seven strings a frame whether or not a reading had moved, which on
+  -- a radio with this little heap is the whole cost of the screen. A number
+  -- here in the hundreds means a writer has gone back to formatting first and
+  -- asking questions afterwards.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, flying)
+  def.refresh(widget, 0, nil)
+
+  local real, n = string.format, 0
+  string.format = function(...) n = n + 1; return real(...) end
+  for _ = 1, 20 do
+    Mock.advance(2)
+    def.refresh(widget, 0, nil)
+  end
+  string.format = real
+  H.truthy(n < 40, "built " .. n .. " strings over 20 still frames, expected well under 40")
+end)
+
+H.test("gating the strings does not freeze the clock", function()
+  -- Every lazy line is keyed on the readings behind it, and the clock's key is
+  -- whole seconds. A key that missed would leave the timer reading 0:00 for
+  -- the whole flight, which is the failure this whole change risks.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("0:00"), "starts at zero")
+
+  Mock.advanceSeconds(75)
+  def.refresh(widget, 0, nil)
+  H.falsy(Mock.lvglShows("0:00"), "and does not stay there")
+end)
+
+H.test("the pack line follows the cell count as well as the voltage", function()
+  -- One line built from two readings. Keyed on the voltage alone it would
+  -- still say "47.3 V" after the cell count arrived.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, flying)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("47.3 V"), "voltage on its own to begin with")
+
+  Mock.addSensor("Cel#", nil, 12)     -- the name the role binds, not "Cels"
+  Mock.advanceSeconds(5)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("12S 47.3 V"), "and qualified once the cell count lands")
+end)
+
+H.test("the footnotes still follow the session extremes", function()
+  -- The three battery footnotes and the three headspeed ones stopped being
+  -- built through a table of strings. Each is memoised on its own reading now,
+  -- so each has to still move on its own.
+  local def, widget = boot(800, 480, { SensorMap = 0 }, flying)
+  def.refresh(widget, 0, nil)
+  Mock.advanceSeconds(5)              -- an extreme needs a second sample
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("MAX 1850"), "headspeed max is recorded")
+
+  Mock.setSensor("Hspd", 2100)
+  Mock.advanceSeconds(5)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("MAX 2100"), "and rises with the session")
+end)
+
 H.test("a degraded screen says so, and says why, on the sensor map", function()
   -- Three rounds of diagnosis went into a radio showing the wordmark instead of
   -- the logo, because the ladder that keeps a raise from faulting the
