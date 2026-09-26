@@ -6753,13 +6753,42 @@ function Widget.update(widget, options)
   pcall(Sensors.reload, Host.modelName(), State.craftName(), State.cells())
   pcall(Alerts.reset)
   built = nil
-  ensureScreen(widget)
+  -- Deliberately not built here. EdgeTX gives each Lua callback 20,000 VM
+  -- instructions and kills it with "CPU limit" past that
+  -- (radio/src/lua/lua_widget.cpp, MAX_INSTRUCTIONS). Everything above -
+  -- resetting the probes, Config.load, the sensor reload, the alert reset -
+  -- plus a whole Dashboard.build measured 19,919 against the mock on a
+  -- 46-sensor radio. That is 99.6% of the budget in one call, and over it on
+  -- the aircraft that reported this. The ladder in ensureScreen then caught
+  -- the raise and rebuilt without the bitmap, so the pilot got the wordmark
+  -- instead of the logo and no other sign that anything had gone wrong.
+  --
+  -- Widget.refresh calls ensureScreen as well, 50 ms later, with a fresh
+  -- 20,000 of its own. Leaving the build to it turns one call at the ceiling
+  -- into two comfortably under it. The cost is one frame still showing the
+  -- previous screen, which is the screen that was already there.
 end
 
 Widget.degraded = nil
 Widget.buildError = nil
 
 function Widget.refresh(widget, event, touchState)
+  -- A pending rebuild gets this call to itself, and the servicing below waits
+  -- for the next one 50 ms later. Splitting them is the whole point: a build
+  -- costs about 13,000 VM instructions and a serviced frame about 17,000, and
+  -- EdgeTX's ceiling for one callback is 20,000 (see Widget.update). Together
+  -- they are half as much again as the budget, which is why a rebuild used to
+  -- come back one rung down the ladder with its logo missing. Apart they are
+  -- 65% and 85% of it.
+  --
+  -- Deferring one frame of telemetry costs nothing a pilot can see: it happens
+  -- only on an option change, and the screen being serviced is the one this
+  -- call is still building.
+  if built == nil then
+    ensureScreen(widget)
+    return
+  end
+
   local now = Host.now()
   pcall(State.service, now, serviceOpts(widget))
   pcall(Alerts.service, now)

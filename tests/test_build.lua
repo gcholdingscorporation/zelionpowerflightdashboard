@@ -42,6 +42,12 @@ local function boot(w, h, opts, setup)
   local widgetDef = loadDist()
   local widget = widgetDef.create({ x = 0, y = 0, w = w, h = h }, opts)
   widgetDef.update(widget, opts)
+  -- update() no longer builds the screen - it hands that to the next refresh
+  -- so the two do not share one EdgeTX instruction budget (see Widget.update).
+  -- The radio calls refresh every 50 ms, so a built screen is still what a
+  -- caller has a moment later; boot() spends that frame here rather than
+  -- making every test do it.
+  widgetDef.refresh(widget, 0, nil)
   Mock.advanceSeconds(0.2)
   return widgetDef, widget
 end
@@ -372,6 +378,9 @@ H.test("the full dashboard is what a fresh install shows", function()
   local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
   def.update(widget, {})            -- no options at all
   Mock.advanceSeconds(0.2)
+  -- Two frames, because the first one is the build and the second is the one
+  -- that fills it in. See Widget.refresh for why those are separate calls.
+  def.refresh(widget, 0, nil)
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
   H.falsy(string.find(t, "SAFE MODE", 1, true), "not degraded out of the box")
@@ -1053,7 +1062,9 @@ H.test("a degraded screen says so, and says why, on the sensor map", function()
   lvgl.image = realImage
 
   -- The pilot now goes looking on the sensor map, which is an option change.
+  -- The first frame builds that screen and the second fills its rows.
   def.update(widget, { SensorMap = 1 })
+  def.refresh(widget, 0, nil)
   def.refresh(widget, 0, nil)
   local t = Mock.lvglText()
   H.truthy(string.find(t, "-- SCREEN --", 1, true), "the fault is reported")
@@ -1121,10 +1132,90 @@ H.test("a missing PNG is called out on the summary line", function()
   local opts = { SensorMap = 1 }
   local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
   def.update(widget, opts)
+  -- Build, then fill. The logos stay absent across both, or the probe the
+  -- second frame runs would find the files this test is hiding.
+  def.refresh(widget, 0, nil)
   def.refresh(widget, 0, nil)
   Mock.noDefaultLogos = nil
   H.truthy(string.find(Mock.lvglText(), "MISSING", 1, true),
            "without having to scroll for it")
+end)
+
+H.test("no single callback spends more than EdgeTX will give it", function()
+  -- The bug this exists to stop: EdgeTX hook-counts every widget callback and
+  -- kills it at 20,000 Lua VM instructions with the error "CPU limit"
+  -- (radio/src/lua/lua_widget.cpp, MAX_INSTRUCTIONS; figure and mechanism from
+  -- an EdgeTX developer in issue #42). A killed build is not a crash the pilot
+  -- sees - the ladder in ensureScreen catches it and comes back one rung down,
+  -- so the screen looks healthy apart from a missing logo. 1.11.4 pushed the
+  -- rebuild after an option change from 19,923 to 20,369 on a 46-sensor radio
+  -- and that is exactly what happened, on an aircraft in the field.
+  --
+  -- These counts come from desktop Lua against the mock, so they are a proxy
+  -- for the radio's, not a copy of them, which is why this asserts a margin
+  -- rather than the limit itself.
+  --
+  -- 18,000 is not where the margin belongs. The EdgeTX developer asked for the
+  -- peak to sit under about half the budget, and steady flight does - 4,244,
+  -- 21%. The one call still near the ceiling is the first serviced frame after
+  -- a build, at ~17.8k: the shadow table is empty so every field is written,
+  -- and State.service is sampling all 23 roles for the first time. That peak
+  -- is not new - it is the 17.9k the same developer measured against 1.11.3 -
+  -- and splitting it is its own piece of work. The threshold is set just above
+  -- it deliberately, so that it holds the line where it is today and any creep
+  -- fails here rather than on a radio. Lower it when that frame is split.
+  local LIMIT, MARGIN = 20000, 18000
+
+  local function count(fn)
+    local n = 0
+    debug.sethook(function() n = n + 1 end, "", 1)
+    fn()
+    debug.sethook()
+    return n
+  end
+
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  -- A real radio carries far more than the roles this widget binds. The extra
+  -- ones are not free: every unbound role walks its candidate names against
+  -- the whole sensor list, so a busy model is the worst case, not a quiet one.
+  for _, n in ipairs({"1RSS","2RSS","RSNR","ANT","RFMD","TPWR","TRSS","TQly","TSNR",
+    "Ptch","Roll","Yaw","GPS","GSpd","Hdg","Alt","Sats","FM","ARM","Vcc","Thr","PID",
+    "RTE","Accx","Accy","Accz","Bec%","EscV","EscI","Erpm","Tmcu","Tair","Hea","Vel"}) do
+    Mock.addSensor(n, 0, 1)
+  end
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+
+  local def = loadDist()
+  local widget = def.create({ x=0, y=0, w=800, h=480 }, {})
+  local worst, where = 0, "nothing ran"
+  local function watch(name, fn)
+    local n = count(fn)
+    if n > worst then worst, where = n, name end
+  end
+
+  watch("update on a fresh install", function() def.update(widget, {}) end)
+  watch("the build frame", function() def.refresh(widget, 0, nil) end)
+  for i = 1, 40 do
+    Mock.advanceSeconds(0.1)
+    watch("a flying frame", function() def.refresh(widget, 0, nil) end)
+  end
+  -- An option change is the expensive moment: it reloads the config, re-resolves
+  -- every role and throws the screen away, and then something has to rebuild it.
+  watch("update into the sensor map", function() def.update(widget, { SensorMap = 1 }) end)
+  watch("building the sensor map", function() def.refresh(widget, 0, nil) end)
+  watch("a sensor map frame", function() def.refresh(widget, 0, nil) end)
+  watch("update back to the dashboard", function() def.update(widget, {}) end)
+  watch("rebuilding the dashboard", function() def.refresh(widget, 0, nil) end)
+  for i = 1, 10 do
+    Mock.advanceSeconds(0.1)
+    watch("a flying frame after the rebuild", function() def.refresh(widget, 0, nil) end)
+  end
+
+  H.truthy(worst < MARGIN, string.format(
+    "worst callback was %d instructions (%d%% of EdgeTX's %d) at: %s",
+    worst, math.floor(100 * worst / LIMIT), LIMIT, where))
 end)
 
 H.test("survives a model with no telemetry at all", function()
