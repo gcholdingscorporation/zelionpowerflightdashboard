@@ -853,6 +853,20 @@ local function flightsText()
   return ""
 end
 
+-- The pack's resistance, on the ground, beside the same pack's last one.
+--
+-- A comparison and not a verdict. The figure has never been checked against a
+-- charger and it drifts with the day - a whole fleet of packs read higher
+-- together on a cooler one - so the screen shows two numbers and leaves the
+-- judging to the pilot. "mOhm" spelt out: the fonts have no omega.
+local function irText(landed, prev)
+  local t = string.format("IR %.1f mOhm", landed.mohm)
+  local pack = tonumber(landed.pack)
+  if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
+  if prev then t = t .. string.format("  LAST %.1f", prev) end
+  return t
+end
+
 local function updateTopBar()
   setText(V.modelName, RF2.craftName or State.modelName or Host.modelName())
   -- Whole seconds, so the ten-or-so frames inside one do not rebuild it.
@@ -961,10 +975,23 @@ local function updateRightColumn()
 end
 
 local function updateStrip()
-  -- Keyed on both readings the line is made of: the count alone would freeze
-  -- the running total, and the total alone would freeze the count.
-  setLazy(V.flights, RF2.statsStatus == "ok" and RF2.totalFlights or nil,
-          RF2.totalFlightSeconds, flightsText)
+  -- Between a landing and the next arm the flight-count slot carries the pack
+  -- just flown instead: that is when the pilot is looking, and the lifetime
+  -- total is the same number it was before the flight. The landed table is
+  -- the first key, so it can never be mistaken for a flight count's memo.
+  local PH = ZD.PackHealth
+  local landed = PH and PH.landed
+  local showIr = landed ~= nil and not State.armed
+  if showIr then
+    setLazy(V.flights, landed, landed.prev, irText)
+    setColor(V.flights, Theme.steel)
+  else
+    -- Keyed on both readings the line is made of: the count alone would freeze
+    -- the running total, and the total alone would freeze the count.
+    setLazy(V.flights, RF2.statsStatus == "ok" and RF2.totalFlights or nil,
+            RF2.totalFlightSeconds, flightsText)
+    setColor(V.flights, Theme.dim)
+  end
   local text, color = "", Theme.steel
   if Dashboard.logoMissing then
     -- Name the exact path that failed: "missing" is not actionable, a path is.
@@ -984,7 +1011,9 @@ local function updateStrip()
     setTextColor(V.link, "ALERT: " .. string.upper(table.concat(active, " + ")), Theme.crit)
     return
   end
-  setText(V.tagline, "NO HYPE / JUST VOLTAGE / REAL POWER")
+  -- The landed reading runs into the middle of the strip on the wide screen,
+  -- and it outranks the slogan for the same reason an alert does.
+  setText(V.tagline, showIr and "" or "NO HYPE / JUST VOLTAGE / REAL POWER")
   if RF2.available() then
     if State.linkConnected == false then
       text, color = "RF2 DISCONNECTED", Theme.dim

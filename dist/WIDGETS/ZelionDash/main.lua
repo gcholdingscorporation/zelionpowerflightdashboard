@@ -3657,9 +3657,21 @@ PackHealth.WINDOW = Host.seconds(3)
 
 -- The guard that matters most. Fitting a line to points that all share one x
 -- divides by nearly zero and returns a huge, confident, meaningless number.
--- Expressed per cell so it means the same on a 3S micro and a 12S 700: the
--- current a pack sees scales with the aircraft, not with the cell count.
-PackHealth.MIN_SPREAD_A = 8
+--
+-- 8 A is the most it ever asks for, and it is what every aircraft from a 3S
+-- 450 upwards gets. It was once the ONLY figure, and the 2S micros in a real
+-- log were the two flights with no reading: they peak around 12 A, so an 8 A
+-- swing inside one three-second window is most of everything they have.
+--
+-- So it scales down with what the aircraft actually pulls - a share of the
+-- flight's peak current so far - and never below a floor. Scaling is safe on
+-- the small end for the reason the guard exists at all: what makes a narrow
+-- range dangerous is the 0.01 V quantisation, and a micro's cells are an order
+-- of magnitude more resistive, so the same few amps move them by several
+-- steps where they would move a 12S cell by a fraction of one.
+PackHealth.MIN_SPREAD_A       = 8
+PackHealth.SPREAD_FLOOR_A     = 3
+PackHealth.SPREAD_OF_PEAK     = 0.3
 
 -- A flight is worth reporting only once several windows agree. Two windows is
 -- not a measurement.
@@ -3673,15 +3685,36 @@ PackHealth.MIN_MOHM, PackHealth.MAX_MOHM = 0.5, 200
 PackHealth.milliohms = nil   -- the flight's figure, or nil when there is none
 PackHealth.windows   = 0     -- how many windows agreed it
 
+-- The flight just landed, kept for the screen until the next one arms: its
+-- figure, the pack number it was flown on, and - once the log has been read
+-- back at the write - the same pack's previous figure. `prev` stays nil until
+-- the log has been looked at and is false when it was and held nothing.
+--
+-- The pack number is captured at the landing rather than read live, because
+-- the pilot changes the Pack option for the NEXT pack while this one's figure
+-- is still on screen.
+PackHealth.landed = nil
+
 local samples = {}           -- the current window's per-cell readings
 local results = {}           -- one resistance per completed window
 local windowStart = nil
+local peak = 0               -- the flight's highest current so far
 
 local function reset()
   samples, results = {}, {}
   windowStart = nil
+  peak = 0
   PackHealth.milliohms = nil
   PackHealth.windows   = 0
+  PackHealth.landed    = nil
+end
+
+-- The swing a window needs, for this aircraft. See MIN_SPREAD_A.
+function PackHealth.spreadNeeded(peakAmps)
+  local need = PackHealth.SPREAD_OF_PEAK * (tonumber(peakAmps) or 0)
+  if need < PackHealth.SPREAD_FLOOR_A then need = PackHealth.SPREAD_FLOOR_A end
+  if need > PackHealth.MIN_SPREAD_A then need = PackHealth.MIN_SPREAD_A end
+  return need
 end
 
 PackHealth.reset = reset
@@ -3707,7 +3740,7 @@ local function solve()
     if i < lo then lo = i end
     if i > hi then hi = i end
   end
-  if (hi - lo) < PackHealth.MIN_SPREAD_A then return nil end
+  if (hi - lo) < PackHealth.spreadNeeded(peak) then return nil end
 
   local si, sv, sii, siv = 0, 0, 0, 0
   for k = 1, n do
@@ -3756,6 +3789,11 @@ function PackHealth.service(now)
   -- latches the disarm, the figure was always nil by the time the record was
   -- formatted. Forty-seven flights, ir_mohm blank on every one.
   if not State.armed then
+    -- The landing edge, once. Nothing is computed here: the figure was kept
+    -- up to date in the air, so this is a table and two reads.
+    if wasArmed and PackHealth.milliohms then
+      PackHealth.landed = { mohm = PackHealth.milliohms, pack = State.pack }
+    end
     wasArmed = false
     return
   end
@@ -3783,6 +3821,7 @@ function PackHealth.service(now)
   if not ampsOk then return end
 
   samples[#samples + 1] = { i = amps, v = State.num("cellVoltage") }
+  if amps > peak then peak = amps end
 
   if windowStart == nil then windowStart = now end
   if (now - windowStart) < PackHealth.WINDOW then return end
@@ -4484,6 +4523,126 @@ local function keptRecords()
   return records
 end
 
+--------------------------------------------------------------------------
+-- The same pack's last reading
+--------------------------------------------------------------------------
+
+-- Model, start voltages, ir_mohm, pack, craft and cells out of one row, in
+-- two pattern matches rather than a split. This runs against up to
+-- MAX_RECORDS rows, and EdgeTX counts VM instructions, not C work: a per-field
+-- loop is twenty-odd instructions a column, where a match is a call.
+local HEAD_PATTERN = "^[^,]*,[^,]*,([^,]*)," .. string.rep("[^,]*,", 8) ..
+                     "([^,]*),([^,]*),[^,]*,[^,]*,([^,]*),([^,]*)(.*)$"
+local TAIL_PATTERN = "^,[^,]*,[^,]*,([^,]*),?([^,]*)"
+
+-- The pack's cell count, from the resting voltages taken at arm when they are
+-- there, and from the cells column only when they are not. The arm-time ratio
+-- is the more trustworthy of the two: the cells column is read at the write,
+-- and one real row logged 9 for a 12S pack because the flight controller
+-- re-counted around the unplug.
+local function rowCells(startPack, startCell, cells)
+  local p, c = tonumber(startPack), tonumber(startCell)
+  if p and c and c > 2 then return math.floor(p / c + 0.5) end
+  return tonumber(cells)
+end
+
+local function irFields(line)
+  -- A quoted field may hold a comma, and then every position after it is
+  -- wrong. No pattern can follow that, so the row is passed over rather than
+  -- misread: a missing comparison is honest, a comparison against the wrong
+  -- column is not.
+  if string.find(line, '"', 1, true) then return nil end
+  local model, sp, sc, ir, pack, rest = string.match(line, HEAD_PATTERN)
+  if not model then return nil end
+  local craft, cells = string.match(rest, TAIL_PATTERN)
+  return model, ir, pack, craft or "", rowCells(sp, sc, cells)
+end
+
+-- What a row has to match, taken from the row being written. nil when the
+-- flight has no pack number, which leaves nothing to compare.
+local function irKey(line)
+  local model, _, pack, craft, cells = irFields(line)
+  pack = tonumber(pack)
+  if not model or pack == nil then return nil end
+  -- The model is the third column, so in any row it sits between commas.
+  return { model = model, pack = pack, craft = craft, cells = cells,
+           slot = "," .. model .. "," }
+end
+
+-- Searches records[from] down to records[to] and returns the first figure, or
+-- nil. The plain find throws out every other model slot in one C call before
+-- the patterns run.
+local function scanIr(records, key, from, to)
+  for k = from, to, -1 do
+    local rec = records[k]
+    if string.find(rec, key.slot, 1, true) then
+      local m, ir, p, c, n = irFields(rec)
+      if m == key.model and tonumber(p) == key.pack
+         and (n == nil or key.cells == nil or n == key.cells)
+         and ((c ~= "" and c == key.craft)
+              or ((c == "" or key.craft == "") and n ~= nil
+                  and key.cells ~= nil)) then
+        ir = tonumber(ir)
+        if ir then return ir end
+      end
+    end
+  end
+  return nil
+end
+
+-- The ir_mohm of the most recent earlier row flown on the same pack, or nil.
+--
+-- "The same pack" is the model slot, the pack number, AND the aircraft. The
+-- pack number alone is the pilot's label and every aircraft has a pack 1; the
+-- model slot alone has carried five aircraft in one real log.
+--
+-- The aircraft is its name when both rows have one. Rows from before the
+-- craft column - and rows where nothing named the aircraft - have it blank,
+-- and then the cell count has to stand in for it: known on both rows, and the
+-- same. A name is not required on both sides because that rule found no
+-- comparison at all for five M4 Max packs whose earlier flights predate it.
+-- A count that cannot be known on both sides is no match - a missing
+-- comparison costs a number on screen, a wrong one costs a pack.
+--
+-- `before` is how many records to search, newest first; the row being written
+-- is past the end of it.
+function FlightLog.previousIr(records, line, before)
+  local key = irKey(line)
+  if not key then return nil end
+  return scanIr(records, key, before or #records, 1)
+end
+
+-- A comparison waiting to be made: the records the write just rewrote, what
+-- to match, and how far down them the search has got.
+--
+-- Done a slice at a time, in callbacks of its own. A full log from one model
+-- slot parses every row, and measured on the desktop that was about 14,000
+-- instructions for 200 rows - most of EdgeTX's 20,000 for one callback, on
+-- top of a frame that already costs four. Forty rows a call keeps it to a
+-- few thousand, and the answer is on screen a quarter of a second later.
+FlightLog.IR_ROWS_PER_CALL = 40
+local irLookup = nil
+
+local function lookUpIr()
+  local job = irLookup
+  local landed = ZD.PackHealth and ZD.PackHealth.landed
+  if not landed or landed.prev ~= nil or not job.key then
+    irLookup = nil
+    if landed and landed.prev == nil then landed.prev = false end
+    return
+  end
+  local stop = math.max(1, job.k - FlightLog.IR_ROWS_PER_CALL + 1)
+  -- Its own pcall: nothing about a comparison is worth a flight record, or
+  -- the frame it runs in.
+  local ok, found = pcall(scanIr, job.records, job.key, job.k, stop)
+  if not ok or found or stop == 1 then
+    irLookup = nil
+    landed.prev = (ok and found) or false
+    return
+  end
+  job.k = stop - 1
+end
+
 function FlightLog.append(line)
   -- The folder first, before anything opens a file inside it. /LOGS/ is only
   -- there if the radio has logged telemetry before, and reading a path inside
@@ -4514,6 +4673,14 @@ function FlightLog.append(line)
     -- Already known, and known exactly - no second read to find it out.
     FlightLog.inFile = #records
     FlightLog.lastError = nil
+    -- The records are already in memory for the rewrite, so this is the one
+    -- moment the comparison costs no file read. It is held for the NEXT
+    -- service rather than done here: walking a full log is several thousand
+    -- instructions, and the write's own callback is the last place to spend
+    -- them (see FlightLog.service).
+    local okKey, key = pcall(irKey, line)
+    irLookup = { records = records, key = okKey and key or nil,
+                 k = #records - 1 }
   else
     FlightLog.lastError = "write failed: " .. FlightLog.path()
   end
@@ -4550,6 +4717,14 @@ end
 -- file I/O runs in the same loop that draws the screen.
 function FlightLog.service(now)
   now = now or Host.now()
+
+  -- The previous write's comparison, in callbacks of its own, and only that:
+  -- nothing else this service does is urgent enough to share one with it. A
+  -- landing that arrives meanwhile is latched in State and waits its turn.
+  if irLookup then
+    lookUpIr()
+    return false
+  end
 
   if State.disarmPending then
     local seconds = State.flightSeconds
@@ -4626,6 +4801,7 @@ function FlightLog.waiting()
 end
 
 function FlightLog.reset()
+  irLookup = nil
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
   FlightLog.FALLBACK = nil
@@ -5920,6 +6096,20 @@ local function flightsText()
   return ""
 end
 
+-- The pack's resistance, on the ground, beside the same pack's last one.
+--
+-- A comparison and not a verdict. The figure has never been checked against a
+-- charger and it drifts with the day - a whole fleet of packs read higher
+-- together on a cooler one - so the screen shows two numbers and leaves the
+-- judging to the pilot. "mOhm" spelt out: the fonts have no omega.
+local function irText(landed, prev)
+  local t = string.format("IR %.1f mOhm", landed.mohm)
+  local pack = tonumber(landed.pack)
+  if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
+  if prev then t = t .. string.format("  LAST %.1f", prev) end
+  return t
+end
+
 local function updateTopBar()
   setText(V.modelName, RF2.craftName or State.modelName or Host.modelName())
   -- Whole seconds, so the ten-or-so frames inside one do not rebuild it.
@@ -6028,10 +6218,23 @@ local function updateRightColumn()
 end
 
 local function updateStrip()
-  -- Keyed on both readings the line is made of: the count alone would freeze
-  -- the running total, and the total alone would freeze the count.
-  setLazy(V.flights, RF2.statsStatus == "ok" and RF2.totalFlights or nil,
-          RF2.totalFlightSeconds, flightsText)
+  -- Between a landing and the next arm the flight-count slot carries the pack
+  -- just flown instead: that is when the pilot is looking, and the lifetime
+  -- total is the same number it was before the flight. The landed table is
+  -- the first key, so it can never be mistaken for a flight count's memo.
+  local PH = ZD.PackHealth
+  local landed = PH and PH.landed
+  local showIr = landed ~= nil and not State.armed
+  if showIr then
+    setLazy(V.flights, landed, landed.prev, irText)
+    setColor(V.flights, Theme.steel)
+  else
+    -- Keyed on both readings the line is made of: the count alone would freeze
+    -- the running total, and the total alone would freeze the count.
+    setLazy(V.flights, RF2.statsStatus == "ok" and RF2.totalFlights or nil,
+            RF2.totalFlightSeconds, flightsText)
+    setColor(V.flights, Theme.dim)
+  end
   local text, color = "", Theme.steel
   if Dashboard.logoMissing then
     -- Name the exact path that failed: "missing" is not actionable, a path is.
@@ -6051,7 +6254,9 @@ local function updateStrip()
     setTextColor(V.link, "ALERT: " .. string.upper(table.concat(active, " + ")), Theme.crit)
     return
   end
-  setText(V.tagline, "NO HYPE / JUST VOLTAGE / REAL POWER")
+  -- The landed reading runs into the middle of the strip on the wide screen,
+  -- and it outranks the slogan for the same reason an alert does.
+  setText(V.tagline, showIr and "" or "NO HYPE / JUST VOLTAGE / REAL POWER")
   if RF2.available() then
     if State.linkConnected == false then
       text, color = "RF2 DISCONNECTED", Theme.dim
