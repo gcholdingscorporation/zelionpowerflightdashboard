@@ -536,6 +536,71 @@ H.test("no two labels overlap on either radio", function()
   end
 end)
 
+-- On the ground after a flight, the flight-count slot carries the pack just
+-- flown. Its longest form - a two-digit pack, a micro's two-digit figure and a
+-- last reading - is what has to fit beside everything else in the strip.
+local function landedOn(ZD, prev)
+  Mock.setSensor("Hspd", 0)
+  ZD.State.armed = false
+  ZD.PackHealth.landed = { mohm = 32.0, pack = 14, prev = prev }
+end
+
+H.test("the pack just landed shows its resistance and its last one", function()
+  local ZD = boot(800, 480, flying)
+  ZD.RF2.statsStatus, ZD.RF2.totalFlights = "ok", 137
+  ZD.Dashboard.build(800, 480)
+  landedOn(ZD, nil)
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "PACK 14  IR 32.0 mOhm", 1, true), "got " .. t)
+  H.falsy(string.find(t, "LAST", 1, true), "a last reading before the log was read")
+
+  ZD.PackHealth.landed.prev = 24.5
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "PACK 14  IR 32.0 mOhm  LAST 24.5", 1, true),
+           "the last reading did not appear once the log had it")
+
+  -- The next flight arms: the lifetime count comes back.
+  ZD.State.armed = true
+  ZD.Dashboard.update()
+  t = Mock.lvglText()
+  H.falsy(string.find(t, "mOhm", 1, true), "the landed figure outstayed the arm")
+  H.truthy(string.find(t, "137 FLIGHTS", 1, true), "the flight count did not return")
+end)
+
+H.test("an unnumbered pack shows its figure alone", function()
+  local ZD = boot(480, 320, flying)
+  ZD.Dashboard.build(480, 320)
+  Mock.setSensor("Hspd", 0)
+  ZD.State.armed = false
+  ZD.PackHealth.landed = { mohm = 1.2, prev = false }
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "IR 1.2 mOhm", 1, true), "got " .. t)
+  H.falsy(string.find(t, "PACK", 1, true))
+end)
+
+H.test("the landed reading fits on both radios", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    local w, h = size[1], size[2]
+    local ZD = boot(w, h, flying)
+    ZD.RF2.available = function() return true end
+    ZD.RF2.registered = true
+    ZD.Dashboard.build(w, h)
+    landedOn(ZD, 24.5)
+    ZD.Dashboard.update()
+    assertNoCollisions(ZD, h, string.format("%dx%d landed", w, h))
+    for _, o in ipairs(Mock.lv.objects) do
+      local t = o.props.text
+      if o.kind == "label" and t and string.find(t, "mOhm", 1, true) then
+        local tw = ZD.Host.textWidth(t, o.props.font, ZD.Theme.fontHeight(o.props.font))
+        H.truthy(tw <= o.props.w, string.format("%dx%d: %q is %dpx in a %dpx box",
+                                                w, h, t, tw, o.props.w))
+      end
+    end
+  end
+end)
+
 H.test("the missing-artwork wordmark does not collide with the panel", function()
   -- When a logo fails to load the mark is replaced by type in the same box.
   -- That is exactly the run where nobody is in a position to notice a layout

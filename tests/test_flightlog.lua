@@ -774,4 +774,163 @@ H.test("the log says how many rows it set aside", function()
   H.eq(ZD.FlightLog.quarantined, 1)
 end)
 
+
+-- The comparison the screen shows after a landing: this pack's figure beside
+-- the last one the log holds for the SAME pack. Every aircraft has a pack 1
+-- and one model slot has carried five of them, so most of these are about not
+-- matching the wrong row.
+H.group("flightlog: the same pack's last reading")
+
+-- A row with only the columns this cares about filled, placed by name.
+local function irRow(ZD, t)
+  local names, out = {}, {}
+  for name in ZD.FlightLog.HEADER:gmatch("[^,]+") do names[#names + 1] = name end
+  for k, name in ipairs(names) do out[k] = t[name] or "" end
+  return table.concat(out, ",")
+end
+
+local function row(ZD, model, pack, ir, craft, cells, startPack, startCell)
+  return irRow(ZD, { date = "2026-10-10", model = model, pack = pack,
+                     ir_mohm = ir, craft = craft, cells = cells,
+                     start_pack = startPack, start_cell = startCell })
+end
+
+H.test("finds the newest earlier reading for that pack", function()
+  local ZD = fresh()
+  local recs = {
+    row(ZD, "M4", "12", "2.5", "OMP M4 Max", "6"),
+    row(ZD, "M4", "12", "2.9", "OMP M4 Max", "6"),
+    row(ZD, "M4", "13", "2.6", "OMP M4 Max", "6"),
+  }
+  local now = row(ZD, "M4", "12", "3.2", "OMP M4 Max", "6")
+  H.eq(ZD.FlightLog.previousIr(recs, now), 2.9)
+end)
+
+H.test("never compares against another aircraft's pack of the same number", function()
+  local ZD = fresh()
+  local recs = {
+    row(ZD, "M4", "1", "2.5", "OMP M4 Max", "6"),
+    row(ZD, "M4", "1", "1.2", "Omphobby M7R", "12"),   -- same slot, other heli
+    row(ZD, "Micro", "1", "18.0", "", "2"),            -- other slot
+    row(ZD, "M4", "1", "9.0", "OMP M4 Max", "3"),      -- other cell count
+  }
+  H.eq(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "1", "2.7", "OMP M4 Max", "6")),
+       2.5)
+end)
+
+H.test("a row with no reading is passed over, not compared as zero", function()
+  local ZD = fresh()
+  local recs = {
+    row(ZD, "M4", "12", "2.5", "OMP M4 Max", "6"),
+    row(ZD, "M4", "12", "", "OMP M4 Max", "6"),
+  }
+  H.eq(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "12", "3.0", "OMP M4 Max", "6")),
+       2.5)
+end)
+
+H.test("an unnumbered pack has nothing to compare with", function()
+  local ZD = fresh()
+  local recs = { row(ZD, "M4", "", "2.5", "OMP M4 Max", "6") }
+  H.nilv(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "", "3.0", "OMP M4 Max", "6")))
+end)
+
+H.test("a first flight on a pack has nothing to compare with", function()
+  local ZD = fresh()
+  H.nilv(ZD.FlightLog.previousIr({}, row(ZD, "M4", "3", "3.0", "", "")))
+end)
+
+H.test("rows from before the craft column match on their cell count", function()
+  -- Five M4 Max packs flown on 10 Oct had their earlier readings in rows from
+  -- 19 Sep, before the aircraft was named. The resting voltages at arm still
+  -- say what pack it was: 25.2 V at 4.20 V a cell is a 6S.
+  local ZD = fresh()
+  local recs = { row(ZD, "M4", "12", "2.5", "", "", "25.20", "4.20") }
+  H.eq(ZD.FlightLog.previousIr(recs,
+         row(ZD, "M4", "12", "3.2", "OMP M4 Max", "6", "25.14", "4.19")), 2.5)
+  -- A 3S on the same slot and number is a different pack.
+  recs = { row(ZD, "M4", "12", "9.0", "", "", "12.60", "4.20") }
+  H.nilv(ZD.FlightLog.previousIr(recs,
+           row(ZD, "M4", "12", "3.2", "OMP M4 Max", "6", "25.14", "4.19")))
+end)
+
+H.test("an unnamed row with no way to count its cells is not guessed at", function()
+  local ZD = fresh()
+  local recs = { row(ZD, "M4", "3", "2.8", "", "") }
+  H.nilv(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "3", "3.0", "", "6")))
+end)
+
+H.test("the count at arm outranks a cells column the FC got wrong", function()
+  -- A real 12S row logged cells 9: the flight controller re-counted around
+  -- the unplug. Its start voltages still divide to 12.
+  local ZD = fresh()
+  local recs = { row(ZD, "M7R", "1", "1.2", "Omphobby M7R", "12", "50.40", "4.20") }
+  H.eq(ZD.FlightLog.previousIr(recs,
+         row(ZD, "M7R", "1", "1.1", "Omphobby M7R", "9", "50.59", "4.21")), 1.2)
+end)
+
+H.test("a quoted model name is skipped rather than misread", function()
+  local ZD = fresh()
+  local recs = { row(ZD, '"M4, spare"', "3", "2.8", "", "") }
+  H.nilv(ZD.FlightLog.previousIr(recs, row(ZD, '"M4, spare"', "3", "3.0", "", "")))
+end)
+
+H.test("a short row from a spreadsheet does not raise", function()
+  local ZD = fresh()
+  local recs = { "2026-10-10,12:00:00,M4,90", "garbage" }
+  H.nilv(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "3", "3.0", "", "")))
+end)
+
+-- End to end, in the widget's own service order: the figure measured in the
+-- air, the row written after the settle window, and the comparison filled in
+-- by that write.
+local function flyPack(ZD, pack, mohm)
+  ZD.State.pack = pack
+  -- Rested before each arm, so every flight reads as the same 6S.
+  Mock.setSensor("Vcel", 4.0)
+  Mock.setSensor("Vbat", 24.0)
+  for _ = 1, 10 do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+  end
+  Mock.setSensor("Hspd", 1850)
+  for k = 1, 600 do
+    local amps = 60 + 45 * ((k % 20) / 20)
+    Mock.setSensor("Curr", amps)
+    Mock.setSensor("Vcel", math.floor((4.0 - amps * mohm / 1000) * 100 + 0.5) / 100)
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+    ZD.PackHealth.service(Mock.state.time)
+    ZD.FlightLog.service()
+  end
+  Mock.setSensor("Hspd", 0)
+  Mock.setSensor("Curr", 0)
+  for _ = 1, math.floor((8 + settleSeconds(ZD)) * 10) do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+    ZD.PackHealth.service(Mock.state.time)
+    ZD.FlightLog.service()
+  end
+end
+
+H.test("the write fills in the same pack's last reading", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Vcel", 1, 4.0)
+    Mock.addSensor("Vbat", 1, 24.0)
+    Mock.addSensor("Curr", 2, 0)
+    Mock.addSensor("Hspd", 18, 0)
+  end)
+  flyPack(ZD, 4, 3.0)
+  H.eq(ZD.FlightLog.written, 1, "the first flight was not written")
+  H.eq(ZD.PackHealth.landed.prev, false, "a first flight on a pack has no last")
+
+  flyPack(ZD, 5, 6.0)
+  H.eq(ZD.PackHealth.landed.prev, false, "pack 5 matched pack 4")
+
+  flyPack(ZD, 4, 4.0)
+  H.eq(ZD.FlightLog.written, 3)
+  H.near(ZD.PackHealth.landed.mohm, 4.0, 0.3)
+  H.near(ZD.PackHealth.landed.prev, 3.0, 0.3,
+         "got " .. tostring(ZD.PackHealth.landed.prev))
+end)
+
 end

@@ -41,9 +41,21 @@ PackHealth.WINDOW = Host.seconds(3)
 
 -- The guard that matters most. Fitting a line to points that all share one x
 -- divides by nearly zero and returns a huge, confident, meaningless number.
--- Expressed per cell so it means the same on a 3S micro and a 12S 700: the
--- current a pack sees scales with the aircraft, not with the cell count.
-PackHealth.MIN_SPREAD_A = 8
+--
+-- 8 A is the most it ever asks for, and it is what every aircraft from a 3S
+-- 450 upwards gets. It was once the ONLY figure, and the 2S micros in a real
+-- log were the two flights with no reading: they peak around 12 A, so an 8 A
+-- swing inside one three-second window is most of everything they have.
+--
+-- So it scales down with what the aircraft actually pulls - a share of the
+-- flight's peak current so far - and never below a floor. Scaling is safe on
+-- the small end for the reason the guard exists at all: what makes a narrow
+-- range dangerous is the 0.01 V quantisation, and a micro's cells are an order
+-- of magnitude more resistive, so the same few amps move them by several
+-- steps where they would move a 12S cell by a fraction of one.
+PackHealth.MIN_SPREAD_A       = 8
+PackHealth.SPREAD_FLOOR_A     = 3
+PackHealth.SPREAD_OF_PEAK     = 0.3
 
 -- A flight is worth reporting only once several windows agree. Two windows is
 -- not a measurement.
@@ -57,15 +69,36 @@ PackHealth.MIN_MOHM, PackHealth.MAX_MOHM = 0.5, 200
 PackHealth.milliohms = nil   -- the flight's figure, or nil when there is none
 PackHealth.windows   = 0     -- how many windows agreed it
 
+-- The flight just landed, kept for the screen until the next one arms: its
+-- figure, the pack number it was flown on, and - once the log has been read
+-- back at the write - the same pack's previous figure. `prev` stays nil until
+-- the log has been looked at and is false when it was and held nothing.
+--
+-- The pack number is captured at the landing rather than read live, because
+-- the pilot changes the Pack option for the NEXT pack while this one's figure
+-- is still on screen.
+PackHealth.landed = nil
+
 local samples = {}           -- the current window's per-cell readings
 local results = {}           -- one resistance per completed window
 local windowStart = nil
+local peak = 0               -- the flight's highest current so far
 
 local function reset()
   samples, results = {}, {}
   windowStart = nil
+  peak = 0
   PackHealth.milliohms = nil
   PackHealth.windows   = 0
+  PackHealth.landed    = nil
+end
+
+-- The swing a window needs, for this aircraft. See MIN_SPREAD_A.
+function PackHealth.spreadNeeded(peakAmps)
+  local need = PackHealth.SPREAD_OF_PEAK * (tonumber(peakAmps) or 0)
+  if need < PackHealth.SPREAD_FLOOR_A then need = PackHealth.SPREAD_FLOOR_A end
+  if need > PackHealth.MIN_SPREAD_A then need = PackHealth.MIN_SPREAD_A end
+  return need
 end
 
 PackHealth.reset = reset
@@ -91,7 +124,7 @@ local function solve()
     if i < lo then lo = i end
     if i > hi then hi = i end
   end
-  if (hi - lo) < PackHealth.MIN_SPREAD_A then return nil end
+  if (hi - lo) < PackHealth.spreadNeeded(peak) then return nil end
 
   local si, sv, sii, siv = 0, 0, 0, 0
   for k = 1, n do
@@ -140,6 +173,11 @@ function PackHealth.service(now)
   -- latches the disarm, the figure was always nil by the time the record was
   -- formatted. Forty-seven flights, ir_mohm blank on every one.
   if not State.armed then
+    -- The landing edge, once. Nothing is computed here: the figure was kept
+    -- up to date in the air, so this is a table and two reads.
+    if wasArmed and PackHealth.milliohms then
+      PackHealth.landed = { mohm = PackHealth.milliohms, pack = State.pack }
+    end
     wasArmed = false
     return
   end
@@ -167,6 +205,7 @@ function PackHealth.service(now)
   if not ampsOk then return end
 
   samples[#samples + 1] = { i = amps, v = State.num("cellVoltage") }
+  if amps > peak then peak = amps end
 
   if windowStart == nil then windowStart = now end
   if (now - windowStart) < PackHealth.WINDOW then return end

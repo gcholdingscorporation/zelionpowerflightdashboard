@@ -330,7 +330,22 @@ looked right on the aircraft that happened to suit it.
 
 The figure is blank unless at least five windows agreed on it, the current
 actually moved during them, and the result was physically possible. A steady
-hover measures nothing, and says so rather than inventing a number.
+hover measures nothing, and says so rather than inventing a number. "Moved"
+means 8 A on anything that pulls 27 A or more; below that it scales to 30% of
+the flight's peak current, never under 3 A, so a 2S micro gets a reading too.
+
+**After landing, the bottom-left of the screen shows it**, until the next
+flight arms:
+
+```
+PACK 4  IR 1.8 mOhm  LAST 1.6
+```
+
+`LAST` is that pack's previous reading from the flight log — same model slot,
+same **Pack** number, same aircraft — and appears once the row is written,
+after the chime. No `PACK` when the Pack option is 0, and no `LAST` on a pack's
+first logged flight. It is two numbers, not a verdict: the figure drifts with
+temperature and the day, and it has not been checked against a charger.
 
 ## Time remaining
 

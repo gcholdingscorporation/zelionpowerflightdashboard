@@ -310,4 +310,86 @@ H.test("each flight measures its own pack", function()
          "the second pack read " .. tostring(ZD.PackHealth.milliohms))
 end)
 
+
+-- The 8 A swing every window used to need was written for the aircraft most
+-- of the fleet is, and a real log showed what it did to the rest: the only two
+-- flights without a reading were the two 2S micros, which peak around 12 A.
+H.group("packhealth: small aircraft")
+
+H.test("a 2S micro peaking at 12 A gets a reading", function()
+  -- A 7 A swing, which never once reached the old 8 A guard.
+  local ZD = fresh()
+  fly(ZD, 60, 20.0, { base = 5, swing = 7, vopen = 4.15 })
+  H.truthy(ZD.PackHealth.milliohms ~= nil, "the micro went unmeasured again")
+  H.near(ZD.PackHealth.milliohms, 20.0, 2.0,
+         "got " .. tostring(ZD.PackHealth.milliohms) .. " for a 20 mOhm pack")
+end)
+
+H.test("but a micro hovering still says nothing", function()
+  -- A two-amp wobble is a hover on any aircraft. The floor is what keeps the
+  -- scaling from turning it into a number.
+  local ZD = fresh()
+  fly(ZD, 60, 20.0, { base = 5, swing = 2, vopen = 4.15 })
+  H.nilv(ZD.PackHealth.milliohms,
+         "a 2 A wobble was fitted: got " .. tostring(ZD.PackHealth.milliohms))
+end)
+
+H.test("the swing needed follows the aircraft, between a floor and 8 A", function()
+  local ZD = fresh()
+  H.eq(ZD.PackHealth.spreadNeeded(150), 8, "a 700 pulling 150 A")
+  H.near(ZD.PackHealth.spreadNeeded(12), 3.6, 0.001, "a micro peaking at 12 A")
+  H.eq(ZD.PackHealth.spreadNeeded(4), 3, "never below the floor")
+  H.eq(ZD.PackHealth.spreadNeeded(nil), 3, "nor on no current at all")
+end)
+
+H.test("a gentle spool-up does not drag a 12S's figure", function()
+  -- Early in a flight the peak is still small, so the guard is at its most
+  -- lenient exactly when a big pack's voltage moves by less than one sensor
+  -- step. A few such windows can get in; the median has to hold.
+  local ZD = fresh()
+  fly(ZD, 12, 3.5, { base = 3, swing = 4 })
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  H.near(ZD.PackHealth.milliohms, 3.5, 0.3,
+         "the spool-up leaked in: got " .. tostring(ZD.PackHealth.milliohms))
+end)
+
+H.group("packhealth: the flight just landed")
+
+H.test("is kept with the pack it was flown on", function()
+  local ZD = fresh()
+  ZD.State.pack = 4
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  H.nilv(ZD.PackHealth.landed, "nothing has landed yet")
+  land(ZD, 10)
+  local l = ZD.PackHealth.landed
+  H.truthy(l ~= nil, "the landing was not kept")
+  H.near(l.mohm, 3.5, 0.2)
+  H.eq(l.pack, 4)
+  H.nilv(l.prev, "the log has not been read yet")
+
+  -- The pilot numbers the next pack before flying it. The figure on screen
+  -- still belongs to the one that landed.
+  ZD.State.pack = 5
+  land(ZD, 1)
+  H.eq(ZD.PackHealth.landed.pack, 4)
+end)
+
+H.test("and goes when the next flight arms", function()
+  local ZD = fresh()
+  fly(ZD, 60, 3.5, { base = 120, swing = 90 })
+  land(ZD, 10)
+  Mock.setSensor("Hspd", 1850)
+  Mock.advanceSeconds(0.1)
+  ZD.State.service(Mock.state.time)
+  ZD.PackHealth.service(Mock.state.time)
+  H.nilv(ZD.PackHealth.landed)
+end)
+
+H.test("a flight with no figure leaves nothing to show", function()
+  local ZD = fresh()
+  fly(ZD, 60, 3.5, { base = 120, constant = true })
+  land(ZD, 10)
+  H.nilv(ZD.PackHealth.landed)
+end)
+
 end

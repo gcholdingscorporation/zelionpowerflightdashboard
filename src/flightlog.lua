@@ -481,6 +481,126 @@ local function keptRecords()
   return records
 end
 
+--------------------------------------------------------------------------
+-- The same pack's last reading
+--------------------------------------------------------------------------
+
+-- Model, start voltages, ir_mohm, pack, craft and cells out of one row, in
+-- two pattern matches rather than a split. This runs against up to
+-- MAX_RECORDS rows, and EdgeTX counts VM instructions, not C work: a per-field
+-- loop is twenty-odd instructions a column, where a match is a call.
+local HEAD_PATTERN = "^[^,]*,[^,]*,([^,]*)," .. string.rep("[^,]*,", 8) ..
+                     "([^,]*),([^,]*),[^,]*,[^,]*,([^,]*),([^,]*)(.*)$"
+local TAIL_PATTERN = "^,[^,]*,[^,]*,([^,]*),?([^,]*)"
+
+-- The pack's cell count, from the resting voltages taken at arm when they are
+-- there, and from the cells column only when they are not. The arm-time ratio
+-- is the more trustworthy of the two: the cells column is read at the write,
+-- and one real row logged 9 for a 12S pack because the flight controller
+-- re-counted around the unplug.
+local function rowCells(startPack, startCell, cells)
+  local p, c = tonumber(startPack), tonumber(startCell)
+  if p and c and c > 2 then return math.floor(p / c + 0.5) end
+  return tonumber(cells)
+end
+
+local function irFields(line)
+  -- A quoted field may hold a comma, and then every position after it is
+  -- wrong. No pattern can follow that, so the row is passed over rather than
+  -- misread: a missing comparison is honest, a comparison against the wrong
+  -- column is not.
+  if string.find(line, '"', 1, true) then return nil end
+  local model, sp, sc, ir, pack, rest = string.match(line, HEAD_PATTERN)
+  if not model then return nil end
+  local craft, cells = string.match(rest, TAIL_PATTERN)
+  return model, ir, pack, craft or "", rowCells(sp, sc, cells)
+end
+
+-- What a row has to match, taken from the row being written. nil when the
+-- flight has no pack number, which leaves nothing to compare.
+local function irKey(line)
+  local model, _, pack, craft, cells = irFields(line)
+  pack = tonumber(pack)
+  if not model or pack == nil then return nil end
+  -- The model is the third column, so in any row it sits between commas.
+  return { model = model, pack = pack, craft = craft, cells = cells,
+           slot = "," .. model .. "," }
+end
+
+-- Searches records[from] down to records[to] and returns the first figure, or
+-- nil. The plain find throws out every other model slot in one C call before
+-- the patterns run.
+local function scanIr(records, key, from, to)
+  for k = from, to, -1 do
+    local rec = records[k]
+    if string.find(rec, key.slot, 1, true) then
+      local m, ir, p, c, n = irFields(rec)
+      if m == key.model and tonumber(p) == key.pack
+         and (n == nil or key.cells == nil or n == key.cells)
+         and ((c ~= "" and c == key.craft)
+              or ((c == "" or key.craft == "") and n ~= nil
+                  and key.cells ~= nil)) then
+        ir = tonumber(ir)
+        if ir then return ir end
+      end
+    end
+  end
+  return nil
+end
+
+-- The ir_mohm of the most recent earlier row flown on the same pack, or nil.
+--
+-- "The same pack" is the model slot, the pack number, AND the aircraft. The
+-- pack number alone is the pilot's label and every aircraft has a pack 1; the
+-- model slot alone has carried five aircraft in one real log.
+--
+-- The aircraft is its name when both rows have one. Rows from before the
+-- craft column - and rows where nothing named the aircraft - have it blank,
+-- and then the cell count has to stand in for it: known on both rows, and the
+-- same. A name is not required on both sides because that rule found no
+-- comparison at all for five M4 Max packs whose earlier flights predate it.
+-- A count that cannot be known on both sides is no match - a missing
+-- comparison costs a number on screen, a wrong one costs a pack.
+--
+-- `before` is how many records to search, newest first; the row being written
+-- is past the end of it.
+function FlightLog.previousIr(records, line, before)
+  local key = irKey(line)
+  if not key then return nil end
+  return scanIr(records, key, before or #records, 1)
+end
+
+-- A comparison waiting to be made: the records the write just rewrote, what
+-- to match, and how far down them the search has got.
+--
+-- Done a slice at a time, in callbacks of its own. A full log from one model
+-- slot parses every row, and measured on the desktop that was about 14,000
+-- instructions for 200 rows - most of EdgeTX's 20,000 for one callback, on
+-- top of a frame that already costs four. Forty rows a call keeps it to a
+-- few thousand, and the answer is on screen a quarter of a second later.
+FlightLog.IR_ROWS_PER_CALL = 40
+local irLookup = nil
+
+local function lookUpIr()
+  local job = irLookup
+  local landed = ZD.PackHealth and ZD.PackHealth.landed
+  if not landed or landed.prev ~= nil or not job.key then
+    irLookup = nil
+    if landed and landed.prev == nil then landed.prev = false end
+    return
+  end
+  local stop = math.max(1, job.k - FlightLog.IR_ROWS_PER_CALL + 1)
+  -- Its own pcall: nothing about a comparison is worth a flight record, or
+  -- the frame it runs in.
+  local ok, found = pcall(scanIr, job.records, job.key, job.k, stop)
+  if not ok or found or stop == 1 then
+    irLookup = nil
+    landed.prev = (ok and found) or false
+    return
+  end
+  job.k = stop - 1
+end
+
 function FlightLog.append(line)
   -- The folder first, before anything opens a file inside it. /LOGS/ is only
   -- there if the radio has logged telemetry before, and reading a path inside
@@ -511,6 +631,14 @@ function FlightLog.append(line)
     -- Already known, and known exactly - no second read to find it out.
     FlightLog.inFile = #records
     FlightLog.lastError = nil
+    -- The records are already in memory for the rewrite, so this is the one
+    -- moment the comparison costs no file read. It is held for the NEXT
+    -- service rather than done here: walking a full log is several thousand
+    -- instructions, and the write's own callback is the last place to spend
+    -- them (see FlightLog.service).
+    local okKey, key = pcall(irKey, line)
+    irLookup = { records = records, key = okKey and key or nil,
+                 k = #records - 1 }
   else
     FlightLog.lastError = "write failed: " .. FlightLog.path()
   end
@@ -547,6 +675,14 @@ end
 -- file I/O runs in the same loop that draws the screen.
 function FlightLog.service(now)
   now = now or Host.now()
+
+  -- The previous write's comparison, in callbacks of its own, and only that:
+  -- nothing else this service does is urgent enough to share one with it. A
+  -- landing that arrives meanwhile is latched in State and waits its turn.
+  if irLookup then
+    lookUpIr()
+    return false
+  end
 
   if State.disarmPending then
     local seconds = State.flightSeconds
@@ -623,6 +759,7 @@ function FlightLog.waiting()
 end
 
 function FlightLog.reset()
+  irLookup = nil
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
   FlightLog.FALLBACK = nil
