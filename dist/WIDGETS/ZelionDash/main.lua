@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.12.0
+-- Version 1.13.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.12.0" }
+local ZD = { VERSION = "1.13.0" }
 
 -- ======== src/host.lua ========
 do
@@ -4524,14 +4524,14 @@ local function keptRecords()
 end
 
 --------------------------------------------------------------------------
--- The same pack's last reading
+-- The same pack's last reading, and today's other packs
 --------------------------------------------------------------------------
 
--- Model, start voltages, ir_mohm, pack, craft and cells out of one row, in
--- two pattern matches rather than a split. This runs against up to
+-- Date, model, start voltages, ir_mohm, pack, craft and cells out of one row,
+-- in two pattern matches rather than a split. This runs against up to
 -- MAX_RECORDS rows, and EdgeTX counts VM instructions, not C work: a per-field
 -- loop is twenty-odd instructions a column, where a match is a call.
-local HEAD_PATTERN = "^[^,]*,[^,]*,([^,]*)," .. string.rep("[^,]*,", 8) ..
+local HEAD_PATTERN = "^([^,]*),[^,]*,([^,]*)," .. string.rep("[^,]*,", 8) ..
                      "([^,]*),([^,]*),[^,]*,[^,]*,([^,]*),([^,]*)(.*)$"
 local TAIL_PATTERN = "^,[^,]*,[^,]*,([^,]*),?([^,]*)"
 
@@ -4552,21 +4552,34 @@ local function irFields(line)
   -- misread: a missing comparison is honest, a comparison against the wrong
   -- column is not.
   if string.find(line, '"', 1, true) then return nil end
-  local model, sp, sc, ir, pack, rest = string.match(line, HEAD_PATTERN)
+  local date, model, sp, sc, ir, pack, rest = string.match(line, HEAD_PATTERN)
   if not model then return nil end
   local craft, cells = string.match(rest, TAIL_PATTERN)
-  return model, ir, pack, craft or "", rowCells(sp, sc, cells)
+  return model, ir, pack, craft or "", rowCells(sp, sc, cells), date
 end
 
 -- What a row has to match, taken from the row being written. nil when the
 -- flight has no pack number, which leaves nothing to compare.
 local function irKey(line)
-  local model, _, pack, craft, cells = irFields(line)
+  local model, ir, pack, craft, cells, date = irFields(line)
   pack = tonumber(pack)
   if not model or pack == nil then return nil end
-  -- The model is the third column, so in any row it sits between commas.
+  -- The model is the third column, so in any row it sits between commas. The
+  -- date is the first, so a row from the same day starts with it.
   return { model = model, pack = pack, craft = craft, cells = cells,
-           slot = "," .. model .. "," }
+           ir = tonumber(ir), slot = "," .. model .. ",",
+           day = date and (date .. ",") or nil }
+end
+
+-- Whether a row's aircraft is the key's: the model slot, and then the name
+-- when both rows have one, or a cell count known on both and equal when
+-- either does not. See FlightLog.previousIr.
+local function sameCraft(key, m, c, n)
+  return m == key.model
+         and (n == nil or key.cells == nil or n == key.cells)
+         and ((c ~= "" and c == key.craft)
+              or ((c == "" or key.craft == "") and n ~= nil
+                  and key.cells ~= nil))
 end
 
 -- Searches records[from] down to records[to] and returns the first figure, or
@@ -4577,17 +4590,69 @@ local function scanIr(records, key, from, to)
     local rec = records[k]
     if string.find(rec, key.slot, 1, true) then
       local m, ir, p, c, n = irFields(rec)
-      if m == key.model and tonumber(p) == key.pack
-         and (n == nil or key.cells == nil or n == key.cells)
-         and ((c ~= "" and c == key.craft)
-              or ((c == "" or key.craft == "") and n ~= nil
-                  and key.cells ~= nil)) then
+      if tonumber(p) == key.pack and sameCraft(key, m, c, n) then
         ir = tonumber(ir)
         if ir then return ir end
       end
     end
   end
   return nil
+end
+
+-- Collects today's readings for the key's aircraft from records[from] down to
+-- records[to] into `seen`, one per pack number, the newest winning. Returns
+-- false once it has passed the first row from another day, true while today
+-- may still go on below `to`.
+--
+-- Today is the run of rows at the end of the log that share this row's date.
+-- The widget only ever appends, so the first row with another date is where
+-- today began, and nothing older is read.
+local function scanToday(records, key, seen, from, to)
+  local day, len = key.day, #key.day
+  for k = from, to, -1 do
+    local rec = records[k]
+    if string.sub(rec, 1, len) ~= day then return false end
+    if string.find(rec, key.slot, 1, true) then
+      local m, ir, p, c, n = irFields(rec)
+      p, ir = tonumber(p), tonumber(ir)
+      if p and ir and seen[p] == nil and sameCraft(key, m, c, n) then
+        seen[p] = ir
+      end
+    end
+  end
+  return true
+end
+
+-- Where this pack sits among the packs flown on the same aircraft today:
+-- its place counting down from the highest resistance, and how many packs
+-- were compared. 1 is the highest. Packs that tie share a place.
+local function placeOf(key, seen)
+  local place, of = 1, 0
+  for _, ir in pairs(seen) do
+    of = of + 1
+    if ir > key.ir then place = place + 1 end
+  end
+  return place, of
+end
+
+-- Whether a row can be placed among today's at all: it needs a pack number,
+-- its own reading, and a date the clock actually set. A radio with no clock
+-- writes 1970 on every row, and every flight it ever logged would be "today".
+local function rankable(key)
+  return key ~= nil and key.ir ~= nil and key.day ~= nil
+         and string.sub(key.day, 1, 4) ~= "1970"
+end
+
+-- The place of the row being written among today's flights on the same
+-- aircraft, and how many packs that is - or nil when it cannot be placed.
+-- `before` is how many records to search, newest first; the row itself is
+-- past the end of it. A pack flown twice today counts once, as its latest.
+function FlightLog.todayRank(records, line, before)
+  local key = irKey(line)
+  if not rankable(key) then return nil end
+  local seen = { [key.pack] = key.ir }
+  scanToday(records, key, seen, before or #records, 1)
+  return placeOf(key, seen)
 end
 
 -- The ir_mohm of the most recent earlier row flown on the same pack, or nil.
@@ -4629,6 +4694,22 @@ local function lookUpIr()
   if not landed or landed.prev ~= nil or not job.key then
     irLookup = nil
     if landed and landed.prev == nil then landed.prev = false end
+    return
+  end
+  -- Today's packs first, in slices of their own. Usually a handful of rows,
+  -- but a day of hops on a micro is not, and the slice is what the budget is
+  -- counted in. The place is filled in before the last reading, because the
+  -- screen redraws when `prev` arrives and has to find both there.
+  if job.seen then
+    local stop = math.max(1, job.t - FlightLog.IR_ROWS_PER_CALL + 1)
+    local ok, more = pcall(scanToday, job.records, job.key, job.seen,
+                           job.t, stop)
+    if ok and more and stop > 1 then
+      job.t = stop - 1
+      return
+    end
+    if ok then landed.place, landed.of = placeOf(job.key, job.seen) end
+    job.seen = nil
     return
   end
   local stop = math.max(1, job.k - FlightLog.IR_ROWS_PER_CALL + 1)
@@ -4679,8 +4760,10 @@ function FlightLog.append(line)
     -- instructions, and the write's own callback is the last place to spend
     -- them (see FlightLog.service).
     local okKey, key = pcall(irKey, line)
-    irLookup = { records = records, key = okKey and key or nil,
-                 k = #records - 1 }
+    key = okKey and key or nil
+    irLookup = { records = records, key = key, k = #records - 1,
+                 t = #records - 1,
+                 seen = rankable(key) and { [key.pack] = key.ir } or nil }
   else
     FlightLog.lastError = "write failed: " .. FlightLog.path()
   end
@@ -5818,7 +5901,11 @@ local function buildStrip()
   local roomy = L.class == "roomy"
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local y = L.stripRule + (roomy and 10 or 7)
-  V.flights = label(L.c.pad, y, 300, "", F.tiny, Theme.dim)
+  -- Wider on the big screen, where the pack line after a landing - figure,
+  -- last reading and place among today's - is the longest thing that sits
+  -- here, and the right-hand notices leave room for it. On the small one the
+  -- same line fits the original box.
+  V.flights = label(L.c.pad, y, roomy and 460 or 300, "", F.tiny, Theme.dim)
   if roomy then
     V.tagline = label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER",
                       F.tiny, Theme.dim, ALIGN_CENTER)
@@ -6102,11 +6189,27 @@ end
 -- charger and it drifts with the day - a whole fleet of packs read higher
 -- together on a cooler one - so the screen shows two numbers and leaves the
 -- judging to the pilot. "mOhm" spelt out: the fonts have no omega.
+--
+-- Then where the pack sits among the ones flown on the same aircraft today,
+-- counted from the highest resistance. Only with at least two others to
+-- stand against: against one, "highest" is a coin toss between two readings
+-- that each wobble by about as much as packs differ. Same-day because the
+-- figures drift between days while the order of packs holds.
+Dashboard.RANK_MIN_PACKS = 3
+
 local function irText(landed, prev)
   local t = string.format("IR %.1f mOhm", landed.mohm)
   local pack = tonumber(landed.pack)
   if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
   if prev then t = t .. string.format("  LAST %.1f", prev) end
+  local place, of = tonumber(landed.place), tonumber(landed.of)
+  if place and of and of >= Dashboard.RANK_MIN_PACKS then
+    if place == 1 then
+      t = t .. string.format("  HIGH OF %d", of)
+    else
+      t = t .. string.format("  #%d OF %d", place, of)
+    end
+  end
   return t
 end
 

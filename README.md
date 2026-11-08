@@ -338,14 +338,30 @@ the flight's peak current, never under 3 A, so a 2S micro gets a reading too.
 flight arms:
 
 ```
-PACK 4  IR 1.8 mOhm  LAST 1.6
+PACK 4  IR 2.4 mOhm  LAST 1.9  HIGH OF 4
 ```
 
 `LAST` is that pack's previous reading from the flight log — same model slot,
 same **Pack** number, same aircraft — and appears once the row is written,
 after the chime. No `PACK` when the Pack option is 0, and no `LAST` on a pack's
-first logged flight. It is two numbers, not a verdict: the figure drifts with
-temperature and the day, and it has not been checked against a charger.
+first logged flight.
+
+`HIGH OF 4` is where the pack sits among the packs flown on the same aircraft
+**today**, counted from the highest resistance: `HIGH` when it is the highest,
+`#2 OF 4` when one other is higher, and so on. It needs two other packs flown
+today with a reading, because against one the order is a coin toss. A pack
+flown twice today counts once, as its latest reading. Rows dated 1970 — a
+radio whose clock was never set — are never ranked.
+
+Same-day, because the figure drifts with temperature and the day while the
+order of packs holds: one aircraft's whole set can read higher together on a
+cool morning. Checked against a charger's IR test on five 12S packs, the widget
+put them in the same order, reading about 1.8× lower in absolute terms.
+
+It is a prompt, not a verdict. Two things move a pack's figure that are not the
+pack: a gentle flight reads higher than a hard one (fewer big current swings
+to fit), and a worn plug counts as resistance. And it is only as good as the
+**Pack** number — set it before each flight.
 
 ## Time remaining
 

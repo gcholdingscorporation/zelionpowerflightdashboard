@@ -537,12 +537,14 @@ H.test("no two labels overlap on either radio", function()
 end)
 
 -- On the ground after a flight, the flight-count slot carries the pack just
--- flown. Its longest form - a two-digit pack, a micro's two-digit figure and a
--- last reading - is what has to fit beside everything else in the strip.
-local function landedOn(ZD, prev)
+-- flown. Its longest form - a two-digit pack, a micro's two-digit figure, a
+-- last reading and its place among today's packs - is what has to fit beside
+-- everything else in the strip.
+local function landedOn(ZD, prev, place, of)
   Mock.setSensor("Hspd", 0)
   ZD.State.armed = false
-  ZD.PackHealth.landed = { mohm = 32.0, pack = 14, prev = prev }
+  ZD.PackHealth.landed = { mohm = 32.0, pack = 14, prev = prev,
+                           place = place, of = of }
 end
 
 H.test("the pack just landed shows its resistance and its last one", function()
@@ -568,6 +570,25 @@ H.test("the pack just landed shows its resistance and its last one", function()
   H.truthy(string.find(t, "137 FLIGHTS", 1, true), "the flight count did not return")
 end)
 
+H.test("the pack's place among today's shows once there are three", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  landedOn(ZD, 24.5, 1, 2)
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  H.falsy(string.find(t, " OF ", 1, true), "two packs were ranked: " .. t)
+
+  landedOn(ZD, 24.5, 1, 4)
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "LAST 24.5  HIGH OF 4", 1, true),
+           "got " .. Mock.lvglText())
+
+  landedOn(ZD, false, 2, 4)
+  ZD.Dashboard.update()
+  t = Mock.lvglText()
+  H.truthy(string.find(t, "PACK 14  IR 32.0 mOhm  #2 OF 4", 1, true), "got " .. t)
+end)
+
 H.test("an unnumbered pack shows its figure alone", function()
   local ZD = boot(480, 320, flying)
   ZD.Dashboard.build(480, 320)
@@ -587,8 +608,10 @@ H.test("the landed reading fits on both radios", function()
     ZD.RF2.available = function() return true end
     ZD.RF2.registered = true
     ZD.Dashboard.build(w, h)
-    landedOn(ZD, 24.5)
+    landedOn(ZD, 24.5, 1, 10)
     ZD.Dashboard.update()
+    H.truthy(string.find(Mock.lvglText(), "HIGH OF 10", 1, true),
+             "the longest form was not the one measured")
     assertNoCollisions(ZD, h, string.format("%dx%d landed", w, h))
     for _, o in ipairs(Mock.lv.objects) do
       local t = o.props.text
