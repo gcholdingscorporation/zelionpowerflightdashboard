@@ -880,6 +880,84 @@ H.test("a short row from a spreadsheet does not raise", function()
   H.nilv(ZD.FlightLog.previousIr(recs, row(ZD, "M4", "3", "3.0", "", "")))
 end)
 
+H.group("flightlog: the pack's place among today's")
+
+local function dayRow(ZD, date, pack, ir, craft, cells)
+  return irRow(ZD, { date = date, model = "M7R", pack = pack, ir_mohm = ir,
+                     craft = craft or "Omphobby M7R", cells = cells or "12" })
+end
+
+H.test("ranks against the other packs flown on the same aircraft today", function()
+  -- 27 Oct from the real log: packs 1, 2, 3 and 5 flown, then pack 4.
+  local ZD = fresh()
+  local recs = {
+    dayRow(ZD, "2026-10-18", "4", "1.9"),                -- another day
+    dayRow(ZD, "2026-10-27", "1", "1.1"),
+    dayRow(ZD, "2026-10-27", "2", "1.2"),
+    dayRow(ZD, "2026-10-27", "3", "1.4"),
+    dayRow(ZD, "2026-10-27", "5", "1.9"),
+  }
+  local place, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "4", "2.4"))
+  H.eq(place, 1); H.eq(of, 5)
+  place, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "6", "1.3"))
+  H.eq(place, 3, "1.9 and 1.4 are higher"); H.eq(of, 5)
+end)
+
+H.test("a pack flown twice today counts once, as its latest", function()
+  local ZD = fresh()
+  local recs = {
+    dayRow(ZD, "2026-10-27", "1", "3.0"),
+    dayRow(ZD, "2026-10-27", "2", "1.2"),
+    dayRow(ZD, "2026-10-27", "1", "1.1"),
+  }
+  local place, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "3", "1.4"))
+  H.eq(of, 3); H.eq(place, 1, "the stale 3.0 for pack 1 was counted")
+  -- And the row being written is the latest of its own pack.
+  place, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "1", "1.0"))
+  H.eq(of, 2); H.eq(place, 2)
+end)
+
+H.test("other aircraft and other days are left out", function()
+  local ZD = fresh()
+  local recs = {
+    dayRow(ZD, "2026-10-26", "2", "9.9"),
+    dayRow(ZD, "2026-10-27", "2", "9.0", "OMP M4 Max", "6"),     -- same slot
+    irRow(ZD, { date = "2026-10-27", model = "Micro", pack = "3",
+                ir_mohm = "30.0", craft = "Omphobby M1 V3", cells = "2" }),
+    dayRow(ZD, "2026-10-27", "", "8.0"),                          -- unnumbered
+    dayRow(ZD, "2026-10-27", "4", ""),                            -- no reading
+    dayRow(ZD, "2026-10-27", "1", "1.1"),
+  }
+  local place, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "5", "1.9"))
+  H.eq(of, 2); H.eq(place, 1)
+end)
+
+H.test("today stops at the first row from another day", function()
+  -- The widget only appends, so an older row below today's is where today
+  -- began - even when a still older row carries today's date by accident.
+  local ZD = fresh()
+  local recs = {
+    dayRow(ZD, "2026-10-27", "1", "9.0"),
+    dayRow(ZD, "2026-10-26", "2", "1.0"),
+    dayRow(ZD, "2026-10-27", "3", "1.0"),
+  }
+  local _, of = ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "4", "2.0"))
+  H.eq(of, 2)
+end)
+
+H.test("a radio with no clock is never ranked", function()
+  local ZD = fresh()
+  local recs = { dayRow(ZD, "1970-01-01", "1", "1.0"), dayRow(ZD, "1970-01-01", "2", "1.1") }
+  H.nilv(ZD.FlightLog.todayRank(recs, dayRow(ZD, "1970-01-01", "3", "1.2")))
+end)
+
+H.test("a flight with no reading or no pack number has no place", function()
+  local ZD = fresh()
+  local recs = { dayRow(ZD, "2026-10-27", "1", "1.0") }
+  H.nilv(ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "2", "")))
+  H.nilv(ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "", "1.2")))
+end)
+
 -- End to end, in the widget's own service order: the figure measured in the
 -- air, the row written after the settle window, and the comparison filled in
 -- by that write.
@@ -931,6 +1009,24 @@ H.test("the write fills in the same pack's last reading", function()
   H.near(ZD.PackHealth.landed.mohm, 4.0, 0.3)
   H.near(ZD.PackHealth.landed.prev, 3.0, 0.3,
          "got " .. tostring(ZD.PackHealth.landed.prev))
+end)
+
+H.test("the write fills in the pack's place among today's", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Vcel", 1, 4.0)
+    Mock.addSensor("Vbat", 1, 24.0)
+    Mock.addSensor("Curr", 2, 0)
+    Mock.addSensor("Hspd", 18, 0)
+  end)
+  flyPack(ZD, 1, 3.0)
+  H.eq(ZD.PackHealth.landed.of, 1)
+  flyPack(ZD, 2, 2.0)
+  flyPack(ZD, 3, 6.0)
+  H.eq(ZD.PackHealth.landed.of, 3, "got " .. tostring(ZD.PackHealth.landed.of))
+  H.eq(ZD.PackHealth.landed.place, 1)
+  flyPack(ZD, 4, 2.5)
+  H.eq(ZD.PackHealth.landed.of, 4)
+  H.eq(ZD.PackHealth.landed.place, 3, "got " .. tostring(ZD.PackHealth.landed.place))
 end)
 
 end

@@ -1218,13 +1218,11 @@ H.test("no single callback spends more than EdgeTX will give it", function()
     worst, math.floor(100 * worst / LIMIT), LIMIT, where))
 end)
 
-H.test("the landing write, comparison and all, stays inside the budget", function()
-  -- The write is the one callback that reads the whole log, and since the
-  -- same pack's last IR reading is looked up in it, the frame after walks
-  -- it. A full log of rows from the same model slot that never match is the
-  -- worst case: every row passes the cheap filter, is parsed, and none ends
-  -- the search early.
-  local LIMIT, MARGIN = 20000, 18000
+-- Flies one flight with Pack 4 against a log holding `rows`, and returns the
+-- most instructions any callback after the landing took. `rested` sits the
+-- pack on the ground first, so the row records the resting voltages its cell
+-- count is worked out from - without them a craft-less row matches nothing.
+local function landingCost(rowFor, rested)
   Mock.reset(); Mock.removeRf2()
   Mock.state.lcdW, Mock.state.lcdH = 800, 480
   flying()
@@ -1233,11 +1231,7 @@ H.test("the landing write, comparison and all, stays inside the budget", functio
     "max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm," ..
     "pack,end_pack,end_cell,craft,cells"
   local rows = { header }
-  for k = 1, 199 do
-    rows[#rows + 1] = string.format("2026-10-%02d,12:00:00,Test Heli,240,2100," ..
-      "3.61,43.30,121.4,68,2400,22,50.40,4.20,58.2,98,%.1f,%d,47.10,3.92," ..
-      "Some Heli,12", 1 + k % 28, 1 + k % 3 / 10, 1 + k % 9)
-  end
+  for k = 1, 199 do rows[#rows + 1] = rowFor(k) end
   Mock.state.files["/LOGS/zeliondash.csv"] = table.concat(rows, "\n") .. "\n"
 
   local opts = { Pack = 4 }
@@ -1245,6 +1239,15 @@ H.test("the landing write, comparison and all, stays inside the budget", functio
   local widget = def.create({ x=0, y=0, w=800, h=480 }, opts)
   def.update(widget, opts)
   def.refresh(widget, 0, nil)
+  if rested then
+    Mock.setSensor("Hspd", 0)
+    Mock.setSensor("Curr", 0)
+    for _ = 1, 30 do
+      Mock.advanceSeconds(0.1)
+      def.refresh(widget, 0, nil)
+    end
+    Mock.setSensor("Hspd", 1850)
+  end
 
   -- Fly long enough to measure, with the current swinging.
   for k = 1, 400 do
@@ -1271,9 +1274,42 @@ H.test("the landing write, comparison and all, stays inside the budget", functio
   H.truthy(written, "the flight was never written")
   H.truthy(string.find(Mock.lvglText(), "PACK 4  IR", 1, true),
            "the landed reading was not on screen")
+  return worst
+end
+
+local LIMIT, MARGIN = 20000, 18000
+
+local function withinBudget(worst)
   H.truthy(worst < MARGIN, string.format(
     "the worst landed frame was %d instructions (%d%% of EdgeTX's %d)",
     worst, math.floor(100 * worst / LIMIT), LIMIT))
+end
+
+H.test("the landing write, comparison and all, stays inside the budget", function()
+  -- The write is the one callback that reads the whole log, and since the
+  -- same pack's last IR reading is looked up in it, the frame after walks
+  -- it. A full log of rows from the same model slot that never match is the
+  -- worst case: every row passes the cheap filter, is parsed, and none ends
+  -- the search early.
+  withinBudget(landingCost(function(k)
+    return string.format("2026-10-%02d,12:00:00,Test Heli,240,2100," ..
+      "3.61,43.30,121.4,68,2400,22,50.40,4.20,58.2,98,%.1f,%d,47.10,3.92," ..
+      "Some Heli,12", 1 + k % 28, 1 + k % 3 / 10, 1 + k % 9)
+  end))
+end)
+
+H.test("a whole log flown today stays inside the budget too", function()
+  -- The place among today's reads every row with today's date before the
+  -- last reading is looked for. A full log of one day on the same aircraft is
+  -- the most that can be: every row is today's and every row is parsed.
+  local worst = landingCost(function(k)
+    return string.format("2026-01-01,12:00:00,Test Heli,240,2100," ..
+      "3.61,43.30,121.4,68,2400,22,50.40,4.20,58.2,98,%.1f,%d,47.10,3.92,,12",
+      1 + k % 3 / 10, 10 + k)
+  end, true)
+  withinBudget(worst)
+  H.truthy(string.find(Mock.lvglText(), " OF 200", 1, true),
+           "the pack was not placed among today's: " .. Mock.lvglText())
 end)
 
 H.test("survives a model with no telemetry at all", function()

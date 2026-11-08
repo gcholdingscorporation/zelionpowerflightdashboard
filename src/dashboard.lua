@@ -575,7 +575,11 @@ local function buildStrip()
   local roomy = L.class == "roomy"
   lvgl.hline({ x=0, y=L.stripRule, w=L.w, h=1, color=Theme.rule })
   local y = L.stripRule + (roomy and 10 or 7)
-  V.flights = label(L.c.pad, y, 300, "", F.tiny, Theme.dim)
+  -- Wider on the big screen, where the pack line after a landing - figure,
+  -- last reading and place among today's - is the longest thing that sits
+  -- here, and the right-hand notices leave room for it. On the small one the
+  -- same line fits the original box.
+  V.flights = label(L.c.pad, y, roomy and 460 or 300, "", F.tiny, Theme.dim)
   if roomy then
     V.tagline = label(0, y, L.w, "NO HYPE / JUST VOLTAGE / REAL POWER",
                       F.tiny, Theme.dim, ALIGN_CENTER)
@@ -859,11 +863,27 @@ end
 -- charger and it drifts with the day - a whole fleet of packs read higher
 -- together on a cooler one - so the screen shows two numbers and leaves the
 -- judging to the pilot. "mOhm" spelt out: the fonts have no omega.
+--
+-- Then where the pack sits among the ones flown on the same aircraft today,
+-- counted from the highest resistance. Only with at least two others to
+-- stand against: against one, "highest" is a coin toss between two readings
+-- that each wobble by about as much as packs differ. Same-day because the
+-- figures drift between days while the order of packs holds.
+Dashboard.RANK_MIN_PACKS = 3
+
 local function irText(landed, prev)
   local t = string.format("IR %.1f mOhm", landed.mohm)
   local pack = tonumber(landed.pack)
   if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
   if prev then t = t .. string.format("  LAST %.1f", prev) end
+  local place, of = tonumber(landed.place), tonumber(landed.of)
+  if place and of and of >= Dashboard.RANK_MIN_PACKS then
+    if place == 1 then
+      t = t .. string.format("  HIGH OF %d", of)
+    else
+      t = t .. string.format("  #%d OF %d", place, of)
+    end
+  end
   return t
 end
 
