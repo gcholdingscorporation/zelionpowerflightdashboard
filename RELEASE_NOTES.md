@@ -1,42 +1,38 @@
-Your packs' internal resistance is now on the screen. After every landing the
-bottom-left corner shows the pack you just flew and its last reading, so a
-pack that is wearing out shows up while it is still in your hand.
+After landing, the screen now says where the pack you just flew sits among the
+packs you have flown on that heli today, so the weakest one stands out while
+it is still in your hand.
 
 ## What you see
 
 ```
-PACK 4  IR 1.8 mOhm  LAST 1.6
+PACK 4  IR 2.4 mOhm  LAST 1.9  HIGH OF 4
 ```
 
-- `IR` is this flight's measured internal resistance, milliohms per cell.
-- `LAST` is the same pack's previous reading from the flight log: same model
-  slot, same **Pack** number, same aircraft. It appears once the row is
-  written, after the chime.
-- No `PACK` when the Pack option is 0, and no `LAST` on a pack's first logged
-  flight.
+- `HIGH OF 4` means this pack had the highest resistance of the 4 packs flown
+  on this aircraft today. `#2 OF 4` means one other was higher.
+- It shows once at least 3 packs have a reading today. Against one other pack
+  the order is a coin toss.
+- A pack flown twice today counts once, as its latest reading.
+- Only today's flights on the same aircraft are compared. Readings drift from
+  day to day, but the order of packs holds.
 
-It stays until the next flight arms. The slogan steps aside for it.
+Replayed against a real log, 27 Oct's M7R flights read `HIGH OF 3`, then
+`HIGH OF 4` for pack 4, then `#2 OF 5` for pack 5 - the same order a charger's
+IR test gave.
 
-It is two numbers, not a verdict. The reading moves with temperature and the
-day (every pack on one aircraft can read higher together on a cool morning),
-and it has not been checked against a charger. Compare packs flown on the same
-day before deciding one is tired.
-
-## 2S micros get a reading
-
-A window used to need an 8 A current swing to count, which a 2S micro peaking
-near 12 A rarely manages. It now scales to 30% of the flight's peak current,
-never under 3 A. Anything pulling 27 A or more is unchanged.
+It is a prompt to check a pack, not a verdict. A gentle flight reads higher
+than a hard one, a worn plug counts as resistance, and a wrong **Pack** number
+compares the wrong pack.
 
 ## Cost
 
-The worst callback after a landing is 11,025 instructions of EdgeTX's 20,000,
-measured on a full 200-flight log. Nothing is added to the work done while you
-fly.
+The worst callback after a landing is 12,411 instructions of EdgeTX's 20,000,
+measured on a full 200-flight log all flown on the same day. Nothing is added
+to the work done while you fly.
 
 ## Install
 
-`ZelionDash-1.12.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
+`ZelionDash-1.13.0.zip`, `WIDGETS` folder onto the card, **delete `main.luac`**.
 
 `sensors.cfg` is yours and is never shipped; the reference config is in the zip
 as `sensors.cfg.example`.
