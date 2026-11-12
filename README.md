@@ -353,12 +353,28 @@ today with a reading, because against one the order is a coin toss. A pack
 flown twice today counts once, as its latest reading. Rows dated 1970 — a
 radio whose clock was never set — are never ranked.
 
+**`RISING`, in amber, takes the place of the ranking** when the pack reads
+well above its own history:
+
+```
+PACK 4  IR 2.6 mOhm  LAST 1.9  RISING
+```
+
+It compares only against the same pack's earlier flights that were **no
+harder than this one** — an average current at most 1.2× this flight's —
+because a gentle flight reads higher and would otherwise look like a tired
+pack. It needs at least two such flights, takes the median of the last six,
+and fires when this reading is 1.3× that or more. Run over a real log of 75
+readings, it fired once: an M2 V3 pack that went from 8.2 and 7.2 to 14.0.
+
 Same-day, because the figure drifts with temperature and the day while the
 order of packs holds: one aircraft's whole set can read higher together on a
 cool morning. Checked against a charger's IR test on five 12S packs, the widget
 put them in the same order, reading about 1.8× lower in absolute terms.
 
-It is a prompt, not a verdict. Two things move a pack's figure that are not the
+It is a prompt, not a verdict — there is deliberately no "replace this pack".
+No pack in the logs this was built from has failed yet, so there is nothing to
+say where such a line would sit. Two things move a pack's figure that are not the
 pack: a gentle flight reads higher than a hard one (fewer big current swings
 to fit), and a worn plug counts as resistance. And it is only as good as the
 **Pack** number — set it before each flight.

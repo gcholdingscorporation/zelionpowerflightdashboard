@@ -589,6 +589,35 @@ H.test("the pack's place among today's shows once there are three", function()
   H.truthy(string.find(t, "PACK 14  IR 32.0 mOhm  #2 OF 4", 1, true), "got " .. t)
 end)
 
+H.test("a rising pack says so in amber, in place of its place", function()
+  local ZD = boot(480, 320, flying)
+  ZD.Dashboard.build(480, 320)
+  landedOn(ZD, 24.5, 1, 10)
+  ZD.PackHealth.landed.rising = true
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "PACK 14  IR 32.0 mOhm  LAST 24.5  RISING", 1, true), "got " .. t)
+  H.falsy(string.find(t, " OF ", 1, true), "the place was shown as well")
+  local found = false
+  for _, o in ipairs(Mock.lv.objects) do
+    local text = o.props.text
+    if o.kind == "label" and text and string.find(text, "RISING", 1, true) then
+      found = true
+      H.eq(o.props.color, ZD.Theme.warn, "the rising line is not amber")
+    end
+  end
+  H.truthy(found, "no label carried the rising line")
+
+  ZD.PackHealth.landed = { mohm = 32.0, pack = 14, prev = 24.5 }
+  ZD.Dashboard.update()
+  for _, o in ipairs(Mock.lv.objects) do
+    local text = o.props.text
+    if o.kind == "label" and text and string.find(text, "mOhm", 1, true) then
+      H.eq(o.props.color, ZD.Theme.steel, "amber outstayed the rise")
+    end
+  end
+end)
+
 H.test("an unnumbered pack shows its figure alone", function()
   local ZD = boot(480, 320, flying)
   ZD.Dashboard.build(480, 320)
