@@ -229,6 +229,16 @@ Host.hasTextMeasurement = type(lcd) == "table" and type(lcd.sizeText) == "functi
 -- simply falls back to name matching, which is the primary path anyway.
 local MAX_SENSOR_SLOTS = 60
 
+-- Whether a telemetry slot holds a named sensor. One call, for the sensor
+-- re-probe to notice a sensor being discovered without listing all sixty.
+function Host.sensorSlotUsed(i)
+  if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
+    return false
+  end
+  local ok, s = pcall(modelTbl.getSensor, i)
+  return ok and type(s) == "table" and s.name ~= nil and tostring(s.name) ~= ""
+end
+
 function Host.listSensors()
   local out = {}
   if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
@@ -1635,6 +1645,22 @@ ZD.Sensors = Sensors
 -- absent sensors is not re-scanned every frame.
 local REPROBE_INTERVAL = Host.seconds(1)
 
+-- After this many probes in a row that bound nothing, probe every
+-- REPROBE_SLOW instead. Most models carry roles that never bind - no tail
+-- speed, no BEC sensor - and probing for them every second for the rest of
+-- the session was 3,300 instructions a second on a busy model (issue #42).
+-- A sensor being discovered still re-probes at once: the slot after the last
+-- one listed is checked every second, which is one call, not sixty.
+local REPROBE_MISSES = 5
+local REPROBE_SLOW   = Host.seconds(15)
+local probeMisses    = 0
+local nextSlot       = 0
+-- Roles that were bound and lost their binding to a stale read - a link
+-- dropout, a pack unplugged. Their sensors still exist, so no new slot will
+-- announce them coming back, and they are the readings a pilot is waiting
+-- for: while any is missing the probe never backs off.
+local dropped        = {}
+
 -- bindings[role] = { id=<source id>, name=<sensor name>, how=<"override"|"name"|"unit"> }
 Sensors.bindings   = {}
 Sensors.unresolved = {}
@@ -1769,6 +1795,7 @@ function Sensors.resolve(force)
   end
   if #pending == 0 then
     Sensors.unresolved = {}
+    dropped = {}
     return
   end
 
@@ -1787,6 +1814,8 @@ function Sensors.resolve(force)
   -- Pass 3: unit-based discovery, only for what is left.
   if #stillPending > 0 then
     local sensorList = Host.listSensors()
+    local last = sensorList[#sensorList]
+    nextSlot = last and (last.index + 1) or 0
     if #sensorList > 0 then
       local claimed = claimedNames()
       local remaining = {}
@@ -1805,6 +1834,9 @@ function Sensors.resolve(force)
   end
 
   Sensors.unresolved = stillPending
+  for role in pairs(dropped) do
+    if Sensors.bindings[role] then dropped[role] = nil end
+  end
 end
 
 -- Called when the active model changes: overrides differ per model, so every
@@ -1820,6 +1852,7 @@ function Sensors.reload(modelName, craftName, cells)
   -- the flight controller renaming itself mid-session is exactly the case
   -- [craft] sections exist for.
   Config.scope(Sensors.modelName, craftName, cells)
+  probeMisses, dropped = 0, {}
   Sensors.resolve(true)
   -- That was a full probe, so the next one waits its interval like any other.
   -- This used to reset the clock instead, and the first service pass after an
@@ -1832,8 +1865,23 @@ function Sensors.service(now)
   now = now or Host.now()
   if #Sensors.unresolved == 0 then return end
   if (now - lastProbe) < REPROBE_INTERVAL then return end
+  if probeMisses >= REPROBE_MISSES and next(dropped) == nil
+     and (now - lastProbe) < REPROBE_SLOW then
+    -- Backed off. Only a new sensor brings the probe forward.
+    if not Host.sensorSlotUsed(nextSlot) then
+      lastProbe = now - REPROBE_SLOW + REPROBE_INTERVAL
+      -- That keeps the slow clock and checks the slot again in a second.
+      return
+    end
+  end
   lastProbe = now
+  local before = #Sensors.unresolved
   Sensors.resolve(false)
+  if #Sensors.unresolved < before then
+    probeMisses = 0
+  else
+    probeMisses = probeMisses + 1
+  end
 end
 
 --------------------------------------------------------------------------
@@ -1861,6 +1909,7 @@ function Sensors.read(role)
     -- next probe re-resolves it rather than reading a dead id forever.
     Sensors.bindings[role] = nil
     Sensors.unresolved[#Sensors.unresolved + 1] = role
+    dropped[role] = true
     return nil, "stale"
   end
 
@@ -5637,11 +5686,13 @@ local extremeMemo, numMemo, lazyMemo, resetMemos
 -- Retained-object helpers
 --------------------------------------------------------------------------
 
+-- Keeps the props table itself as the object's shadow rather than a copy of
+-- it. Both callers build a fresh table for each object and hand it straight
+-- to LVGL, which reads it at creation and keeps none of it, so nothing else
+-- holds it. The copy was the single hottest line in a build.
 local function remember(obj, props)
-  local st = {}
-  for k, v in pairs(props) do st[k] = v end
-  st.visible = true
-  SHADOW[obj] = st
+  props.visible = true
+  SHADOW[obj] = props
   return obj
 end
 

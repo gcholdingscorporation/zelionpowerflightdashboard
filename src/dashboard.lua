@@ -45,11 +45,13 @@ local extremeMemo, numMemo, lazyMemo, resetMemos
 -- Retained-object helpers
 --------------------------------------------------------------------------
 
+-- Keeps the props table itself as the object's shadow rather than a copy of
+-- it. Both callers build a fresh table for each object and hand it straight
+-- to LVGL, which reads it at creation and keeps none of it, so nothing else
+-- holds it. The copy was the single hottest line in a build.
 local function remember(obj, props)
-  local st = {}
-  for k, v in pairs(props) do st[k] = v end
-  st.visible = true
-  SHADOW[obj] = st
+  props.visible = true
+  SHADOW[obj] = props
   return obj
 end
 

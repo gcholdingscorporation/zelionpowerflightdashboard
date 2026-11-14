@@ -218,6 +218,16 @@ Host.hasTextMeasurement = type(lcd) == "table" and type(lcd.sizeText) == "functi
 -- simply falls back to name matching, which is the primary path anyway.
 local MAX_SENSOR_SLOTS = 60
 
+-- Whether a telemetry slot holds a named sensor. One call, for the sensor
+-- re-probe to notice a sensor being discovered without listing all sixty.
+function Host.sensorSlotUsed(i)
+  if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
+    return false
+  end
+  local ok, s = pcall(modelTbl.getSensor, i)
+  return ok and type(s) == "table" and s.name ~= nil and tostring(s.name) ~= ""
+end
+
 function Host.listSensors()
   local out = {}
   if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
