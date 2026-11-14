@@ -227,6 +227,36 @@ end)
 
 H.group("build: dashboard lifecycle")
 
+H.test("a decimal session peak survives a rebuild without safe mode", function()
+  -- Session extremes are raw readings. A current sensor reports tenths, so
+  -- the MAX under the current tile was 42.3 - and the label formats it with
+  -- "%d", which Lua 5.3 and later refuse for a number with a fraction. In a
+  -- rebuild that raise failed the build, the ladder retried it twice more and
+  -- the pilot got the safe-mode screen, for changing the pack number after a
+  -- flight. Every test before this used whole-number sensors.
+  local def, widget = boot(800, 480, { Pack = 1 }, function()
+    flying()
+    Mock.state.sensors[5].value = 42.3          -- Curr
+    Mock.state.sensors[6].value = 71.6          -- Tesc
+    Mock.state.sensors[1].value = 1849.6        -- Hspd
+  end)
+  for _ = 1, 5 do Mock.advanceSeconds(0.1); def.refresh(widget, 0, nil) end
+  def.update(widget, { Pack = 2 })
+  def.refresh(widget, 0, nil)
+  Mock.advanceSeconds(0.1)
+  def.refresh(widget, 0, nil)
+  H.truthy(Mock.lvglShows("MAX 42"), "the current peak, rounded: " .. Mock.lvglText())
+  H.truthy(Mock.lvglShows("MAX 72"), "the ESC peak, rounded")
+  H.truthy(Mock.lvglShows("MAX 1850"), "the headspeed peak, rounded")
+  def.update(widget, { Pack = 2, SensorMap = 1 })
+  def.refresh(widget, 0, nil)
+  Mock.advanceSeconds(0.1)
+  def.refresh(widget, 0, nil)
+  H.falsy(string.find(Mock.lvglText(), "-- SCREEN --", 1, true),
+          "the rebuild did not degrade: " .. Mock.lvglText())
+end)
+
+
 H.test("full lifecycle at 800x480 (TX16S Mk3)", function()
   local def, widget = boot(800, 480, nil, flying)
   def.background(widget)

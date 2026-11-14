@@ -213,8 +213,12 @@ function Sensors.reload(modelName, craftName, cells)
   -- the flight controller renaming itself mid-session is exactly the case
   -- [craft] sections exist for.
   Config.scope(Sensors.modelName, craftName, cells)
-  lastProbe = -1e9
   Sensors.resolve(true)
+  -- That was a full probe, so the next one waits its interval like any other.
+  -- This used to reset the clock instead, and the first service pass after an
+  -- option change ran the whole probe a second time - about 3,300 instructions
+  -- on a busy model, in the frame that also builds the sensor map.
+  lastProbe = Host.now()
 end
 
 function Sensors.service(now)

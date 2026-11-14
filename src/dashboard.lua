@@ -236,6 +236,18 @@ resetMemos()
 -- Formatting
 --------------------------------------------------------------------------
 
+-- Rounded to the whole number a "%d" label shows. Session extremes are raw
+-- readings, so a current that peaked at 42.3 A is 42.3 here - and Lua 5.3 and
+-- later refuse "%d" for a number with a fraction. That raised inside the
+-- dashboard update, froze the label, and on a rebuild (a Pack Number change
+-- after a flight, or leaving the sensor map) failed the whole build three
+-- times over into safe mode. The live numbers beside these were always
+-- rounded first; these three were not.
+local function whole(v)
+  if v == nil then return nil end
+  return math.floor(v + 0.5)
+end
+
 local function fmtExtreme(prefix, value, pattern)
   if value == nil then return prefix .. " --" end
   return prefix .. " " .. string.format(pattern, value)
@@ -969,7 +981,7 @@ local function updateHero()
   setHeroNumber(V.hsValue, V.hsUnitGeom, V.hsUnit,
                 hsOk and math.floor(hs + 0.5) or nil, "%d", "--")
   setColor(V.hsValue, hsOk and Theme.ink or Theme.dim)
-  setExtreme(V.hsFoot[1], "MAX", State.max("headspeed"), "%d")
+  setExtreme(V.hsFoot[1], "MAX", whole(State.max("headspeed")), "%d")
   setExtreme(V.hsFoot[2], "TAIL",
              State.valid("tailSpeed") and math.floor(State.num("tailSpeed")) or nil, "%d")
   setExtreme(V.hsFoot[3], "THR",
@@ -985,12 +997,12 @@ local function updateRightColumn()
   local cur, curOk = State.get("current")
   setNumber(V.tiles[1].value, curOk and math.floor(cur + 0.5) or nil, "%d", "--",
             curOk and Theme.ink or Theme.dim)
-  setExtreme(V.tiles[1].foot, "MAX", State.max("current"), "%d")
+  setExtreme(V.tiles[1].foot, "MAX", whole(State.max("current")), "%d")
 
   local esc, escOk = State.get("escTemperature")
   setNumber(V.tiles[2].value, escOk and math.floor(esc + 0.5) or nil, "%d", "--",
             escOk and Theme.tempColor(esc) or Theme.dim)
-  setExtreme(V.tiles[2].foot, "MAX", State.max("escTemperature"), "%d")
+  setExtreme(V.tiles[2].foot, "MAX", whole(State.max("escTemperature")), "%d")
 
   local bec, becOk = State.get("becVoltage")
   setNumber(V.tiles[3].value, becOk and bec or nil, "%.1f", "--",
