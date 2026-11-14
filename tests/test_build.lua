@@ -1185,16 +1185,13 @@ H.test("no single callback spends more than EdgeTX will give it", function()
   -- for the radio's, not a copy of them, which is why this asserts a margin
   -- rather than the limit itself.
   --
-  -- 18,000 is not where the margin belongs. The EdgeTX developer asked for the
-  -- peak to sit under about half the budget, and steady flight does - 4,244,
-  -- 21%. The one call still near the ceiling is the first serviced frame after
-  -- a build, at ~17.8k: the shadow table is empty so every field is written,
-  -- and State.service is sampling all 23 roles for the first time. That peak
-  -- is not new - it is the 17.9k the same developer measured against 1.11.3 -
-  -- and splitting it is its own piece of work. The threshold is set just above
-  -- it deliberately, so that it holds the line where it is today and any creep
-  -- fails here rather than on a radio. Lower it when that frame is split.
-  local LIMIT, MARGIN = 20000, 18000
+  -- The margin was 18,000 while the first serviced frame after a build sat at
+  -- about 17.8k, the 17.9k an EdgeTX developer measured against 1.11.3. In
+  -- 1.14.1 that frame lost its second full sensor probe (Sensors.reload no
+  -- longer resets the probe clock after the probe it has just done) and the
+  -- worst callback here came down to about 12,600, so the line moves down
+  -- with it: any creep back towards the ceiling fails here, not on a radio.
+  local LIMIT, MARGIN = 20000, 15000
 
   local function count(fn)
     local n = 0
@@ -1245,6 +1242,98 @@ H.test("no single callback spends more than EdgeTX will give it", function()
 
   H.truthy(worst < MARGIN, string.format(
     "worst callback was %d instructions (%d%% of EdgeTX's %d) at: %s",
+    worst, math.floor(100 * worst / LIMIT), LIMIT, where))
+end)
+
+H.test("a real pilot's setup stays well inside the budget too", function()
+  -- The test above runs with no sensors.cfg, no flight log and whole-number
+  -- sensors, and three ways past the budget hid behind that: parsing a real
+  -- config on every option change, reading a full log on the first
+  -- sensor-map frame, and a decimal session peak failing a rebuild into safe
+  -- mode three times over. This one has all three - the maintainer's own
+  -- config from docs/, a full log, and readings with decimals.
+  --
+  -- It counts only the widget's own instructions. On the radio the LVGL calls
+  -- are C and cost nothing against the budget; the mock's Lua versions of them
+  -- are not the widget's to spend.
+  local LIMIT, MARGIN = 20000, 16000
+  local SRC = "@" .. DIST
+  local getinfo = debug.getinfo
+  local function count(fn)
+    local n = 0
+    debug.sethook(function()
+      local i = getinfo(2, "S")
+      if i and i.source == SRC then n = n + 1 end
+    end, "", 1)
+    fn()
+    debug.sethook()
+    return n
+  end
+
+  local f = Mock.realIo.open("docs/GCsensor.cfg", "r")
+  local cfg = f:read("a"); f:close()
+  local rows = { "date,time,model,seconds,max_rpm,min_cell,min_pack,max_amps," ..
+    "max_esc_c,used_mah,end_pct,start_pack,start_cell,avg_amps,min_lq,ir_mohm," ..
+    "pack,end_pack,end_cell,craft,cells" }
+  for k = 1, 200 do
+    rows[#rows + 1] = string.format("2026-10-%02d,12:00:00,Test Heli,240,2100," ..
+      "3.61,43.30,121.4,68,2400,22,50.40,4.20,58.2,98,1.%d,%d,47.10,3.92," ..
+      "Omphobby M7R,12", 1 + k % 28, k % 9, 1 + k % 5)
+  end
+
+  Mock.reset(); Mock.removeRf2()
+  Mock.state.lcdW, Mock.state.lcdH = 800, 480
+  flying()
+  Mock.addSensor("Vbec", 1, 8.1); Mock.addSensor("Capa", 14, 1240)
+  Mock.addSensor("RQly", 12, 92); Mock.addSensor("TxBt", 1, 7.9)
+  for _, n in ipairs({"1RSS","2RSS","RSNR","ANT","RFMD","TPWR","TRSS","TQly","TSNR",
+    "Ptch","Roll","Yaw","GPS","GSpd","Hdg","Alt","Sats","FM","Vcc","Thr","PID",
+    "RTE","Accx","Accy","Accz","Bec%","EscV","EscI","Erpm","Tmcu","Tair","Hea","Vel"}) do
+    Mock.addSensor(n, 0, 1)
+  end
+  Mock.state.files["/WIDGETS/ZelionDash/sensors.cfg"] = cfg
+  Mock.state.files["/LOGS/zeliondash.csv"] = table.concat(rows, "\n") .. "\n"
+  Mock.install(); Mock.installLvgl(); Mock.installLogos()
+
+  local def = loadDist()
+  local worst, where = 0, "nothing ran"
+  local function watch(name, fn)
+    local n = count(fn)
+    if n > worst then worst, where = n, name end
+  end
+  local function wobble(k)
+    Mock.setSensor("Curr", 40 + (k % 7) * 3.7)
+    Mock.setSensor("Hspd", 1850 + (k % 5) * 1.3)
+    Mock.setSensor("Tesc", 70 + (k % 3) * 0.4)
+    Mock.setSensor("Vcel", 3.90 - (k % 4) * 0.013)
+  end
+
+  local opts = { Pack = 3 }
+  local widget
+  watch("create", function() widget = def.create({ x=0, y=0, w=800, h=480 }, opts) end)
+  watch("update", function() def.update(widget, opts) end)
+  watch("the build frame", function() def.refresh(widget, 0, nil) end)
+  for k = 1, 40 do
+    wobble(k); Mock.advanceSeconds(0.05)
+    watch("a flying frame", function() def.refresh(widget, 0, nil) end)
+  end
+  local smap = { Pack = 3, SensorMap = 1 }
+  watch("update into the sensor map", function() def.update(widget, smap) end)
+  for k = 1, 12 do
+    wobble(k); Mock.advanceSeconds(0.05)
+    watch("a sensor map frame", function() def.refresh(widget, 0, nil) end)
+  end
+  local back = { Pack = 4 }
+  watch("update back, new pack", function() def.update(widget, back) end)
+  watch("the rebuild", function() def.refresh(widget, 0, nil) end)
+  for k = 1, 12 do
+    wobble(k); Mock.advanceSeconds(0.05)
+    watch("a frame after the rebuild", function() def.refresh(widget, 0, nil) end)
+  end
+
+  H.falsy(string.find(Mock.lvglText(), "SAFE MODE", 1, true), "the rebuild degraded")
+  H.truthy(worst < MARGIN, string.format(
+    "worst callback was %d widget instructions (%d%% of EdgeTX's %d) at: %s",
     worst, math.floor(100 * worst / LIMIT), LIMIT, where))
 end)
 
