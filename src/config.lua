@@ -91,6 +91,17 @@ local SETTINGS = {
 -- must never overrule one a pilot wrote down.
 Config.explicit = {}
 
+-- What is wrong with a setting that did not read as a number in range. A
+-- comment on the end of the line is the usual cause, and "must be 0..60" for
+-- "46  # M7R" sends a pilot looking at the number instead of the comment.
+local function rangeProblem(lineNo, key, value, spec)
+  if not tonumber(value) and string.find(value, "[#;]") then
+    return string.format("line %d: put the comment on its own line", lineNo)
+  end
+  return string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
+                       spec.min, spec.max)
+end
+
 function Config.parse(text)
   local sections, problems = {}, {}
   local settings = {}
@@ -108,13 +119,23 @@ function Config.parse(text)
   sections[current] = sections[current] or {}
   local lineNo = 0
 
+  -- A UTF-8 byte-order mark is what Windows Notepad and Excel put in front of
+  -- a file they save. It is not part of the first line, and leaving it there
+  -- made a file that opens with [battery] put every setting under it back to
+  -- the defaults - a 46% reserve quietly reading 20.
+  text = string.gsub(text, "^\239\187\191", "")
+
   for rawLine in string.gmatch(text, "[^\r\n]*") do
     lineNo = lineNo + 1
-    local line = trim(rawLine)
-    -- Both # and ; are accepted as comment markers; pilots coming from either
-    -- INI or shell conventions should not have to guess.
-    if line ~= "" and string.sub(line, 1, 1) ~= "#"
-       and string.sub(line, 1, 1) ~= ";" then
+    -- Comments and blank lines are decided on the first visible character,
+    -- before any trimming. A real config is mostly comments - the maintainer's
+    -- is 302 lines of 318 - and trimming each one first was most of the
+    -- instructions this cost, in update(), where EdgeTX's budget is shared
+    -- with re-binding every sensor. Both # and ; are comment markers; pilots
+    -- coming from either INI or shell conventions should not have to guess.
+    local first = string.match(rawLine, "^%s*(%S)")
+    if first and first ~= "#" and first ~= ";" then
+      local line = trim(rawLine)
       local section = string.match(line, "^%[(.+)%]$")
       if section then
         current = string.lower(trim(section))
@@ -137,8 +158,7 @@ function Config.parse(text)
               string.format("line %d: unknown [battery] setting '%s'", lineNo, key)
           elseif not n or n < spec.min or n > spec.max then
             problems[#problems + 1] =
-              string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
-                            spec.min, spec.max)
+              rangeProblem(lineNo, key, value, spec)
           else
             settings[key] = n
             explicit[key] = true
@@ -153,8 +173,7 @@ function Config.parse(text)
           local n = tonumber(value)
           if not n or n < spec.min or n > spec.max then
             problems[#problems + 1] =
-              string.format("line %d: %s must be %.2f..%.2f", lineNo, key,
-                            spec.min, spec.max)
+              rangeProblem(lineNo, key, value, spec)
           else
             scoped[current] = scoped[current] or {}
             scoped[current][key] = n
@@ -268,12 +287,25 @@ function Config.setting(name)
   return SETTINGS[name] and SETTINGS[name].default
 end
 
+-- The last file parsed and everything parsing it produced. update() reloads
+-- the config on every option change, and the file almost never changed: the
+-- comparison is one C call, the parse it saves was about 6,900 instructions.
+local parsed = nil
+
 function Config.load()
   Config.sections = {}
   Config.problems = {}
   Config.loaded   = true
   Config.present  = false
   local text = Host.readFile(Config.path())
+  if text and parsed and parsed.text == text then
+    Config.sections, Config.problems = parsed.sections, parsed.problems
+    Config.names, Config.sectionSettings = parsed.names, parsed.scoped
+    Config.baseSettings, Config.baseExplicit = parsed.settings, parsed.explicit
+    Config.applyScope()
+    Config.present = true
+    return true
+  end
   if not text then
     -- A missing file is the normal case, not an error: everything
     -- auto-detects. Only a malformed file produces problems.
@@ -285,6 +317,9 @@ function Config.load()
   local sections, problems, settings = Config.parse(text)
   Config.sections, Config.problems = sections, problems
   Config.baseSettings, Config.baseExplicit = settings, Config.explicit
+  parsed = { text = text, sections = sections, problems = problems,
+             names = Config.names, scoped = Config.sectionSettings,
+             settings = settings, explicit = Config.explicit }
   Config.applyScope()
   Config.present = true
   return true

@@ -27,6 +27,54 @@ H.test("ignores blank lines and both comment styles", function()
   H.eq(#problems, 0)
 end)
 
+H.test("a byte-order mark does not cost the first section", function()
+  -- Notepad and Excel put one in front of a file they save. With [battery]
+  -- on the first line, every setting under it went back to its default.
+  local ZD = fresh()
+  local _, problems, settings = ZD.Config.parse(
+    "\239\187\191[battery]\nreservePct = 46\n")
+  H.eq(settings.reservePct, 46)
+  H.eq(#problems, 0)
+end)
+
+H.test("indented comments are still comments", function()
+  local ZD = fresh()
+  local sections, problems = ZD.Config.parse(
+    "   # indented\n\t; tabbed\n  \n[*]\n  headspeed = Hspd  \n")
+  H.eq(sections["*"].headspeed, "Hspd")
+  H.eq(#problems, 0)
+end)
+
+H.test("a comment on the end of a setting is named as the problem", function()
+  local ZD = fresh()
+  local _, problems, settings = ZD.Config.parse("[battery]\nreservePct = 46  # M7R\n")
+  H.eq(settings.reservePct, 20, "not applied")
+  H.truthy(string.find(problems[1] or "", "comment", 1, true),
+           "says it is the comment: " .. tostring(problems[1]))
+end)
+
+H.test("reloading an unchanged file does not parse it again", function()
+  -- update() reloads on every option change. Parsing a real 318-line config
+  -- each time was about 6,900 of EdgeTX's 20,000 instructions.
+  local ZD = fresh(function()
+    Mock.state.files["/WIDGETS/ZelionDash/sensors.cfg"] =
+      "[battery]\nreservePct = 46\n[Goblin 700]\ncraftName = Big\ncurrent = Curr\n"
+  end)
+  ZD.Config.load()
+  local calls, real = 0, ZD.Config.parse
+  ZD.Config.parse = function(...) calls = calls + 1; return real(...) end
+  ZD.Config.load()
+  H.eq(calls, 0, "same file, no parse")
+  H.eq(ZD.Config.setting("reservePct"), 46, "and the settings are all still there")
+  H.eq(ZD.Config.overridesFor("Goblin 700").current, "Curr")
+  H.eq(ZD.Config.nameFor("Goblin 700"), "Big")
+  Mock.state.files["/WIDGETS/ZelionDash/sensors.cfg"] = "[battery]\nreservePct = 30\n"
+  ZD.Config.load()
+  H.eq(calls, 1, "an edited file is parsed")
+  H.eq(ZD.Config.setting("reservePct"), 30)
+  ZD.Config.parse = real
+end)
+
 H.test("reports an unknown role instead of dropping it", function()
   local ZD = fresh()
   local sections, problems = ZD.Config.parse("[*]\nhedspeed = Hspd\n")
