@@ -594,6 +594,23 @@ signature of an interrupted write. Width does not: columns are only ever
 appended, so a record written by an older build is narrower than today's header
 and is still that flight.
 
+### A log the widget cannot read is left alone
+
+Editing the log in a spreadsheet is fine. A byte-order mark (Excel's "CSV
+UTF-8"), quotes around the column names, stray spaces and Windows line endings
+are all read as the same header.
+
+If the first line is still not a header ZelionDash wrote, or the file is too
+big to read whole (over 64 KB, which a healthy 200-flight log never is), the
+log is **not rewritten**. The flight goes into `zeliondash.held.csv` beside it,
+and the sensor map's FLIGHT LOG row says why. Fix the log, then copy any held
+rows back into it by hand.
+
+Every rewrite also leaves the previous version beside the log as
+`zeliondash.csv.bak`, so the last landing can always be undone. A
+`zeliondash.bad.csv` past 32 KB is renamed to `zeliondash.bad.1.csv` (then `.2`
+and so on) and a fresh one started.
+
 ## Rotorflight RF Tool integration (optional)
 
 If Rotorflight's **RF Tool** widget is installed, ZelionDash uses it for two
