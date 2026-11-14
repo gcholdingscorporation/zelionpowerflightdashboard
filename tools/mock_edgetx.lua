@@ -622,7 +622,9 @@ function Mock.installLvgl()
     image     = function(p) return make("image", p) end,
     hline     = function(p) return make("hline", p) end,
     vline     = function(p) return make("vline", p) end,
-    isFullScreen = function() return true end,
+    -- Driven by Mock.lv.fullscreen so a test can take the widget in and out
+    -- of fullscreen; it reads true unless a test says otherwise.
+    isFullScreen = function() return Mock.lv.fullscreen ~= false end,
     isAppMode    = function() return false end,
   }
 end

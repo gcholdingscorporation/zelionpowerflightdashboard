@@ -132,6 +132,28 @@ local function heldPeak(invert, switchValue)
   return Mock.lvglText()
 end
 
+-- EdgeTX builds the screen while fullscreen (it calls update() on the way in),
+-- and LVGL boxes built then stay clickable. Nothing is called on the way out,
+-- so unless the widget rebuilds itself those panels sit over the home screen
+-- and swallow the tap-and-hold that opens the widget menu (EdgeTX 2.12, Glenn's
+-- TX16S). The rebuild has to happen exactly once per change, not every frame.
+H.test("leaving fullscreen rebuilds the screen once", function()
+  local widgetDef, widget = boot(800, 480, {}, flying)
+  widgetDef.refresh(widget, 0, nil)
+  local before = Mock.lv.cleared
+  Mock.lv.fullscreen = false
+  widgetDef.refresh(widget, nil, nil)
+  H.eq(Mock.lv.cleared, before + 1, "rebuilt on leaving fullscreen")
+  Mock.advanceSeconds(0.1)
+  widgetDef.refresh(widget, nil, nil)
+  widgetDef.refresh(widget, nil, nil)
+  H.eq(Mock.lv.cleared, before + 1, "and not again while it stays out")
+  H.truthy(string.find(Mock.lvglText(), "MAX", 1, true), "the dashboard is back")
+  Mock.lv.fullscreen = true
+  widgetDef.refresh(widget, 0, nil)
+  H.eq(Mock.lv.cleared, before + 2, "rebuilt again on going back in")
+end)
+
 H.test("held normally, the peak stops moving", function()
   local text = heldPeak(0, 1024)
   H.falsy(string.find(text, "MAX 2150", 1, true), "frozen while held")
