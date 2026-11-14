@@ -514,25 +514,36 @@ function Host.imageExists(path)
   return Host.exists(path)
 end
 
+-- Returns the text, and true as a second value when the file was longer than
+-- READ_MAX_BYTES and only its start came back.
+--
+-- That second value is the whole point of this function's shape. It used to
+-- stop at the cap and say nothing, and the flight log reads, edits and writes
+-- back what it is given: a card whose damage had bloated the log past the cap
+-- had every flight after the cut-off rewritten out of existence by the next
+-- landing. A caller that is going to write the file back has to know it was
+-- not given all of it.
 function Host.readFile(path)
   if type(ioTbl) ~= "table" then return nil end
   local f = openFile(path, "r")
   if not f then return nil end
-  local parts, total = {}, 0
+  local parts, total, truncated = {}, 0, false
   local ok = pcall(function()
     while true do
       local chunk = ioTbl.read(f, READ_CHUNK)
       if chunk == nil or chunk == "" then break end
       total = total + #chunk
-      if total > READ_MAX_BYTES then break end
+      if total > READ_MAX_BYTES then truncated = true; break end
       parts[#parts + 1] = chunk
       if #chunk < READ_CHUNK then break end
     end
   end)
   pcall(ioTbl.close, f)
   if not ok then return nil end
-  return table.concat(parts)
+  return table.concat(parts), truncated
 end
+
+Host.READ_MAX_BYTES = READ_MAX_BYTES
 
 -- EdgeTX signals a write failure by returning nil from io.write rather than
 -- necessarily raising, so pcall success alone does not prove the bytes landed.
@@ -561,6 +572,10 @@ local function tryRename(from, to)
   return Host.exists(to) and not Host.exists(from)
 end
 
+-- For the flight log's quarantine rotation: moves a file aside, and says
+-- whether it actually moved. False on firmware with no rename at all.
+Host.rename = tryRename
+
 local function tryDelete(path)
   if not deleteFn then return false end
   pcall(deleteFn, path)
@@ -569,9 +584,21 @@ end
 
 -- Write via temp + rename when the firmware supports it, so a power-off
 -- mid-write leaves either the old file or the new one, never a truncated one.
-function Host.writeFile(path, content)
+--
+-- `keepBackup` leaves the previous version beside the new one as path.bak
+-- instead of deleting it. The flight log asks for it: it is the one file this
+-- widget rewrites from its own reading of the old one, and the comment that
+-- claimed a .bak survived a bad rewrite was, until this, not true.
+function Host.writeFile(path, content, keepBackup)
   content = content or ""
   if not renameFn then
+    -- No rename on this firmware, so no atomic swap and no backup for free.
+    -- Copy the old file aside first when asked: one extra write per landing
+    -- is the price of a rewrite that can always be undone.
+    if keepBackup then
+      local old = Host.readFile(path)
+      if old and old ~= "" then writeDirect(path .. ".bak", old) end
+    end
     return writeDirect(path, content)
   end
 
@@ -594,7 +621,7 @@ function Host.writeFile(path, content)
   end
 
   if tryRename(tmp, path) then
-    if movedExisting then tryDelete(backup) end
+    if movedExisting and not keepBackup then tryDelete(backup) end
     return true
   end
 
@@ -4101,6 +4128,20 @@ FlightLog.FILE     = "zeliondash.csv"
 -- stays exactly where it is, corrupt log and all, because a corrupt log a
 -- pilot can still recover from beats a tidy one missing a flight.
 FlightLog.QUARANTINE = "zeliondash.bad.csv"
+
+-- Where a flight goes when the log itself cannot safely be rewritten.
+--
+-- The log is rewritten whole on every landing from what was read out of it,
+-- so a read that did not understand the file - a header a spreadsheet changed
+-- on save, or a file the read had to cut short - used to mean a rewrite that
+-- kept nothing: one landing turned 160 flights into one. Now the log is left
+-- exactly as it was, the flight is written here instead, and the sensor map
+-- says so. Nothing is ever merged back automatically; that is the pilot's call.
+FlightLog.HELD = "zeliondash.held.csv"
+
+-- A quarantine file past this size is renamed aside and a fresh one started,
+-- so it never grows past what one read can hold. Renamed, never trimmed.
+FlightLog.QUARANTINE_ROTATE_BYTES = 32 * 1024
 FlightLog.FALLBACK = nil       -- set if /LOGS/ turns out not to be writable
 
 -- Below this a "flight" is a spool-up test, a bench run, or a bounced start.
@@ -4211,9 +4252,25 @@ FlightLog.quarantined = 0     -- moved aside this session
 -- Records in the file, counted once and then kept up to date by the writes.
 -- Reading the file is real I/O in the same loop that draws the screen, so it
 -- happens on the first question and never again.
+--
+-- Counted with one pattern call rather than by reading the records: the first
+-- sensor-map frame asks this, and splitting and checking every row of a full
+-- log there was about 4,000 instructions in a frame already near EdgeTX's
+-- 20,000. A count that includes an unreadable row is still the right answer to
+-- "how many lines are in the file"; the quarantine sorts them at the write.
+local recognisedHeader   -- defined with the reader below
+
 function FlightLog.count()
   if FlightLog.inFile == nil then
-    FlightLog.inFile = #FlightLog.read()
+    local text = Host.readFile(FlightLog.path())
+    local n = 0
+    if text and text ~= "" then
+      local header = string.match(text, "^[^\r\n]*")
+      if recognisedHeader(header) then
+        n = select(2, string.gsub(text, "\n[^\r\n]", ""))
+      end
+    end
+    FlightLog.inFile = n
   end
   return FlightLog.inFile
 end
@@ -4465,25 +4522,60 @@ end
 -- unreadable or has the wrong header is treated as absent rather than
 -- appended to: half a flight log is more confusing than a fresh one, and the
 -- previous file survives as the .bak that Host.writeFile leaves behind.
-function FlightLog.read()
-  local text = Host.readFile(FlightLog.path())
+-- A header as this widget would have written it, from one a spreadsheet may
+-- have touched: the UTF-8 byte-order mark Excel's "CSV UTF-8" puts in front,
+-- quotes around the names, and stray spaces. None of those change what the
+-- columns are, and each one on its own used to make the whole log unreadable.
+local function normaliseHeader(h)
+  h = tostring(h or "")
+  h = string.gsub(h, "^\239\187\191", "")
+  h = string.gsub(h, '"', "")
+  h = string.gsub(h, "%s*,%s*", ",")
+  return (string.gsub(h, "^%s*(.-)%s*$", "%1"))
+end
+
+-- Which header a first line is, after normalising: the current one, a legacy
+-- one (returned so the rows can be widened), or nil for neither.
+recognisedHeader = function(line)
+  local h = normaliseHeader(line)
+  if h == FlightLog.HEADER then return FlightLog.HEADER end
+  for _, old in ipairs(FlightLog.LEGACY_HEADERS) do
+    if h == old then return old end
+  end
+  return nil
+end
+FlightLog.recognisedHeader = recognisedHeader
+
+-- Why the last read could not be trusted to rewrite from, or nil. Set by
+-- FlightLog.read; FlightLog.append refuses to rewrite while it is set.
+FlightLog.unreadable = nil
+
+-- Returns the records already on the card, header excluded.
+--
+-- A file that is missing or empty is a fresh log. A file this cannot read -
+-- a header it does not recognise, or one too big to read whole - returns no
+-- records AND sets FlightLog.unreadable, and nothing may be written over it.
+-- Treating it as absent is what this used to do, and the next landing then
+-- replaced every flight in the file with one.
+function FlightLog.read(path)
+  FlightLog.unreadable = nil
+  local text, truncated = Host.readFile(path or FlightLog.path())
   if not text then return {} end
+  if truncated then
+    FlightLog.unreadable = "too big to read whole"
+    return {}
+  end
   local lines = splitLines(text)
   if #lines == 0 then return {} end
 
-  local header = table.remove(lines, 1)
+  local header = recognisedHeader(table.remove(lines, 1))
   if header == FlightLog.HEADER then return sift(lines) end
-
-  for _, old in ipairs(FlightLog.LEGACY_HEADERS) do
-    if header == old then
-      for i = 1, #lines do lines[i] = widen(lines[i], old) end
-      return sift(lines)
-    end
+  if header then
+    for i = 1, #lines do lines[i] = widen(lines[i], header) end
+    return sift(lines)
   end
 
-  -- Not a header this widget has ever written. Treated as absent rather than
-  -- appended to: half a flight log is more confusing than a fresh one, and
-  -- Host.writeFile leaves the previous file as a .bak.
+  FlightLog.unreadable = "header not recognised"
   return {}
 end
 
@@ -4498,10 +4590,33 @@ local QUARANTINE_NOTE =
   "# ZelionDash: rows moved out of " .. FlightLog.FILE .. " because they " ..
   "were not readable as records. Nothing here has been deleted."
 
+-- Renames a full quarantine file to the first free zeliondash.bad.N.csv, so
+-- the next flush starts a new one. Returns whether the old one is out of the
+-- way; if it is not, the caller appends to it as before.
+local function rotateQuarantine(path)
+  local stem = string.gsub(path, "%.csv$", "")
+  for n = 1, 99 do
+    local aside = stem .. "." .. n .. ".csv"
+    if not Host.exists(aside) then
+      return Host.rename(path, aside)
+    end
+  end
+  return false
+end
+
 local function flushQuarantine()
   if #FlightLog.rejected == 0 then return true end
   local parts = {}
-  local existing = Host.readFile(FlightLog.quarantinePath())
+  local path = FlightLog.quarantinePath()
+  local existing, truncated = Host.readFile(path)
+  if existing and (truncated or #existing >= FlightLog.QUARANTINE_ROTATE_BYTES)
+     and rotateQuarantine(path) then
+    existing = nil
+  elseif truncated then
+    -- Too big to read whole and could not be moved aside: writing it back
+    -- would cut it short. The rejects stay in the log instead.
+    return false
+  end
   if existing and existing ~= "" then
     parts[#parts + 1] = (string.gsub(existing, "%s+$", ""))
   else
@@ -4524,6 +4639,7 @@ end
 -- quietly finishing the job the power cut started.
 local function keptRecords()
   local records = FlightLog.read()
+  if FlightLog.unreadable then return records end
   if not flushQuarantine() then
     for i = #FlightLog.rejected, 1, -1 do
       table.insert(records, 1, FlightLog.rejected[i])
@@ -4761,6 +4877,7 @@ end
 -- few thousand, and the answer is on screen a quarter of a second later.
 FlightLog.IR_ROWS_PER_CALL = 40
 local irLookup = nil
+local holdFlight
 
 local function lookUpIr()
   local job = irLookup
@@ -4800,6 +4917,37 @@ local function lookUpIr()
   job.k = stop - 1
 end
 
+function FlightLog.heldPath()
+  return string.gsub(FlightLog.path(), "[^/]+$", FlightLog.HELD)
+end
+
+-- The log could not be read safely, so it is left untouched and the flight is
+-- appended to the held file beside it instead. Returns whether the flight is
+-- on the card; either way lastError says why the log itself was not written,
+-- because a pilot needs to fix that file before the next landing.
+holdFlight = function(line, why)
+  local reason = FlightLog.unreadable
+  local held = FlightLog.heldPath()
+  local records = FlightLog.read(held)
+  local ok = false
+  if not FlightLog.unreadable then
+    records[#records + 1] = line
+    ok = Host.writeFile(held, FlightLog.HEADER .. "\n" ..
+                        table.concat(records, "\n") .. "\n", true)
+  end
+  FlightLog.unreadable = reason
+  -- Nothing to compare against: the history is in a file this could not read.
+  irLookup = { key = nil }
+  if ok then
+    FlightLog.lastWrite = line
+    FlightLog.written = FlightLog.written + 1
+    FlightLog.lastError = "log " .. why .. " - flight kept in " .. FlightLog.HELD
+  else
+    FlightLog.lastError = "log " .. why .. " - flight NOT saved"
+  end
+  return ok
+end
+
 function FlightLog.append(line)
   -- The folder first, before anything opens a file inside it. /LOGS/ is only
   -- there if the radio has logged telemetry before, and reading a path inside
@@ -4809,19 +4957,21 @@ function FlightLog.append(line)
   FlightLog.madeDir = Host.mkdir(FlightLog.DIR)
 
   local records = keptRecords()
+  if FlightLog.unreadable then return holdFlight(line, FlightLog.unreadable) end
   records[#records + 1] = line
   while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
   local body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
 
-  local ok = Host.writeFile(FlightLog.path(), body)
+  local ok = Host.writeFile(FlightLog.path(), body, true)
   if not ok and not FlightLog.FALLBACK then
     fallBack()
     -- Re-read: the fallback location may already hold a history of its own.
     records = keptRecords()
+    if FlightLog.unreadable then return holdFlight(line, FlightLog.unreadable) end
     records[#records + 1] = line
     while #records > FlightLog.MAX_RECORDS do table.remove(records, 1) end
     body = FlightLog.HEADER .. "\n" .. table.concat(records, "\n") .. "\n"
-    ok = Host.writeFile(FlightLog.path(), body)
+    ok = Host.writeFile(FlightLog.path(), body, true)
   end
 
   if ok then
@@ -4967,6 +5117,7 @@ function FlightLog.reset()
   -- The path can move with the fallback, so the count belongs to the old one.
   FlightLog.inFile = nil
   FlightLog.rejected, FlightLog.quarantined = {}, 0
+  FlightLog.unreadable = nil
 end
 
 return FlightLog
