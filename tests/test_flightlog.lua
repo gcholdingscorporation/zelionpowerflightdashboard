@@ -17,7 +17,7 @@ local function columns(ZD)
   return n
 end
 
-local function fresh(setup)
+local function fresh(setup, atomic)
   Mock.reset()
   Mock.removeRf2()
   Mock.state.dateTime = { year = 2026, mon = 8, day = 5,
@@ -25,6 +25,8 @@ local function fresh(setup)
   Mock.state.modelName = "GOBLIN 700"
   if setup then setup() end
   Mock.install()
+  -- After install and before the load: Host takes its rename at load time.
+  if atomic then Mock.enableAtomicWrites() end
   local ZD = Loader.load()
   ZD.State.reloadModel()
   ZD.FlightLog.reset()
@@ -229,15 +231,21 @@ H.test("oldest records fall off rather than growing forever", function()
   ZD.FlightLog.MAX_RECORDS = 200
 end)
 
-H.test("a file with a foreign header is not appended to", function()
-  -- Half a flight log is more confusing than a fresh one, and Host.writeFile
-  -- leaves the previous file as a .bak.
+H.test("a file with a foreign header is left alone, and the flight is held", function()
+  -- This used to "start over": the next landing replaced the whole file with
+  -- one row, and the .bak that was supposed to keep the old one was deleted as
+  -- soon as the write succeeded. A real 160-flight log went that way in a test
+  -- for nothing more than a spreadsheet's byte-order mark.
   local ZD = fresh(loaded)
-  Mock.state.files[PATH] = "something,else,entirely\n1,2,3\n"
+  local foreign = "something,else,entirely\n1,2,3\n"
+  Mock.state.files[PATH] = foreign
   flight(ZD, 40)
-  local l = lines()
-  H.eq(l[1], ZD.FlightLog.HEADER)
-  H.eq(#l, 2, "started over rather than producing nonsense")
+  H.eq(Mock.state.files[PATH], foreign, "the file is exactly as it was")
+  local held = Mock.state.files["/LOGS/zeliondash.held.csv"]
+  H.truthy(held, "the flight went to the held file")
+  H.truthy(string.find(held, "GOBLIN 700", 1, true), "and it is the flight")
+  H.truthy(string.find(ZD.FlightLog.lastError or "", "header not recognised", 1, true),
+           "the sensor map says why: " .. tostring(ZD.FlightLog.lastError))
 end)
 
 H.test("a comma in the model name does not shift the columns", function()
@@ -472,13 +480,72 @@ H.test("an old row is padded, not left short", function()
   H.eq(f[12], "", "and honestly blank for a flight flown before they existed")
 end)
 
-H.test("a header from no version of this widget still starts over", function()
+-- A log as it comes back from a spreadsheet: the same columns, touched on save.
+local function realLog(ZD, n)
+  local rows = { ZD.FlightLog.HEADER }
+  for i = 1, n do
+    rows[#rows + 1] = string.format(
+      "2026-08-%02d,10:00:00,GOBLIN 700,240,2100,3.61,43.30,121.4,68,2400,22", 1 + i % 28)
+  end
+  return table.concat(rows, "\n") .. "\n"
+end
+
+for _, case in ipairs({
+  { "a byte-order mark",        function(t) return "\239\187\191" .. t end },
+  { "quoted column names",      function(t) return (string.gsub(t, "^date,time", '"date","time"', 1)) end },
+  { "a trailing space",         function(t) return (string.gsub(t, "craft,cells\n", "craft,cells \n", 1)) end },
+  { "Windows line endings",     function(t) return (string.gsub(t, "\n", "\r\n")) end },
+}) do
+  H.test("a header saved with " .. case[1] .. " keeps every flight", function()
+    local ZD = fresh(loaded)
+    Mock.state.files[PATH] = case[2](realLog(ZD, 160))
+    flight(ZD, 40)
+    local l = lines()
+    H.eq(#l, 162, "160 old flights, the new one and the header")
+    H.eq(l[1], ZD.FlightLog.HEADER, "written back with the plain header")
+  end)
+end
+
+H.test("a log too big to read whole is never rewritten from the part that was", function()
+  -- Card damage can bloat a file past what one read holds. The read stopped
+  -- at the cap without saying so, and the rewrite then kept only the flights
+  -- before the cut: a real log padded this way went from 161 rows to 3.
   local ZD = fresh(loaded)
-  Mock.state.files[PATH] = "something,else,entirely\n1,2,3\n"
+  local log = realLog(ZD, 20)
+  local a, b = string.match(log, "^(.-\n.-\n.-\n)(.*)$")
+  local bloated = a .. string.rep("\1\2junk", 12000) .. "\n" .. b
+  Mock.state.files[PATH] = bloated
   flight(ZD, 40)
-  local l = lines()
-  H.eq(l[1], ZD.FlightLog.HEADER)
-  H.eq(#l, 2, "half a flight log is more confusing than a fresh one")
+  H.eq(Mock.state.files[PATH], bloated, "the file is exactly as it was")
+  H.truthy(Mock.state.files["/LOGS/zeliondash.held.csv"], "the flight was held")
+  H.truthy(string.find(ZD.FlightLog.lastError or "", "too big", 1, true),
+           "and the sensor map says why")
+end)
+
+H.test("the previous log is kept as a .bak after a rewrite", function()
+  local ZD = fresh(loaded, true)
+  Mock.state.files[PATH] = realLog(ZD, 5)
+  local before = Mock.state.files[PATH]
+  flight(ZD, 40)
+  H.eq(#lines(), 7)
+  H.eq(Mock.state.files[PATH .. ".bak"], before, "the file as it was before the landing")
+end)
+
+H.test("the .bak is kept on firmware with no rename too", function()
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = realLog(ZD, 5)
+  local before = Mock.state.files[PATH]
+  flight(ZD, 40)
+  H.eq(Mock.state.files[PATH .. ".bak"], before)
+end)
+
+H.test("the record count is the file's, without reading every row", function()
+  local ZD = fresh(loaded)
+  Mock.state.files[PATH] = "\239\187\191" .. realLog(ZD, 37)
+  H.eq(ZD.FlightLog.count(), 37)
+  ZD.FlightLog.inFile = nil
+  Mock.state.files[PATH] = "something,else\n1,2\n"
+  H.eq(ZD.FlightLog.count(), 0, "a file it does not recognise holds no flights of its own")
 end)
 
 
@@ -714,6 +781,20 @@ H.test("the wreckage is moved, never deleted", function()
   local kept = Mock.state.files[BAD_PATH]
   H.truthy(kept, "a quarantine file exists")
   H.truthy(string.find(kept, WRECKAGE, 1, true), "holding the row verbatim")
+end)
+
+H.test("a full quarantine file is moved aside whole, never cut short", function()
+  -- It is read back and rewritten on every flush, through the same read cap
+  -- as the log. Past the cap its oldest rows would have been cut off - in the
+  -- one file whose note promises nothing in it has been deleted.
+  local ZD = fresh(loaded, true)
+  local old = "# old\n" .. string.rep("x", ZD.FlightLog.QUARANTINE_ROTATE_BYTES) .. "\n"
+  Mock.state.files[BAD_PATH] = old
+  withCorruptLog(ZD)
+  flight(ZD, 40)
+  H.eq(Mock.state.files["/LOGS/zeliondash.bad.1.csv"], old, "the full file, moved whole")
+  H.truthy(string.find(Mock.state.files[BAD_PATH], WRECKAGE, 1, true),
+           "and the new row starts a fresh one")
 end)
 
 H.test("the real flights either side of it survive", function()

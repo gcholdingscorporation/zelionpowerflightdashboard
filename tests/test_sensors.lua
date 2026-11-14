@@ -437,4 +437,56 @@ H.test("the cell count settling does not reset the flight", function()
 end)
 
 
+
+H.group("sensors: re-probe back-off")
+
+local function runFor(ZD, seconds)
+  for _ = 1, math.floor(seconds * 10) do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+  end
+end
+
+H.test("roles that never bind stop being probed every second", function()
+  -- Most models carry roles that never bind. Probing for them once a second
+  -- for the whole session was 3,300 instructions a second on a busy model.
+  local ZD = fresh(function()
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.addSensor("Vbat", 1, 47.3)
+  end)
+  local probes, real = 0, ZD.Host.listSensors
+  ZD.Host.listSensors = function(...) probes = probes + 1; return real(...) end
+  runFor(ZD, 60)
+  ZD.Host.listSensors = real
+  H.truthy(#ZD.Sensors.unresolved > 0, "the test needs roles that never bind")
+  H.truthy(probes <= 12, "a minute of probing took " .. probes .. " full probes")
+end)
+
+H.test("a sensor discovered after the back-off still binds within a second or two", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.addSensor("Vbat", 1, 47.3)
+  end)
+  runFor(ZD, 30)
+  Mock.addSensor("Tesc", 11, 55)
+  runFor(ZD, 2)
+  H.eq(ZD.Sensors.boundTo("escTemperature"), "Tesc")
+end)
+
+H.test("a reading lost to a dropout is probed for every second regardless", function()
+  -- Its sensor still exists, so no new slot announces it coming back - and it
+  -- is the reading the pilot is waiting for.
+  local ZD = fresh(function()
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.addSensor("Vbat", 1, 47.3)
+  end)
+  runFor(ZD, 30)
+  Mock.setSensor("Vbat", 47.3, false)
+  runFor(ZD, 20)
+  H.falsy(ZD.State.valid("packVoltage"), "the dropout registered")
+  Mock.setSensor("Vbat", 47.1, true)
+  runFor(ZD, 2)
+  H.truthy(ZD.State.valid("packVoltage"), "back within two seconds of the link")
+end)
+
 end

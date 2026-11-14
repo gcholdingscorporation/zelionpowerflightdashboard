@@ -218,6 +218,16 @@ Host.hasTextMeasurement = type(lcd) == "table" and type(lcd.sizeText) == "functi
 -- simply falls back to name matching, which is the primary path anyway.
 local MAX_SENSOR_SLOTS = 60
 
+-- Whether a telemetry slot holds a named sensor. One call, for the sensor
+-- re-probe to notice a sensor being discovered without listing all sixty.
+function Host.sensorSlotUsed(i)
+  if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
+    return false
+  end
+  local ok, s = pcall(modelTbl.getSensor, i)
+  return ok and type(s) == "table" and s.name ~= nil and tostring(s.name) ~= ""
+end
+
 function Host.listSensors()
   local out = {}
   if type(modelTbl) ~= "table" or type(modelTbl.getSensor) ~= "function" then
@@ -503,25 +513,36 @@ function Host.imageExists(path)
   return Host.exists(path)
 end
 
+-- Returns the text, and true as a second value when the file was longer than
+-- READ_MAX_BYTES and only its start came back.
+--
+-- That second value is the whole point of this function's shape. It used to
+-- stop at the cap and say nothing, and the flight log reads, edits and writes
+-- back what it is given: a card whose damage had bloated the log past the cap
+-- had every flight after the cut-off rewritten out of existence by the next
+-- landing. A caller that is going to write the file back has to know it was
+-- not given all of it.
 function Host.readFile(path)
   if type(ioTbl) ~= "table" then return nil end
   local f = openFile(path, "r")
   if not f then return nil end
-  local parts, total = {}, 0
+  local parts, total, truncated = {}, 0, false
   local ok = pcall(function()
     while true do
       local chunk = ioTbl.read(f, READ_CHUNK)
       if chunk == nil or chunk == "" then break end
       total = total + #chunk
-      if total > READ_MAX_BYTES then break end
+      if total > READ_MAX_BYTES then truncated = true; break end
       parts[#parts + 1] = chunk
       if #chunk < READ_CHUNK then break end
     end
   end)
   pcall(ioTbl.close, f)
   if not ok then return nil end
-  return table.concat(parts)
+  return table.concat(parts), truncated
 end
+
+Host.READ_MAX_BYTES = READ_MAX_BYTES
 
 -- EdgeTX signals a write failure by returning nil from io.write rather than
 -- necessarily raising, so pcall success alone does not prove the bytes landed.
@@ -550,6 +571,10 @@ local function tryRename(from, to)
   return Host.exists(to) and not Host.exists(from)
 end
 
+-- For the flight log's quarantine rotation: moves a file aside, and says
+-- whether it actually moved. False on firmware with no rename at all.
+Host.rename = tryRename
+
 local function tryDelete(path)
   if not deleteFn then return false end
   pcall(deleteFn, path)
@@ -558,9 +583,21 @@ end
 
 -- Write via temp + rename when the firmware supports it, so a power-off
 -- mid-write leaves either the old file or the new one, never a truncated one.
-function Host.writeFile(path, content)
+--
+-- `keepBackup` leaves the previous version beside the new one as path.bak
+-- instead of deleting it. The flight log asks for it: it is the one file this
+-- widget rewrites from its own reading of the old one, and the comment that
+-- claimed a .bak survived a bad rewrite was, until this, not true.
+function Host.writeFile(path, content, keepBackup)
   content = content or ""
   if not renameFn then
+    -- No rename on this firmware, so no atomic swap and no backup for free.
+    -- Copy the old file aside first when asked: one extra write per landing
+    -- is the price of a rewrite that can always be undone.
+    if keepBackup then
+      local old = Host.readFile(path)
+      if old and old ~= "" then writeDirect(path .. ".bak", old) end
+    end
     return writeDirect(path, content)
   end
 
@@ -583,7 +620,7 @@ function Host.writeFile(path, content)
   end
 
   if tryRename(tmp, path) then
-    if movedExisting then tryDelete(backup) end
+    if movedExisting and not keepBackup then tryDelete(backup) end
     return true
   end
 
