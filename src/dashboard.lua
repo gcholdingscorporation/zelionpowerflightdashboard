@@ -876,6 +876,10 @@ local function irText(landed, prev)
   local pack = tonumber(landed.pack)
   if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
   if prev then t = t .. string.format("  LAST %.1f", prev) end
+  -- Rising takes the place's slot rather than adding to the line: the longest
+  -- ranked form already fills the 480-wide strip, and a pack reading well
+  -- above its own history matters more than where it sits today.
+  if landed.rising then return t .. "  RISING" end
   local place, of = tonumber(landed.place), tonumber(landed.of)
   if place and of and of >= Dashboard.RANK_MIN_PACKS then
     if place == 1 then
@@ -1004,7 +1008,7 @@ local function updateStrip()
   local showIr = landed ~= nil and not State.armed
   if showIr then
     setLazy(V.flights, landed, landed.prev, irText)
-    setColor(V.flights, Theme.steel)
+    setColor(V.flights, landed.rising and Theme.warn or Theme.steel)
   else
     -- Keyed on both readings the line is made of: the count alone would freeze
     -- the running total, and the total alone would freeze the count.

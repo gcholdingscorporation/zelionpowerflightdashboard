@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.13.1
+-- Version 1.14.0
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.13.1" }
+local ZD = { VERSION = "1.14.0" }
 
 -- ======== src/host.lua ========
 do
@@ -4536,12 +4536,12 @@ end
 -- The same pack's last reading, and today's other packs
 --------------------------------------------------------------------------
 
--- Date, model, start voltages, ir_mohm, pack, craft and cells out of one row,
+-- Date, model, start voltages, avg_amps, ir_mohm, pack, craft and cells out of one row,
 -- in two pattern matches rather than a split. This runs against up to
 -- MAX_RECORDS rows, and EdgeTX counts VM instructions, not C work: a per-field
 -- loop is twenty-odd instructions a column, where a match is a call.
 local HEAD_PATTERN = "^([^,]*),[^,]*,([^,]*)," .. string.rep("[^,]*,", 8) ..
-                     "([^,]*),([^,]*),[^,]*,[^,]*,([^,]*),([^,]*)(.*)$"
+                     "([^,]*),([^,]*),([^,]*),[^,]*,([^,]*),([^,]*)(.*)$"
 local TAIL_PATTERN = "^,[^,]*,[^,]*,([^,]*),?([^,]*)"
 
 -- The pack's cell count, from the resting voltages taken at arm when they are
@@ -4561,22 +4561,25 @@ local function irFields(line)
   -- misread: a missing comparison is honest, a comparison against the wrong
   -- column is not.
   if string.find(line, '"', 1, true) then return nil end
-  local date, model, sp, sc, ir, pack, rest = string.match(line, HEAD_PATTERN)
+  local date, model, sp, sc, avg, ir, pack, rest =
+    string.match(line, HEAD_PATTERN)
   if not model then return nil end
   local craft, cells = string.match(rest, TAIL_PATTERN)
-  return model, ir, pack, craft or "", rowCells(sp, sc, cells), date
+  return model, ir, pack, craft or "", rowCells(sp, sc, cells), date, avg
 end
 
 -- What a row has to match, taken from the row being written. nil when the
 -- flight has no pack number, which leaves nothing to compare.
 local function irKey(line)
-  local model, ir, pack, craft, cells, date = irFields(line)
+  local model, ir, pack, craft, cells, date, avg = irFields(line)
   pack = tonumber(pack)
   if not model or pack == nil then return nil end
+  avg = tonumber(avg)
+  if avg and avg <= 0 then avg = nil end
   -- The model is the third column, so in any row it sits between commas. The
   -- date is the first, so a row from the same day starts with it.
   return { model = model, pack = pack, craft = craft, cells = cells,
-           ir = tonumber(ir), slot = "," .. model .. ",",
+           ir = tonumber(ir), avg = avg, slot = "," .. model .. ",",
            day = date and (date .. ",") or nil }
 end
 
@@ -4591,21 +4594,71 @@ local function sameCraft(key, m, c, n)
                   and key.cells ~= nil))
 end
 
--- Searches records[from] down to records[to] and returns the first figure, or
--- nil. The plain find throws out every other model slot in one C call before
+-- Whether a pack is reading higher than it used to.
+--
+-- Only against the same pack's own earlier flights, never a fixed line: a
+-- figure that means a tired pack on one aircraft is a fresh one on another,
+-- and no pack in the log has failed yet to say where a line would go.
+--
+-- Only against flights that were no harder than this one. A gentle flight
+-- reads higher on the same pack - pack 3 of the maintainer's M7R read 1.2 on
+-- every flight averaging 40 A or more and 1.4 to 2.0 on ones around 25 A - so
+-- a gentle hop held against a history of hard ones would cry wolf. An earlier
+-- flight counts when its average current was at most RISE_AMPS_BAND times
+-- this one's.
+--
+-- The last RISE_FLIGHTS such readings, at least RISE_MIN_FLIGHTS of them, and
+-- this one at RISE_RATIO times their median or more. Run over the whole log
+-- as it stood on 12 Nov 2026 it fires once in 75 readings: the M2 V3 pack
+-- that went from 8.2 and 7.2 to 14.0.
+FlightLog.RISE_RATIO       = 1.3
+FlightLog.RISE_AMPS_BAND   = 1.2
+FlightLog.RISE_MIN_FLIGHTS = 2
+FlightLog.RISE_FLIGHTS     = 6
+
+local function median(list)
+  local s = {}
+  for i = 1, #list do s[i] = list[i] end
+  table.sort(s)
+  local n = #s
+  if n % 2 == 1 then return s[(n + 1) / 2] end
+  return (s[n / 2] + s[n / 2 + 1]) / 2
+end
+
+local function risingFrom(key, like)
+  if not key.ir or #like < FlightLog.RISE_MIN_FLIGHTS then return false end
+  return key.ir >= median(like) * FlightLog.RISE_RATIO
+end
+
+-- Searches records[from] down to records[to] for the same pack, filling
+-- `acc.prev` with the newest earlier reading and `acc.like` with the earlier
+-- readings from flights no harder than this one, newest first. Returns true
+-- once it has all it needs, false while the search may still go on below
+-- `to`. The plain find throws out every other model slot in one C call before
 -- the patterns run.
-local function scanIr(records, key, from, to)
+local function scanPack(records, key, acc, from, to)
+  local like, band = acc.like, key.avg and key.avg * FlightLog.RISE_AMPS_BAND
+  local wantLike = band ~= nil and key.ir ~= nil
   for k = from, to, -1 do
     local rec = records[k]
     if string.find(rec, key.slot, 1, true) then
-      local m, ir, p, c, n = irFields(rec)
+      local m, ir, p, c, n, _, avg = irFields(rec)
       if tonumber(p) == key.pack and sameCraft(key, m, c, n) then
         ir = tonumber(ir)
-        if ir then return ir end
+        if ir then
+          if acc.prev == nil then acc.prev = ir end
+          avg = tonumber(avg)
+          if wantLike and avg and avg > 0 and avg <= band then
+            like[#like + 1] = ir
+          end
+          if not wantLike or #like >= FlightLog.RISE_FLIGHTS then
+            return true
+          end
+        end
       end
     end
   end
-  return nil
+  return false
 end
 
 -- Collects today's readings for the key's aircraft from records[from] down to
@@ -4683,7 +4736,19 @@ end
 function FlightLog.previousIr(records, line, before)
   local key = irKey(line)
   if not key then return nil end
-  return scanIr(records, key, before or #records, 1)
+  local acc = { like = {} }
+  scanPack(records, key, acc, before or #records, 1)
+  return acc.prev
+end
+
+-- Whether the row being written reads higher than the same pack's earlier
+-- flights that were no harder - see FlightLog.RISE_RATIO. Never nil.
+function FlightLog.rising(records, line, before)
+  local key = irKey(line)
+  if not key then return false end
+  local acc = { like = {} }
+  scanPack(records, key, acc, before or #records, 1)
+  return risingFrom(key, acc.like)
 end
 
 -- A comparison waiting to be made: the records the write just rewrote, what
@@ -4723,11 +4788,13 @@ local function lookUpIr()
   end
   local stop = math.max(1, job.k - FlightLog.IR_ROWS_PER_CALL + 1)
   -- Its own pcall: nothing about a comparison is worth a flight record, or
-  -- the frame it runs in.
-  local ok, found = pcall(scanIr, job.records, job.key, job.k, stop)
-  if not ok or found or stop == 1 then
+  -- the frame it runs in. The rising flag is set before the last reading for
+  -- the same reason the place is: `prev` arriving is what redraws the line.
+  local ok, done = pcall(scanPack, job.records, job.key, job.acc, job.k, stop)
+  if not ok or done or stop == 1 then
     irLookup = nil
-    landed.prev = (ok and found) or false
+    if ok then landed.rising = risingFrom(job.key, job.acc.like) end
+    landed.prev = (ok and job.acc.prev) or false
     return
   end
   job.k = stop - 1
@@ -4771,7 +4838,7 @@ function FlightLog.append(line)
     local okKey, key = pcall(irKey, line)
     key = okKey and key or nil
     irLookup = { records = records, key = key, k = #records - 1,
-                 t = #records - 1,
+                 t = #records - 1, acc = { like = {} },
                  seen = rankable(key) and { [key.pack] = key.ir } or nil }
   else
     FlightLog.lastError = "write failed: " .. FlightLog.path()
@@ -6211,6 +6278,10 @@ local function irText(landed, prev)
   local pack = tonumber(landed.pack)
   if pack then t = string.format("PACK %d  ", math.floor(pack)) .. t end
   if prev then t = t .. string.format("  LAST %.1f", prev) end
+  -- Rising takes the place's slot rather than adding to the line: the longest
+  -- ranked form already fills the 480-wide strip, and a pack reading well
+  -- above its own history matters more than where it sits today.
+  if landed.rising then return t .. "  RISING" end
   local place, of = tonumber(landed.place), tonumber(landed.of)
   if place and of and of >= Dashboard.RANK_MIN_PACKS then
     if place == 1 then
@@ -6339,7 +6410,7 @@ local function updateStrip()
   local showIr = landed ~= nil and not State.armed
   if showIr then
     setLazy(V.flights, landed, landed.prev, irText)
-    setColor(V.flights, Theme.steel)
+    setColor(V.flights, landed.rising and Theme.warn or Theme.steel)
   else
     -- Keyed on both readings the line is made of: the count alone would freeze
     -- the running total, and the total alone would freeze the count.

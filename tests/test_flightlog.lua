@@ -958,6 +958,84 @@ H.test("a flight with no reading or no pack number has no place", function()
   H.nilv(ZD.FlightLog.todayRank(recs, dayRow(ZD, "2026-10-27", "", "1.2")))
 end)
 
+H.group("flightlog: a pack reading higher than it used to")
+
+local function ampsRow(ZD, pack, ir, amps, craft)
+  return irRow(ZD, { date = "2026-11-12", model = "M7R", pack = pack,
+                     ir_mohm = ir, avg_amps = amps,
+                     craft = craft or "Omphobby M7R", cells = "12" })
+end
+
+H.test("flags a jump well above the pack's own history", function()
+  -- The M2 V3 pack 5 from the real log: 8.2 and 7.2, then 14.0.
+  local ZD = fresh()
+  local recs = { ampsRow(ZD, "5", "8.2", "7.2"), ampsRow(ZD, "5", "7.2", "8.7") }
+  H.truthy(ZD.FlightLog.rising(recs, ampsRow(ZD, "5", "14.0", "8.1")))
+end)
+
+H.test("a gentle flight is not held against hard ones", function()
+  -- M7R pack 3: 1.2 on every hard flight, 2.0 on a 25 A one.
+  local ZD = fresh()
+  local recs = {
+    ampsRow(ZD, "3", "1.2", "47.3"), ampsRow(ZD, "3", "1.2", "40.4"),
+    ampsRow(ZD, "3", "1.2", "46.7"),
+  }
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "3", "2.0", "25.2")))
+  -- The same figure on a flight as hard as those is a rise.
+  H.truthy(ZD.FlightLog.rising(recs, ampsRow(ZD, "3", "2.0", "44.0")))
+end)
+
+H.test("a gentler earlier flight still counts against a harder one", function()
+  local ZD = fresh()
+  local recs = { ampsRow(ZD, "4", "1.6", "30"), ampsRow(ZD, "4", "1.6", "38") }
+  H.truthy(ZD.FlightLog.rising(recs, ampsRow(ZD, "4", "2.1", "42")))
+end)
+
+H.test("needs two earlier flights to compare with", function()
+  local ZD = fresh()
+  local recs = { ampsRow(ZD, "1", "1.0", "40") }
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "1", "3.0", "40")))
+end)
+
+H.test("ordinary wobble is not a rise", function()
+  -- M7R pack 1 on 9 Nov: 1.5 against 1.2, 1.1 and 1.4.
+  local ZD = fresh()
+  local recs = {
+    ampsRow(ZD, "1", "1.2", "39"), ampsRow(ZD, "1", "1.4", "37"),
+    ampsRow(ZD, "1", "1.1", "36"),
+  }
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "1", "1.5", "33.3")))
+end)
+
+H.test("other packs and other aircraft are not the pack's history", function()
+  local ZD = fresh()
+  local recs = {
+    ampsRow(ZD, "2", "1.0", "40"), ampsRow(ZD, "2", "1.0", "40"),
+    ampsRow(ZD, "4", "1.0", "40", "OMP M4 Max"),
+    ampsRow(ZD, "4", "1.0", "40", "OMP M4 Max"),
+  }
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "4", "2.0", "40")))
+end)
+
+H.test("only the last six like flights count", function()
+  local ZD = fresh()
+  local recs = {}
+  for _ = 1, 4 do recs[#recs + 1] = ampsRow(ZD, "5", "1.0", "40") end
+  for _ = 1, 6 do recs[#recs + 1] = ampsRow(ZD, "5", "1.8", "40") end
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "5", "2.0", "40")),
+          "the old 1.0 readings were counted")
+end)
+
+H.test("no average current means no comparison, and the last reading still works", function()
+  local ZD = fresh()
+  local recs = { ampsRow(ZD, "1", "1.0", ""), ampsRow(ZD, "1", "1.0", "") }
+  local now = ampsRow(ZD, "1", "3.0", "")
+  H.falsy(ZD.FlightLog.rising(recs, now))
+  H.eq(ZD.FlightLog.previousIr(recs, now), 1.0)
+  H.falsy(ZD.FlightLog.rising(recs, ampsRow(ZD, "1", "3.0", "40")),
+          "rows with no current were counted as like flights")
+end)
+
 -- End to end, in the widget's own service order: the figure measured in the
 -- air, the row written after the settle window, and the comparison filled in
 -- by that write.
@@ -1027,6 +1105,24 @@ H.test("the write fills in the pack's place among today's", function()
   flyPack(ZD, 4, 2.5)
   H.eq(ZD.PackHealth.landed.of, 4)
   H.eq(ZD.PackHealth.landed.place, 3, "got " .. tostring(ZD.PackHealth.landed.place))
+end)
+
+H.test("the write flags a pack reading higher than its own history", function()
+  local ZD = fresh(function()
+    Mock.addSensor("Vcel", 1, 4.0)
+    Mock.addSensor("Vbat", 1, 24.0)
+    Mock.addSensor("Curr", 2, 0)
+    Mock.addSensor("Hspd", 18, 0)
+  end)
+  flyPack(ZD, 4, 2.0)
+  H.eq(ZD.PackHealth.landed.rising, false)
+  flyPack(ZD, 4, 2.0)
+  H.eq(ZD.PackHealth.landed.rising, false, "one earlier flight is not a history")
+  flyPack(ZD, 4, 2.1)
+  H.eq(ZD.PackHealth.landed.rising, false, "wobble was flagged")
+  flyPack(ZD, 4, 3.0)
+  H.eq(ZD.PackHealth.landed.rising, true,
+       "got " .. tostring(ZD.PackHealth.landed.mohm))
 end)
 
 end
