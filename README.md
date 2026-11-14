@@ -216,7 +216,7 @@ to the same guess.
 | Cell voltage | 3.40 V | 3.50 V | speaks the reading |
 | ESC temperature | 110 °C | 102 °C | speaks the reading |
 | Governor fault | THR-OFF, LOST-HS, AUTOROT | recovery | buzz only |
-| Link | lost, or quality 30 | 45 | buzz only |
+| Link | link quality 30% | 45% | buzz only |
 
 Readings are spoken through the radio's own number vocabulary, so there is no
 sound file to install and you hear them in whatever language the radio is set
@@ -603,8 +603,11 @@ things telemetry alone cannot provide:
   than a counter kept on the radio's storage. The FC's numbers match what
   Configurator reports and don't diverge when you fly the same heli with a
   second radio. Requires MSP API 12.9 or newer.
-- **Authoritative connection state.** Without RF Tool the dashboard can only
-  infer whether the link is up; RF Tool actually knows.
+- **Flight controller connection state**, shown in the footer (`RF2 LINKED` or
+  `RF2 DISCONNECTED`) and on the sensor map. This is RF Tool's handshake with
+  the flight controller, not the radio link, so it never sounds the link
+  alert: that comes from link quality alone. A flight controller that is not
+  Rotorflight reads `RF2 DISCONNECTED` while flying perfectly well.
 
 This is entirely optional — with RF Tool absent the dashboard is fully
 functional and says nothing about it. Flight controller data is requested only

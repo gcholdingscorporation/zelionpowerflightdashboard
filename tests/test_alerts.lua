@@ -155,6 +155,87 @@ H.test("a link that never existed is not a lost link", function()
   H.eq(#Mock.played, 0)
 end)
 
+-- The link alert's tones, and nothing else's.
+local function linkTones()
+  local n = 0
+  for _, p in ipairs(Mock.played or {}) do
+    if p.op == "tone" and p.freq == 180 then n = n + 1 end
+  end
+  return n
+end
+
+H.test("RF Tool saying disconnected is not a lost link", function()
+  -- The Microheli bug. RF Tool reported "disconnected" (no MSP handshake on a
+  -- flight controller that is not Rotorflight) while the radio link itself was
+  -- perfect. The alert fired on RF Tool's word and cleared on link quality, so
+  -- it fired, cleared and fired again every pass: a constant beep and a footer
+  -- flipping between RF2 DISCONNECTED and ALERT: LINK, with the heli flying
+  -- normally.
+  local ZD = fresh(function()
+    flying(3.90)
+    Mock.addSensor("RQly", 13, 100)
+    Mock.installRf2({ apiVersion = nil })
+  end)
+  run(ZD, 6)
+  Mock.rf2Fire("disconnected")
+  run(ZD, 20)
+  H.eq(ZD.State.linkConnected, false, "RF Tool's verdict did reach the widget")
+  H.eq(#Mock.played, 0, "silent while the link itself is fine")
+  H.falsy(ZD.Alerts.fired.link, "and nothing on the strip")
+end)
+
+H.test("RF Tool disconnected with no link-quality sensor stays silent", function()
+  local ZD = fresh(function()
+    flying(3.90)
+    Mock.installRf2({ apiVersion = nil })
+  end)
+  run(ZD, 6)
+  Mock.rf2Fire("disconnected")
+  run(ZD, 20)
+  H.eq(#Mock.played, 0)
+end)
+
+H.test("poor link quality fires, repeats on its timer, and clears", function()
+  local ZD = fresh(function()
+    flying(3.90)
+    Mock.addSensor("RQly", 13, 100)
+  end)
+  run(ZD, 6)
+  Mock.setSensor("RQly", 25)
+  run(ZD, 1)
+  H.eq(linkTones(), 1, "fires once on the drop")
+  H.truthy(ZD.Alerts.fired.link, "and shows on the strip")
+  run(ZD, 24.5)
+  H.eq(linkTones(), 3, "then once per 12 s, never faster")
+
+  -- Inside the hysteresis band: still poor, still alerting.
+  Mock.setSensor("RQly", 40)
+  run(ZD, 1)
+  H.truthy(ZD.Alerts.fired.link, "40% is not a recovered link")
+
+  Mock.setSensor("RQly", 60)
+  run(ZD, 1)
+  H.falsy(ZD.Alerts.fired.link, "clears once the link is back")
+  local n = linkTones()
+  run(ZD, 20)
+  H.eq(linkTones(), n, "and stays quiet")
+end)
+
+H.test("RF Tool saying connected does not hide a poor link", function()
+  -- The other half of the same mismatch: a connected handshake used to clear
+  -- the alert outright, whatever link quality said.
+  local ZD = fresh(function()
+    flying(3.90)
+    Mock.addSensor("RQly", 13, 100)
+    Mock.installRf2({ apiVersion = 12.09, modelName = "Test" })
+  end)
+  run(ZD, 6)
+  H.eq(ZD.State.linkConnected, true)
+  Mock.setSensor("RQly", 20)
+  run(ZD, 1)
+  H.truthy(ZD.Alerts.fired.link, "link quality decides")
+end)
+
 H.group("alerts: staying out of the way")
 
 H.test("no telemetry means nothing to alert about", function()
