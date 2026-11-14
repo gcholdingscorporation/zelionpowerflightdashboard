@@ -1,10 +1,10 @@
 -- ZelionDash - RC helicopter telemetry dashboard for EdgeTX
--- Version 1.14.1
+-- Version 1.14.2
 --
 -- GENERATED FILE - do not edit.
 -- Built from src/*.lua by tools/build.lua. Edit the sources and rebuild.
 
-local ZD = { VERSION = "1.14.1" }
+local ZD = { VERSION = "1.14.2" }
 
 -- ======== src/host.lua ========
 do
@@ -6784,6 +6784,7 @@ local SMLSIZE, BOLD, RIGHT = flag("SMLSIZE", 0), flag("BOLD", 0), flag("RIGHT", 
 
 Widget.showSensors = false
 local built = nil          -- "dash" | "sensors" | nil
+local lastFullscreen = nil -- fullscreen state last seen by refresh, nil unknown
 local scroll = 0
 local zoneW, zoneH = nil, nil
 
@@ -7349,6 +7350,7 @@ function Widget.create(zone, options)
   pcall(Config.load)
   pcall(State.reloadModel)
   built = nil
+  lastFullscreen = nil
   zoneW, zoneH = nil, nil
   return { zone = zone, options = options }
 end
@@ -7413,7 +7415,33 @@ end
 Widget.degraded = nil
 Widget.buildError = nil
 
+-- Whether EdgeTX has this widget in fullscreen, or nil when the radio cannot
+-- say. lvgl.isFullScreen is in 2.11 and 2.12; anything older or a desktop
+-- harness without it gets nil, and nil leaves the screen alone.
+local function isFullscreen()
+  local f = lvgl and lvgl.isFullScreen
+  if type(f) ~= "function" then return nil end
+  local ok, fs = pcall(f)
+  if not ok then return nil end
+  return fs and true or false
+end
+
 function Widget.refresh(widget, event, touchState)
+  -- A screen built in fullscreen has to be rebuilt when fullscreen ends.
+  -- EdgeTX calls update() on the way in, so the dashboard is rebuilt while
+  -- fullscreen - and LVGL boxes built then are left clickable (EdgeTX clears
+  -- the flag only for a widget that is NOT fullscreen, in
+  -- lua_lvgl_widget.cpp LvglWidgetBox::build). Nothing is called on the way
+  -- out, so those panels stayed on the home screen covering the widget, and
+  -- because EdgeTX routes a press to the child it landed on, tap-and-hold
+  -- never reached the widget and its menu never opened. Rebuilding on the
+  -- change puts back panels that a finger passes straight through.
+  local fs = isFullscreen()
+  if fs ~= nil then
+    if lastFullscreen ~= nil and fs ~= lastFullscreen then built = nil end
+    lastFullscreen = fs
+  end
+
   -- A pending rebuild gets this call to itself, and the servicing below waits
   -- for the next one 50 ms later. Splitting them is the whole point: a build
   -- costs about 13,000 VM instructions and a serviced frame about 17,000, and
