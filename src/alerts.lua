@@ -188,14 +188,23 @@ local DEFS = {
   },
   {
     id = "link",
-    -- Only meaningful once a link has existed. Rotorflight tells us
-    -- authoritatively when it can; otherwise link quality carries it.
+    -- Link quality and nothing else. Only meaningful once a link has
+    -- existed, which a valid reading already says.
+    --
+    -- RF Tool's connected flag used to drive this too, and it must not. That
+    -- flag is the MSP handshake between RF Tool and the flight controller,
+    -- not the radio link: it reads "disconnected" on any FC that is not
+    -- Rotorflight, while the heli flies perfectly. Worse, the test read RF
+    -- Tool and the clear read link quality, so with RF Tool disconnected and
+    -- a good link the alert fired, cleared on the next pass and fired again -
+    -- a constant beep with the controls working normally. Test and clear now
+    -- read the same signal, so the 30/45 hysteresis holds. RF Tool's state
+    -- still shows in the footer and the sensor map, where it is information
+    -- rather than an alarm.
     test = function()
-      if State.linkConnected == false then return true end
       return State.valid("linkQuality") and State.num("linkQuality") <= 30
     end,
     clear = function()
-      if State.linkConnected == true then return true end
       return not State.valid("linkQuality") or State.num("linkQuality") >= 45
     end,
     repeatAfter = 12,
