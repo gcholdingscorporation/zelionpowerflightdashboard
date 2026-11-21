@@ -2343,6 +2343,31 @@ State.cellsSeen = nil
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
 
+-- Whether that number has been looked at since the last flight ended.
+--
+-- Nothing in telemetry knows which pack is on the aircraft, so the number is
+-- the pilot's to set, and the commonest way a log row goes wrong is that it
+-- was not set: the number from the last flight rides along into the next row,
+-- and every per-pack comparison built on the log then averages two packs
+-- together. The log cannot tell afterwards, and neither can anyone reading it.
+--
+-- True at power-on, because the option comes back from the model file holding
+-- whatever it held when the radio went off. True again at every landing,
+-- because the pack just flown is finished with. False only when the pilot
+-- moves the option, which is the single act that proves the number was looked
+-- at - a number that happens to already be right is indistinguishable from one
+-- nobody read, so the widget does not get to assume it.
+--
+-- Deliberately NOT an alert. It is a thing to look at before you plug in, not
+-- a thing to be told about, and there is no reading behind it to announce.
+State.packStale = true
+
+-- The option value this flag was last cleared against. The sentinel is a value
+-- the option cannot hold (nil or a positive integer), so the first service
+-- records the number without reading it as the pilot having moved it.
+local PACK_UNSEEN = {}
+local lastPack = PACK_UNSEEN
+
 -- The live resting voltages while disarmed, as opposed to the pair frozen at
 -- arm above. These keep climbing after a landing as the pack recovers.
 State.restPackVoltage = nil
@@ -2583,6 +2608,11 @@ function State.reloadModel()
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
+  -- And quite possibly a different pack, numbered in its own series. The
+  -- option moves with the model, so the number on screen was set for some
+  -- other aircraft until the pilot says otherwise.
+  State.packStale = true
+  lastPack = PACK_UNSEEN
 end
 
 --------------------------------------------------------------------------
@@ -3042,6 +3072,16 @@ function State.service(now, opts)
     -- written, so a flight is recorded exactly once even if that write is
     -- deferred or retried.
     State.disarmPending = true
+    -- The pack just flown is done. Whatever the number says now, it describes
+    -- the flight behind rather than the one ahead.
+    State.packStale = true
+  end
+
+  -- Read AFTER the arm edge above, so a landing that marks the number stale is
+  -- not cleared again by the same pass that caused it.
+  if State.pack ~= lastPack then
+    if lastPack ~= PACK_UNSEEN then State.packStale = false end
+    lastPack = State.pack
   end
 
   if armed then
@@ -4272,6 +4312,22 @@ FlightLog.MELODY = {
   { 1318, 110, 0 },   -- E6
 }
 
+-- And a double beep while the wait is still running, on this interval.
+--
+-- The box on the dashboard says how much is left, but only to somebody looking
+-- at it, and the pilot in that window is walking back to the bench with the
+-- radio under an arm and the screen pointing at the ground. The sound is the
+-- half of the message that reaches them anyway: not finished yet, do not
+-- switch off.
+--
+-- Two notes rather than one, because a single beep is what every other thing
+-- on a radio does. One pitch, well above the alert engine's band (180-340 Hz),
+-- so it cannot be heard as a warning - nothing is wrong. The three rising
+-- notes above are the all-clear, and they are the only sound here that means
+-- the flight is safe on the card.
+FlightLog.HOLD_BEEP = Host.seconds(10)
+FlightLog.HOLD_TONE = { 1568, 40, 70 }    -- G6, twice
+
 -- Columns are only ever appended, never reordered or removed. A spreadsheet
 -- someone has already built a chart on is a contract, and an existing file
 -- with an older header is migrated rather than abandoned - see FlightLog.read.
@@ -5092,7 +5148,7 @@ FlightLog.enabled = true
 
 -- A flight waiting out its settle window: the row as it was at the landing,
 -- and when that landing happened.
-local pending, pendingSince = nil, nil
+local pending, pendingSince, nextBeep = nil, nil, nil
 
 FlightLog.pending = false     -- shown on the sensor map
 
@@ -5100,6 +5156,32 @@ local function chime()
   for _, note in ipairs(FlightLog.MELODY) do
     Host.playTone(note[1], note[2], note[3], Host.PLAY_NOW)
   end
+end
+
+-- The waiting sound. Two notes of the same pitch, the pause on the first one
+-- separating them, which is what makes it a double beep rather than one long
+-- one.
+local function holdBeep()
+  local t = FlightLog.HOLD_TONE
+  Host.playTone(t[1], t[2], t[3], Host.PLAY_NOW)
+  Host.playTone(t[1], t[2], 0, Host.PLAY_NOW)
+end
+
+-- Whole seconds left on the settle window, or nil when nothing is held.
+--
+-- Rounded UP, deliberately. A window with four tenths of a second left is
+-- still a window the radio must not be switched off in, and a countdown that
+-- shows 0 while the row is still in the widget's hands is the one reading this
+-- box exists to prevent.
+function FlightLog.holdRemaining(now)
+  if not pending then return nil end
+  local left = FlightLog.SETTLE - ((now or Host.now()) - pendingSince)
+  -- Floored at one second as well, for the pass where the window has expired
+  -- and the write has not run yet - the service order within a frame is not
+  -- this function's to know, and "0s, still holding your flight" is the one
+  -- reading the box exists to prevent.
+  if left <= 0 then return 1 end
+  return math.ceil(left / Host.TICKS_PER_SECOND)
 end
 
 -- Whether the pack is still talking. A row held for its rested voltage is
@@ -5151,6 +5233,7 @@ function FlightLog.service(now)
       return false
     end
     pending, pendingSince = line, now
+    nextBeep = now + FlightLog.HOLD_BEEP
     FlightLog.pending = true
     return false
   end
@@ -5162,11 +5245,17 @@ function FlightLog.service(now)
   -- must be on the card before the one now starting can end.
   local settled = (now - pendingSince) >= FlightLog.SETTLE
   if not settled and not State.armed and not telemetryGone() then
+    -- Still waiting. Say so on the interval, and only on the interval: this
+    -- runs every service pass, which is twenty times a second.
+    if nextBeep and now >= nextBeep then
+      nextBeep = now + FlightLog.HOLD_BEEP
+      holdBeep()
+    end
     return false
   end
 
   local line = pending .. restedTail(settled)
-  pending, pendingSince = nil, nil
+  pending, pendingSince, nextBeep = nil, nil, nil
   FlightLog.pending = false
 
   -- Marked before the attempt, cleared on success. Every silent failure so far
@@ -5199,6 +5288,8 @@ end
 
 function FlightLog.reset()
   irLookup = nil
+  pending, pendingSince, nextBeep = nil, nil, nil
+  FlightLog.pending = false
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
   FlightLog.FALLBACK = nil
@@ -5836,16 +5927,23 @@ end
 --
 -- Every path that writes a memoised label must go through here. One that did
 -- not would leave the memo describing a string the label no longer shows.
+--
+-- The blank is part of the key as well as the value. One call site writes a
+-- slot with two different blanks - "-- mAh" normally, nothing at all when a
+-- warning band has taken the floor of the tile - and both of those are a nil
+-- value, so a key of value alone would skip the second write and leave the
+-- memo describing a string the label is no longer showing.
 local function setNumber(obj, value, pattern, blank, color, suffix)
   if not obj then return end
   local m = numMemo[obj]
-  if m and m.v == value and m.c == color then return end
+  if m and m.v == value and m.c == color and m.b == blank then return end
   local text = blank
   if value ~= nil then
     text = string.format(pattern, value)
     if suffix then text = text .. suffix end
   end
-  if m then m.v, m.c = value, color else numMemo[obj] = { v = value, c = color } end
+  if m then m.v, m.c, m.b = value, color, blank
+  else numMemo[obj] = { v = value, c = color, b = blank } end
   setTextColor(obj, text, color)
 end
 
@@ -5900,12 +5998,18 @@ end
 -- times a frame, formatting numbers that had not moved since the last landing.
 -- Keyed on the label rather than on the prefix, because MAX/%d writes both the
 -- current and the ESC temperature footnote and a shared slot would thrash.
+--
+-- A nil prefix writes nothing at all, for a slot a warning band has taken
+-- over. It still goes through the memo, which is the whole point: a blank
+-- written around the gate would leave the memo holding the reading the label
+-- used to show, and the reading would never come back.
 local function setExtreme(obj, prefix, value, pattern)
   if not obj then return end
   local m = extremeMemo[obj]
-  if m and m.v == value then return end
-  if m then m.v = value else extremeMemo[obj] = { v = value } end
-  setp(obj, { text = fmtExtreme(prefix, value, pattern) })
+  if m and m.v == value and m.p == prefix then return end
+  if m then m.v, m.p = value, prefix
+  else extremeMemo[obj] = { v = value, p = prefix } end
+  setp(obj, { text = prefix and fmtExtreme(prefix, value, pattern) or "" })
 end
 
 -- Cell count qualifies the pack voltage rather than standing on its own, so
@@ -6118,10 +6222,22 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
                      F.tiny, Theme.dim)
   end
 
+  -- The band a warning may take over: between the rule and the floor of the
+  -- tile, the full inner width, clear of every reading on the tile. Returned
+  -- rather than recomputed by the caller, because two copies of this
+  -- arithmetic is two copies to keep in step with the paddings above.
+  --
+  -- Two pixels below the rule, not on it. A hidden object here is collapsed to
+  -- a single line in the colour behind it, and a single line sitting exactly
+  -- on the rule would rub the rule out whenever there was nothing to warn
+  -- about.
+  local band = { x = r.x + padX, y = ruleY + 2, w = inner,
+                 h = (r.y + r.h - 2) - (ruleY + 2) }
+
   -- Returned so the caller can put its own reading on the header's right.
   return value, foots, { x = r.x + padX + math.floor(inner / 2),
                          y = headY, w = math.floor(inner / 2) },
-         unit, unitGeom
+         unit, unitGeom, band
 end
 
 -- Writes a hero reading and slides its unit up against it.
@@ -6167,14 +6283,45 @@ local function buildHero()
   -- and a fourth slot no longer holds "MIN 47.3V" without touching its
   -- neighbour. Cell count was the one worth losing: it moves up beside the
   -- pack voltage, where it reads as the "12S" qualifying it.
-  local packSlot
-  V.batValue, V.batFoot, packSlot, V.batUnit, V.batUnitGeom =
+  local packSlot, band
+  V.batValue, V.batFoot, packSlot, V.batUnit, V.batUnitGeom, band =
     buildHeroTile(L.battery, "BATTERY", "%", F.mid, 3, L.c.batValShare)
   -- Total pack voltage shares the header line. It is the one reading with
   -- nowhere else to go once the percentage takes the whole value band, and it
   -- reads cleanly against the panel title.
   V.batPack = label(packSlot.x, packSlot.y, packSlot.w, "",
                     F.small, Theme.ink, ALIGN_RIGHT)
+
+  -- A red band across the floor of the battery tile, for the two things on
+  -- this screen that are about what the pilot does next rather than about the
+  -- aircraft: a flight still being written to the card, and a pack number
+  -- nobody has looked at. Red is otherwise reserved here, so the band is the
+  -- only red on an idle screen and needs no reading to be noticed.
+  --
+  -- Built now and hidden, like every other conditional thing on this screen.
+  -- Creating an LVGL object when the condition arrives would put a build
+  -- inside a serviced frame, and EdgeTX gives the whole frame 20,000 VM
+  -- instructions before it kills the callback.
+  --
+  -- It sits ON TOP of the three footnotes rather than replacing them: LVGL
+  -- draws children in creation order, so a filled rectangle made after them
+  -- covers them. Blanking them instead would mean writing those labels from a
+  -- second path, and every path that writes a memoised label has to go through
+  -- that label's memo - one that does not leaves the memo describing a string
+  -- the label no longer shows.
+  V.batWarnH = band.h
+  V.batWarnBox = rectangle(band.x, band.y, band.w, band.h, Theme.bg, true, 4, 0)
+  setHidden(V.batWarnBox, true, Theme.bg)
+  -- The largest font the band can actually hold. Measured, not assumed: the
+  -- band is a dozen pixels taller on a TX16S than on a TX15, EdgeTX compiles
+  -- one of three font sets according to screen size, and LVGL clips a line
+  -- taller than its box with no error anywhere to say that it did.
+  local warnFont = F.tiny
+  for _, f in ipairs({ F.smallBold, F.small }) do
+    if fh(f) + 2 <= band.h then warnFont = f; break end
+  end
+  V.batWarn = label(band.x, band.y + math.floor((band.h - fh(warnFont)) / 2),
+                    band.w, "", warnFont, Theme.ink, ALIGN_CENTER)
 
   -- "RPM" is a word, not a glyph, so it takes the smaller unit font. At F.mid
   -- it would be wider than the space a four-digit headspeed leaves.
@@ -6596,6 +6743,26 @@ local function updateLeftColumn()
   end
 end
 
+-- The red band's one line, built from the two keys that decide it so setLazy
+-- can skip the formatting on the nineteen frames a second where neither moved.
+--
+-- Short on purpose. It is read at arm's length, off a screen that is not being
+-- held level, by somebody who is also carrying a helicopter - so it says the
+-- action rather than the condition. "KEEP POWER ON" is what the pilot has to
+-- do; that the row has not reached the card yet is the reason, and the reason
+-- does not fit.
+local function warnText(kind, n)
+  if kind == "hold" then
+    return string.format("KEEP POWER ON  %ds", n)
+  elseif kind == "pack" then
+    -- The number is in the line because reading it is the whole task: a glance
+    -- that says "CHECK PACK 3" when pack 4 is plugged in is the check done,
+    -- and one that says only "CHECK PACK" is a trip back to the settings page.
+    return "CHECK PACK " .. n
+  end
+  return ""
+end
+
 local function updateHero()
   local roomy = L.class == "roomy"
 
@@ -6610,15 +6777,55 @@ local function updateHero()
           packVoltText)
   setColor(V.batPack, packOk and Theme.ink or Theme.dim)
 
+  -- Two warnings compete for one band, and the priority is not arbitrary: the
+  -- settle window has a deadline measured in seconds, the pack number does
+  -- not, and the window ends by itself - so nothing is lost by making the
+  -- other one wait.
+  local kind, n
+  local FL = ZD.FlightLog
+  local left = FL and FL.holdRemaining()
+  if left then
+    kind, n = "hold", left
+  elseif State.packStale and State.pack and not State.armed
+     and (State.valid("cellVoltage") or State.valid("packVoltage")) then
+    -- Three conditions, each earning its place. Disarmed, because in the air
+    -- it is too late and the pilot has the aircraft to fly. A pack actually on
+    -- the aircraft, because with nothing plugged in there is no pack to check.
+    -- And a number already in use: a pilot who has never set one is not
+    -- keeping a pack series, the log's pack column is honestly blank, and
+    -- there is nothing for a stale number to corrupt. A box that is up every
+    -- time the radio is switched on is a box that stops being read, which is
+    -- the one way this fails.
+    kind, n = "pack", State.pack
+  end
+
   -- A slot at a time instead of a table of three strings built every frame.
   -- The slots are fixed when the tile is built, so the table and the strings
   -- in it only ever existed to be thrown away; a slot the layout did not build
   -- is nil here and the writers ignore it, which is what the old `or ""` did.
-  setExtreme(V.batFoot[1], "MIN", State.min("packVoltage"), "%.1fV")
-  setExtreme(V.batFoot[2], "SAG", cellSag(), "%.2f")
-  setNumber(V.batFoot[3],
-            State.valid("capacity") and math.floor(State.num("capacity")) or nil,
-            "%d", "-- mAh", nil, " mAh")
+  --
+  -- They stand down while the band is up rather than being painted over. The
+  -- band is opaque and drawn after them, so covering them would look the same
+  -- - but text under a box is text that shows through the moment anything
+  -- about that box is wrong, and these three are session extremes that will
+  -- still be there in a minute.
+  if kind then
+    setExtreme(V.batFoot[1], nil)
+    setExtreme(V.batFoot[2], nil)
+    setNumber(V.batFoot[3], nil, "%d", "")
+  else
+    setExtreme(V.batFoot[1], "MIN", State.min("packVoltage"), "%.1fV")
+    setExtreme(V.batFoot[2], "SAG", cellSag(), "%.2f")
+    setNumber(V.batFoot[3],
+              State.valid("capacity") and math.floor(State.num("capacity")) or nil,
+              "%d", "-- mAh", nil, " mAh")
+  end
+  setLazy(V.batWarn, kind, n, warnText)
+  if kind then
+    setp(V.batWarnBox, { h = V.batWarnH, color = Theme.crit })
+  else
+    setHidden(V.batWarnBox, true, Theme.bg)
+  end
 
   local hs, hsOk = State.get("headspeed")
   setHeroNumber(V.hsValue, V.hsUnitGeom, V.hsUnit,
@@ -6629,6 +6836,7 @@ local function updateHero()
              State.valid("tailSpeed") and math.floor(State.num("tailSpeed")) or nil, "%d")
   setExtreme(V.hsFoot[3], "THR",
              State.valid("throttle") and math.floor(State.num("throttle")) or nil, "%d%%")
+
 end
 
 local function updateRightColumn()

@@ -373,4 +373,106 @@ H.test("no cell voltage means no guess", function()
           "a fabricated percentage is worse than an honest --")
 end)
 
+H.group("state: whether the pack number has been looked at")
+
+-- Nothing in telemetry knows which pack is fitted, so the number is the
+-- pilot's to set, and the commonest way a log row goes wrong is that it was
+-- not set: the last flight's number rides into the next row and every per-pack
+-- comparison built on the log quietly averages two packs together.
+--
+-- State cannot fix that. What it can do is say when the number has not been
+-- looked at since the last flight ended, which is what the dashboard's red
+-- band is driven from.
+
+local function packRun(ZD, seconds, pack)
+  local steps = math.floor(seconds * 10)
+  for _ = 1, steps do
+    Mock.advanceSeconds(0.1)
+    ZD.State.pack = pack
+    ZD.State.service(Mock.state.time)
+  end
+end
+
+H.test("stale at power-on, because the option came back from the model file", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  H.truthy(ZD.State.packStale, "a number nobody has looked at this session")
+  packRun(ZD, 0.5, 3)
+  H.truthy(ZD.State.packStale,
+           "the number being there is not the same as it having been read")
+end)
+
+H.test("moving the option is what clears it", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  packRun(ZD, 0.5, 3)
+  H.truthy(ZD.State.packStale)
+  packRun(ZD, 0.5, 4)
+  H.falsy(ZD.State.packStale, "the pilot set the number and it still nags")
+end)
+
+H.test("a landing makes it stale again", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  packRun(ZD, 0.5, 3)
+  packRun(ZD, 0.5, 4)
+  H.falsy(ZD.State.packStale)
+
+  Mock.setSensor("Hspd", 1850)
+  packRun(ZD, 5, 4)
+  H.truthy(ZD.State.armed, "never got into the air")
+  H.falsy(ZD.State.packStale, "the number was set for THIS flight")
+
+  Mock.setSensor("Hspd", 0)
+  packRun(ZD, 8, 4)
+  H.falsy(ZD.State.armed)
+  H.truthy(ZD.State.packStale,
+           "the pack just flown is finished with and the number says otherwise")
+end)
+
+H.test("and the landing wins the pass it happens on", function()
+  -- The disarm edge and the option comparison are in the same service. If the
+  -- comparison ran first, the landing would mark the number stale and the
+  -- unchanged option would clear it again in the same breath, and the band
+  -- would never once appear.
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  packRun(ZD, 0.5, 3)
+  packRun(ZD, 0.5, 4)
+  Mock.setSensor("Hspd", 1850)
+  packRun(ZD, 5, 4)
+  Mock.setSensor("Hspd", 0)
+  -- One pass at a time, with the option never moving, so there is nowhere for
+  -- a clear to come from except the bug.
+  for _ = 1, 100 do
+    Mock.advanceSeconds(0.1)
+    ZD.State.pack = 4
+    ZD.State.service(Mock.state.time)
+    if not ZD.State.armed then break end
+  end
+  H.truthy(ZD.State.packStale, "cleared by the same pass that set it")
+end)
+
+H.test("a different model is a different pack series", function()
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  packRun(ZD, 0.5, 3)
+  packRun(ZD, 0.5, 4)
+  H.falsy(ZD.State.packStale)
+
+  Mock.state.modelName = "OMP M4 MAX"
+  ZD.State.reloadModel()
+  H.truthy(ZD.State.packStale,
+           "pack 4 on one helicopter is not pack 4 on another")
+  -- And the option sitting at the same value does not clear it on the next
+  -- pass either.
+  packRun(ZD, 0.5, 4)
+  H.truthy(ZD.State.packStale)
+end)
+
+H.test("a pilot who never sets a number is left alone", function()
+  -- The flag is still true - nothing has been looked at - but there is no
+  -- number to be wrong, and the dashboard is what decides not to nag. Here
+  -- only that nil never reads as "the pilot just changed it".
+  local ZD = fresh(function() Mock.addSensor("Hspd", 18, 0) end)
+  packRun(ZD, 2, nil)
+  H.truthy(ZD.State.packStale)
+  H.eq(ZD.State.pack, nil)
+end)
+
 end
