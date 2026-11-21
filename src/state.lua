@@ -64,6 +64,31 @@ State.cellsSeen = nil
 -- service; nothing here derives or guesses it, because nothing can.
 State.pack = nil
 
+-- Whether that number has been looked at since the last flight ended.
+--
+-- Nothing in telemetry knows which pack is on the aircraft, so the number is
+-- the pilot's to set, and the commonest way a log row goes wrong is that it
+-- was not set: the number from the last flight rides along into the next row,
+-- and every per-pack comparison built on the log then averages two packs
+-- together. The log cannot tell afterwards, and neither can anyone reading it.
+--
+-- True at power-on, because the option comes back from the model file holding
+-- whatever it held when the radio went off. True again at every landing,
+-- because the pack just flown is finished with. False only when the pilot
+-- moves the option, which is the single act that proves the number was looked
+-- at - a number that happens to already be right is indistinguishable from one
+-- nobody read, so the widget does not get to assume it.
+--
+-- Deliberately NOT an alert. It is a thing to look at before you plug in, not
+-- a thing to be told about, and there is no reading behind it to announce.
+State.packStale = true
+
+-- The option value this flag was last cleared against. The sentinel is a value
+-- the option cannot hold (nil or a positive integer), so the first service
+-- records the number without reading it as the pilot having moved it.
+local PACK_UNSEEN = {}
+local lastPack = PACK_UNSEEN
+
 -- The live resting voltages while disarmed, as opposed to the pair frozen at
 -- arm above. These keep climbing after a landing as the pack recovers.
 State.restPackVoltage = nil
@@ -304,6 +329,11 @@ function State.reloadModel()
   -- The next model is quite possibly the other helicopter.
   ZD.Profiles.reset()
   State.resetSession()
+  -- And quite possibly a different pack, numbered in its own series. The
+  -- option moves with the model, so the number on screen was set for some
+  -- other aircraft until the pilot says otherwise.
+  State.packStale = true
+  lastPack = PACK_UNSEEN
 end
 
 --------------------------------------------------------------------------
@@ -763,6 +793,16 @@ function State.service(now, opts)
     -- written, so a flight is recorded exactly once even if that write is
     -- deferred or retried.
     State.disarmPending = true
+    -- The pack just flown is done. Whatever the number says now, it describes
+    -- the flight behind rather than the one ahead.
+    State.packStale = true
+  end
+
+  -- Read AFTER the arm edge above, so a landing that marks the number stale is
+  -- not cleared again by the same pass that caused it.
+  if State.pack ~= lastPack then
+    if lastPack ~= PACK_UNSEEN then State.packStale = false end
+    lastPack = State.pack
   end
 
   if armed then

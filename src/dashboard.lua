@@ -195,16 +195,23 @@ end
 --
 -- Every path that writes a memoised label must go through here. One that did
 -- not would leave the memo describing a string the label no longer shows.
+--
+-- The blank is part of the key as well as the value. One call site writes a
+-- slot with two different blanks - "-- mAh" normally, nothing at all when a
+-- warning band has taken the floor of the tile - and both of those are a nil
+-- value, so a key of value alone would skip the second write and leave the
+-- memo describing a string the label is no longer showing.
 local function setNumber(obj, value, pattern, blank, color, suffix)
   if not obj then return end
   local m = numMemo[obj]
-  if m and m.v == value and m.c == color then return end
+  if m and m.v == value and m.c == color and m.b == blank then return end
   local text = blank
   if value ~= nil then
     text = string.format(pattern, value)
     if suffix then text = text .. suffix end
   end
-  if m then m.v, m.c = value, color else numMemo[obj] = { v = value, c = color } end
+  if m then m.v, m.c, m.b = value, color, blank
+  else numMemo[obj] = { v = value, c = color, b = blank } end
   setTextColor(obj, text, color)
 end
 
@@ -259,12 +266,18 @@ end
 -- times a frame, formatting numbers that had not moved since the last landing.
 -- Keyed on the label rather than on the prefix, because MAX/%d writes both the
 -- current and the ESC temperature footnote and a shared slot would thrash.
+--
+-- A nil prefix writes nothing at all, for a slot a warning band has taken
+-- over. It still goes through the memo, which is the whole point: a blank
+-- written around the gate would leave the memo holding the reading the label
+-- used to show, and the reading would never come back.
 local function setExtreme(obj, prefix, value, pattern)
   if not obj then return end
   local m = extremeMemo[obj]
-  if m and m.v == value then return end
-  if m then m.v = value else extremeMemo[obj] = { v = value } end
-  setp(obj, { text = fmtExtreme(prefix, value, pattern) })
+  if m and m.v == value and m.p == prefix then return end
+  if m then m.v, m.p = value, prefix
+  else extremeMemo[obj] = { v = value, p = prefix } end
+  setp(obj, { text = prefix and fmtExtreme(prefix, value, pattern) or "" })
 end
 
 -- Cell count qualifies the pack voltage rather than standing on its own, so
@@ -477,10 +490,22 @@ local function buildHeroTile(r, title, unitText, unitFont, slotCount, valShare)
                      F.tiny, Theme.dim)
   end
 
+  -- The band a warning may take over: between the rule and the floor of the
+  -- tile, the full inner width, clear of every reading on the tile. Returned
+  -- rather than recomputed by the caller, because two copies of this
+  -- arithmetic is two copies to keep in step with the paddings above.
+  --
+  -- Two pixels below the rule, not on it. A hidden object here is collapsed to
+  -- a single line in the colour behind it, and a single line sitting exactly
+  -- on the rule would rub the rule out whenever there was nothing to warn
+  -- about.
+  local band = { x = r.x + padX, y = ruleY + 2, w = inner,
+                 h = (r.y + r.h - 2) - (ruleY + 2) }
+
   -- Returned so the caller can put its own reading on the header's right.
   return value, foots, { x = r.x + padX + math.floor(inner / 2),
                          y = headY, w = math.floor(inner / 2) },
-         unit, unitGeom
+         unit, unitGeom, band
 end
 
 -- Writes a hero reading and slides its unit up against it.
@@ -526,14 +551,45 @@ local function buildHero()
   -- and a fourth slot no longer holds "MIN 47.3V" without touching its
   -- neighbour. Cell count was the one worth losing: it moves up beside the
   -- pack voltage, where it reads as the "12S" qualifying it.
-  local packSlot
-  V.batValue, V.batFoot, packSlot, V.batUnit, V.batUnitGeom =
+  local packSlot, band
+  V.batValue, V.batFoot, packSlot, V.batUnit, V.batUnitGeom, band =
     buildHeroTile(L.battery, "BATTERY", "%", F.mid, 3, L.c.batValShare)
   -- Total pack voltage shares the header line. It is the one reading with
   -- nowhere else to go once the percentage takes the whole value band, and it
   -- reads cleanly against the panel title.
   V.batPack = label(packSlot.x, packSlot.y, packSlot.w, "",
                     F.small, Theme.ink, ALIGN_RIGHT)
+
+  -- A red band across the floor of the battery tile, for the two things on
+  -- this screen that are about what the pilot does next rather than about the
+  -- aircraft: a flight still being written to the card, and a pack number
+  -- nobody has looked at. Red is otherwise reserved here, so the band is the
+  -- only red on an idle screen and needs no reading to be noticed.
+  --
+  -- Built now and hidden, like every other conditional thing on this screen.
+  -- Creating an LVGL object when the condition arrives would put a build
+  -- inside a serviced frame, and EdgeTX gives the whole frame 20,000 VM
+  -- instructions before it kills the callback.
+  --
+  -- It sits ON TOP of the three footnotes rather than replacing them: LVGL
+  -- draws children in creation order, so a filled rectangle made after them
+  -- covers them. Blanking them instead would mean writing those labels from a
+  -- second path, and every path that writes a memoised label has to go through
+  -- that label's memo - one that does not leaves the memo describing a string
+  -- the label no longer shows.
+  V.batWarnH = band.h
+  V.batWarnBox = rectangle(band.x, band.y, band.w, band.h, Theme.bg, true, 4, 0)
+  setHidden(V.batWarnBox, true, Theme.bg)
+  -- The largest font the band can actually hold. Measured, not assumed: the
+  -- band is a dozen pixels taller on a TX16S than on a TX15, EdgeTX compiles
+  -- one of three font sets according to screen size, and LVGL clips a line
+  -- taller than its box with no error anywhere to say that it did.
+  local warnFont = F.tiny
+  for _, f in ipairs({ F.smallBold, F.small }) do
+    if fh(f) + 2 <= band.h then warnFont = f; break end
+  end
+  V.batWarn = label(band.x, band.y + math.floor((band.h - fh(warnFont)) / 2),
+                    band.w, "", warnFont, Theme.ink, ALIGN_CENTER)
 
   -- "RPM" is a word, not a glyph, so it takes the smaller unit font. At F.mid
   -- it would be wider than the space a four-digit headspeed leaves.
@@ -955,6 +1011,26 @@ local function updateLeftColumn()
   end
 end
 
+-- The red band's one line, built from the two keys that decide it so setLazy
+-- can skip the formatting on the nineteen frames a second where neither moved.
+--
+-- Short on purpose. It is read at arm's length, off a screen that is not being
+-- held level, by somebody who is also carrying a helicopter - so it says the
+-- action rather than the condition. "KEEP POWER ON" is what the pilot has to
+-- do; that the row has not reached the card yet is the reason, and the reason
+-- does not fit.
+local function warnText(kind, n)
+  if kind == "hold" then
+    return string.format("KEEP POWER ON  %ds", n)
+  elseif kind == "pack" then
+    -- The number is in the line because reading it is the whole task: a glance
+    -- that says "CHECK PACK 3" when pack 4 is plugged in is the check done,
+    -- and one that says only "CHECK PACK" is a trip back to the settings page.
+    return "CHECK PACK " .. n
+  end
+  return ""
+end
+
 local function updateHero()
   local roomy = L.class == "roomy"
 
@@ -969,15 +1045,55 @@ local function updateHero()
           packVoltText)
   setColor(V.batPack, packOk and Theme.ink or Theme.dim)
 
+  -- Two warnings compete for one band, and the priority is not arbitrary: the
+  -- settle window has a deadline measured in seconds, the pack number does
+  -- not, and the window ends by itself - so nothing is lost by making the
+  -- other one wait.
+  local kind, n
+  local FL = ZD.FlightLog
+  local left = FL and FL.holdRemaining()
+  if left then
+    kind, n = "hold", left
+  elseif State.packStale and State.pack and not State.armed
+     and (State.valid("cellVoltage") or State.valid("packVoltage")) then
+    -- Three conditions, each earning its place. Disarmed, because in the air
+    -- it is too late and the pilot has the aircraft to fly. A pack actually on
+    -- the aircraft, because with nothing plugged in there is no pack to check.
+    -- And a number already in use: a pilot who has never set one is not
+    -- keeping a pack series, the log's pack column is honestly blank, and
+    -- there is nothing for a stale number to corrupt. A box that is up every
+    -- time the radio is switched on is a box that stops being read, which is
+    -- the one way this fails.
+    kind, n = "pack", State.pack
+  end
+
   -- A slot at a time instead of a table of three strings built every frame.
   -- The slots are fixed when the tile is built, so the table and the strings
   -- in it only ever existed to be thrown away; a slot the layout did not build
   -- is nil here and the writers ignore it, which is what the old `or ""` did.
-  setExtreme(V.batFoot[1], "MIN", State.min("packVoltage"), "%.1fV")
-  setExtreme(V.batFoot[2], "SAG", cellSag(), "%.2f")
-  setNumber(V.batFoot[3],
-            State.valid("capacity") and math.floor(State.num("capacity")) or nil,
-            "%d", "-- mAh", nil, " mAh")
+  --
+  -- They stand down while the band is up rather than being painted over. The
+  -- band is opaque and drawn after them, so covering them would look the same
+  -- - but text under a box is text that shows through the moment anything
+  -- about that box is wrong, and these three are session extremes that will
+  -- still be there in a minute.
+  if kind then
+    setExtreme(V.batFoot[1], nil)
+    setExtreme(V.batFoot[2], nil)
+    setNumber(V.batFoot[3], nil, "%d", "")
+  else
+    setExtreme(V.batFoot[1], "MIN", State.min("packVoltage"), "%.1fV")
+    setExtreme(V.batFoot[2], "SAG", cellSag(), "%.2f")
+    setNumber(V.batFoot[3],
+              State.valid("capacity") and math.floor(State.num("capacity")) or nil,
+              "%d", "-- mAh", nil, " mAh")
+  end
+  setLazy(V.batWarn, kind, n, warnText)
+  if kind then
+    setp(V.batWarnBox, { h = V.batWarnH, color = Theme.crit })
+  else
+    setHidden(V.batWarnBox, true, Theme.bg)
+  end
 
   local hs, hsOk = State.get("headspeed")
   setHeroNumber(V.hsValue, V.hsUnitGeom, V.hsUnit,
@@ -988,6 +1104,7 @@ local function updateHero()
              State.valid("tailSpeed") and math.floor(State.num("tailSpeed")) or nil, "%d")
   setExtreme(V.hsFoot[3], "THR",
              State.valid("throttle") and math.floor(State.num("throttle")) or nil, "%d%%")
+
 end
 
 local function updateRightColumn()

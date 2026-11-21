@@ -106,6 +106,22 @@ FlightLog.MELODY = {
   { 1318, 110, 0 },   -- E6
 }
 
+-- And a double beep while the wait is still running, on this interval.
+--
+-- The box on the dashboard says how much is left, but only to somebody looking
+-- at it, and the pilot in that window is walking back to the bench with the
+-- radio under an arm and the screen pointing at the ground. The sound is the
+-- half of the message that reaches them anyway: not finished yet, do not
+-- switch off.
+--
+-- Two notes rather than one, because a single beep is what every other thing
+-- on a radio does. One pitch, well above the alert engine's band (180-340 Hz),
+-- so it cannot be heard as a warning - nothing is wrong. The three rising
+-- notes above are the all-clear, and they are the only sound here that means
+-- the flight is safe on the card.
+FlightLog.HOLD_BEEP = Host.seconds(10)
+FlightLog.HOLD_TONE = { 1568, 40, 70 }    -- G6, twice
+
 -- Columns are only ever appended, never reordered or removed. A spreadsheet
 -- someone has already built a chart on is a contract, and an existing file
 -- with an older header is migrated rather than abandoned - see FlightLog.read.
@@ -926,7 +942,7 @@ FlightLog.enabled = true
 
 -- A flight waiting out its settle window: the row as it was at the landing,
 -- and when that landing happened.
-local pending, pendingSince = nil, nil
+local pending, pendingSince, nextBeep = nil, nil, nil
 
 FlightLog.pending = false     -- shown on the sensor map
 
@@ -934,6 +950,32 @@ local function chime()
   for _, note in ipairs(FlightLog.MELODY) do
     Host.playTone(note[1], note[2], note[3], Host.PLAY_NOW)
   end
+end
+
+-- The waiting sound. Two notes of the same pitch, the pause on the first one
+-- separating them, which is what makes it a double beep rather than one long
+-- one.
+local function holdBeep()
+  local t = FlightLog.HOLD_TONE
+  Host.playTone(t[1], t[2], t[3], Host.PLAY_NOW)
+  Host.playTone(t[1], t[2], 0, Host.PLAY_NOW)
+end
+
+-- Whole seconds left on the settle window, or nil when nothing is held.
+--
+-- Rounded UP, deliberately. A window with four tenths of a second left is
+-- still a window the radio must not be switched off in, and a countdown that
+-- shows 0 while the row is still in the widget's hands is the one reading this
+-- box exists to prevent.
+function FlightLog.holdRemaining(now)
+  if not pending then return nil end
+  local left = FlightLog.SETTLE - ((now or Host.now()) - pendingSince)
+  -- Floored at one second as well, for the pass where the window has expired
+  -- and the write has not run yet - the service order within a frame is not
+  -- this function's to know, and "0s, still holding your flight" is the one
+  -- reading the box exists to prevent.
+  if left <= 0 then return 1 end
+  return math.ceil(left / Host.TICKS_PER_SECOND)
 end
 
 -- Whether the pack is still talking. A row held for its rested voltage is
@@ -985,6 +1027,7 @@ function FlightLog.service(now)
       return false
     end
     pending, pendingSince = line, now
+    nextBeep = now + FlightLog.HOLD_BEEP
     FlightLog.pending = true
     return false
   end
@@ -996,11 +1039,17 @@ function FlightLog.service(now)
   -- must be on the card before the one now starting can end.
   local settled = (now - pendingSince) >= FlightLog.SETTLE
   if not settled and not State.armed and not telemetryGone() then
+    -- Still waiting. Say so on the interval, and only on the interval: this
+    -- runs every service pass, which is twenty times a second.
+    if nextBeep and now >= nextBeep then
+      nextBeep = now + FlightLog.HOLD_BEEP
+      holdBeep()
+    end
     return false
   end
 
   local line = pending .. restedTail(settled)
-  pending, pendingSince = nil, nil
+  pending, pendingSince, nextBeep = nil, nil, nil
   FlightLog.pending = false
 
   -- Marked before the attempt, cleared on success. Every silent failure so far
@@ -1033,6 +1082,8 @@ end
 
 function FlightLog.reset()
   irLookup = nil
+  pending, pendingSince, nextBeep = nil, nil, nil
+  FlightLog.pending = false
   FlightLog.written, FlightLog.skipped = 0, 0
   FlightLog.lastWrite, FlightLog.lastError = nil, nil
   FlightLog.FALLBACK = nil

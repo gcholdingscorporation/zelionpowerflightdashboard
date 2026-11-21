@@ -743,4 +743,209 @@ H.test("the colour and alignment bits survive the guard", function()
        F.huge + colour + align)
 end)
 
+H.group("dashboard: the red band on the battery tile")
+
+-- Two things on this screen are about what the pilot does next rather than
+-- about the aircraft: a flight still being written to the card, and a pack
+-- number nobody has looked at. Both land in one red band across the floor of
+-- the battery tile, and red is otherwise reserved here, so the band is the
+-- only red on an idle screen.
+
+-- The band itself, found by the one property that makes it a warning. Nothing
+-- else on an idle dashboard is filled in Theme.crit.
+local function bandShown(ZD)
+  for _, o in ipairs(Mock.lv.objects) do
+    if o.kind == "rect" and o.props.color == ZD.Theme.crit
+       and (o.props.h or 0) > 1 then
+      return o
+    end
+  end
+  return nil
+end
+
+local function holding(ZD, seconds)
+  ZD.FlightLog.holdRemaining = function() return seconds end
+end
+
+H.test("the settle window shows as a red band counting down", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  H.falsy(bandShown(ZD), "red before there was anything to warn about")
+
+  holding(ZD, 38)
+  ZD.State.armed = false
+  ZD.Dashboard.update()
+  H.truthy(bandShown(ZD), "the band never appeared")
+  H.truthy(string.find(Mock.lvglText(), "KEEP POWER ON  38s", 1, true),
+           "got " .. Mock.lvglText())
+end)
+
+H.test("and goes away when the flight reaches the card", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  holding(ZD, 3)
+  ZD.State.armed = false
+  ZD.Dashboard.update()
+  H.truthy(bandShown(ZD))
+
+  ZD.FlightLog.holdRemaining = function() return nil end
+  ZD.Dashboard.update()
+  H.falsy(bandShown(ZD), "the band outlived the wait")
+  H.falsy(string.find(Mock.lvglText(), "KEEP POWER ON", 1, true))
+end)
+
+H.test("the footnotes stand down under it and come back after", function()
+  -- Painted over would look the same until something about the band was
+  -- wrong, and then there would be two readings in one place.
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "1240 mAh", 1, true),
+           "the capacity footnote was never there to begin with")
+
+  holding(ZD, 20)
+  ZD.Dashboard.update()
+  H.falsy(string.find(Mock.lvglText(), "1240 mAh", 1, true),
+          "a reading left under the band")
+  H.falsy(string.find(Mock.lvglText(), "SAG", 1, true))
+
+  ZD.FlightLog.holdRemaining = function() return nil end
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "1240 mAh", 1, true),
+           "the footnote did not come back, so the memo kept the blank")
+  H.truthy(string.find(Mock.lvglText(), "SAG", 1, true))
+end)
+
+H.test("a footnote that was already blank still comes back", function()
+  -- The case the memo nearly ate. With no capacity sensor the slot reads
+  -- "-- mAh", the band blanks it, and both of those are the same nil reading -
+  -- so a memo keyed on the reading alone skips the write that puts the dashes
+  -- back, and the slot stays empty for the rest of the session.
+  local ZD = boot(800, 480, function()
+    Mock.addSensor("Hspd", 18, 1850)
+    Mock.addSensor("Vcel", 1, 3.94)
+    Mock.addSensor("Bat%", 13, 68)
+  end)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "-- mAh", 1, true),
+           "got " .. Mock.lvglText())
+
+  holding(ZD, 20)
+  ZD.Dashboard.update()
+  H.falsy(string.find(Mock.lvglText(), "-- mAh", 1, true))
+
+  ZD.FlightLog.holdRemaining = function() return nil end
+  ZD.Dashboard.update()
+  H.truthy(string.find(Mock.lvglText(), "-- mAh", 1, true),
+           "the slot stayed blank, so the memo kept the band's own blank")
+end)
+
+H.test("an unchecked pack number shows the number it is unsure of", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.State.pack = 3
+  ZD.State.packStale = true
+  ZD.Dashboard.update()
+  H.truthy(bandShown(ZD), "the band never appeared")
+  -- The number is the point: a glance that reads CHECK PACK 3 with pack 4
+  -- plugged in is the check done, where a bare CHECK PACK is a trip to the
+  -- settings page to find out what it currently says.
+  H.truthy(string.find(Mock.lvglText(), "CHECK PACK 3", 1, true),
+           "got " .. Mock.lvglText())
+
+  ZD.State.packStale = false
+  ZD.Dashboard.update()
+  H.falsy(bandShown(ZD), "still asking after the pilot set it")
+end)
+
+H.test("not in the air, where it is too late to be useful", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = true
+  ZD.State.pack = 3
+  ZD.State.packStale = true
+  ZD.Dashboard.update()
+  H.falsy(bandShown(ZD), "a red box over the readings of a flying helicopter")
+end)
+
+H.test("not with nothing plugged in, and not for a pilot who numbers nothing", function()
+  local ZD = boot(800, 480, function() Mock.addSensor("Hspd", 18, 0) end)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.State.pack = 3
+  ZD.State.packStale = true
+  ZD.Dashboard.update()
+  H.falsy(bandShown(ZD), "nothing is plugged in, so there is no pack to check")
+
+  -- And the pilot who has never set a number is not keeping a pack series.
+  -- The log's pack column is honestly blank and there is nothing for a stale
+  -- number to corrupt, so a permanent red box would be a box that stops being
+  -- read - which is the one way this fails.
+  ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.State.pack = nil
+  ZD.State.packStale = true
+  ZD.Dashboard.update()
+  H.falsy(bandShown(ZD), "nagging a pilot who does not use pack numbers")
+end)
+
+H.test("the settle window outranks the pack number", function()
+  local ZD = boot(800, 480, flying)
+  ZD.Dashboard.build(800, 480)
+  ZD.State.armed = false
+  ZD.State.pack = 3
+  ZD.State.packStale = true
+  holding(ZD, 12)
+  ZD.Dashboard.update()
+  local t = Mock.lvglText()
+  H.truthy(string.find(t, "KEEP POWER ON", 1, true), "got " .. t)
+  H.falsy(string.find(t, "CHECK PACK", 1, true),
+          "both warnings in one band at once")
+end)
+
+H.test("the band fits, and collides with nothing, on both radios", function()
+  for _, size in ipairs({ {800, 480}, {480, 320} }) do
+    local w, h = size[1], size[2]
+    local ZD = boot(w, h, flying)
+    ZD.RF2.available = function() return true end
+    ZD.RF2.registered = true
+    ZD.Dashboard.build(w, h)
+    ZD.State.armed = false
+    holding(ZD, 45)
+    ZD.Dashboard.update()
+    assertNoCollisions(ZD, h, string.format("%dx%d holding", w, h))
+
+    -- And the band's own text inside the band's own box, which is what makes
+    -- it legible: EdgeTX compiles one of three font sets by screen size, so a
+    -- line that fits a TX16S is not known to fit a TX15.
+    local box = bandShown(ZD)
+    H.truthy(box, string.format("%dx%d: no band", w, h))
+    for _, o in ipairs(Mock.lv.objects) do
+      local text = o.props.text
+      if o.kind == "label" and text and string.find(text, "KEEP POWER", 1, true) then
+        local fh = ZD.Theme.fontHeight(o.props.font)
+        H.truthy(o.props.y >= box.props.y
+                 and o.props.y + fh <= box.props.y + box.props.h,
+                 string.format("%dx%d: the warning is taller than its band "
+                               .. "(y%d..%d in y%d..%d)", w, h, o.props.y,
+                               o.props.y + fh, box.props.y,
+                               box.props.y + box.props.h))
+        H.truthy(ZD.Host.textWidth(text, o.props.font, fh) <= box.props.w,
+                 string.format("%dx%d: %q is wider than the band", w, h, text))
+      end
+    end
+
+    ZD.FlightLog.holdRemaining = function() return nil end
+    ZD.State.pack = 5
+    ZD.State.packStale = true
+    ZD.Dashboard.update()
+    assertNoCollisions(ZD, h, string.format("%dx%d unchecked pack", w, h))
+  end
+end)
+
 end

@@ -615,8 +615,24 @@ H.test("a chime says the row is on the card", function()
   for _, p in ipairs(Mock.played) do H.eq(p.op, "tone", "not a spoken alert") end
 end)
 
+-- Every note of the melody, so a test can say "the all-clear did not sound"
+-- without also having to say "and nothing else did either". The waiting beeps
+-- share the window with it and mean something quite different.
+local function chimed()
+  for _, note in ipairs({ { 880 }, { 1108 }, { 1318 } }) do
+    for _, p in ipairs(Mock.played) do
+      if p.op == "tone" and p.freq == note[1] then return true end
+    end
+  end
+  return false
+end
+
 H.test("and stays silent when the card refuses the write", function()
   -- Worse than no confirmation: a confirmation for a flight that was lost.
+  --
+  -- The waiting beeps still sound through a failed write, and should: they
+  -- only ever meant "not finished yet". It is the melody that must not, and
+  -- the melody is the only sound here that says the row is on the card.
   local ZD = fresh(loaded)
   Mock.setSensor("Hspd", 1850)
   run(ZD, 40)
@@ -625,7 +641,128 @@ H.test("and stays silent when the card refuses the write", function()
   run(ZD, 8)
   run(ZD, settleSeconds(ZD))
   Mock.state.readOnly = false
-  H.eq(#Mock.played, 0, "chimed for a flight that never reached the card")
+  H.falsy(chimed(), "chimed for a flight that never reached the card")
+end)
+
+-- The melody frequencies above are written out rather than read from
+-- FlightLog.MELODY on purpose: a melody changed to the beep's own pitch would
+-- make every test in this group pass while the two sounds became one.
+H.test("the melody and the waiting beep are not the same sound", function()
+  local ZD = fresh(loaded)
+  for _, note in ipairs(ZD.FlightLog.MELODY) do
+    H.truthy(note[1] ~= ZD.FlightLog.HOLD_TONE[1],
+             "the all-clear uses a note the waiting beep also uses")
+  end
+  -- And clear of the alert engine's band, so "still waiting" cannot be heard
+  -- as "something is wrong".
+  for _, def in ipairs(ZD.Alerts.DEFS) do
+    if def.tone then
+      H.truthy(ZD.FlightLog.HOLD_TONE[1] > def.tone[1] + 400,
+               "the waiting beep sits in the alerts' pitch band")
+    end
+  end
+end)
+
+H.test("a double beep says the wait is still running", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  H.eq(#Mock.played, 0, "beeped before the interval was up")
+
+  -- Walked a tenth of a second at a time and noted where each burst lands,
+  -- rather than run in interval-sized jumps: the disarm latches somewhere
+  -- inside the eight seconds above, the interval is measured from there, and
+  -- a test that assumed otherwise would pass or fail on where the latch
+  -- happened to fall.
+  local at, was = {}, 0
+  for _ = 1, math.floor(settleSeconds(ZD) * 10) do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+    ZD.FlightLog.service()
+    if #Mock.played > was then
+      at[#at + 1] = { t = Mock.state.time, n = #Mock.played - was }
+      was = #Mock.played
+    end
+  end
+
+  -- Four waiting bursts across a 45 second window, then the all-clear.
+  H.truthy(#at >= 4, "sounded " .. #at .. " times in a 45 second wait")
+  for i = 1, #at - 1 do
+    H.eq(at[i].n, 2, "burst " .. i .. " is not a double beep")
+    for _, p in ipairs(Mock.played) do H.eq(p.op, "tone") end
+  end
+  -- On a timer, not on the frame rate, which is twenty passes a second.
+  for i = 2, #at - 1 do
+    local gap = at[i].t - at[i - 1].t
+    H.truthy(math.abs(gap - ZD.FlightLog.HOLD_BEEP) <= 2,
+             "bursts " .. (i - 1) .. " and " .. i .. " are " .. gap .. " ticks apart")
+  end
+  H.eq(at[#at].n, 3, "the all-clear is three notes, not another double")
+end)
+
+H.test("the beeping stops at the chime rather than outliving it", function()
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  run(ZD, settleSeconds(ZD))
+  H.truthy(chimed(), "the row reached the card and said nothing")
+  H.eq(#lines(), 2)
+
+  Mock.played = {}
+  run(ZD, (ZD.FlightLog.HOLD_BEEP / 100) * 3)
+  H.eq(#Mock.played, 0, "still beeping with nothing left to wait for")
+end)
+
+H.test("the countdown says how much of the wait is left", function()
+  local ZD = fresh(loaded)
+  H.eq(ZD.FlightLog.holdRemaining(), nil, "counting down with no flight held")
+
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  H.eq(ZD.FlightLog.holdRemaining(), nil, "counting down in the air")
+
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  local left = ZD.FlightLog.holdRemaining()
+  -- The disarm latches part-way through that eight seconds, so the exact
+  -- figure is not knowable here - only that it is inside the window and
+  -- shrinking.
+  H.truthy(left and left > 30 and left < 45, "got " .. tostring(left))
+
+  run(ZD, 10)
+  H.truthy(ZD.FlightLog.holdRemaining() < left - 8, "the countdown is not moving")
+
+  run(ZD, settleSeconds(ZD))
+  H.eq(ZD.FlightLog.holdRemaining(), nil, "still counting after the write")
+end)
+
+H.test("the countdown never reads zero while the row is still held", function()
+  -- Rounded up, deliberately. A window with four tenths left is still a window
+  -- the radio must not be switched off in, and a box reading 0s beside a row
+  -- that has not been written is the exact reading it exists to prevent.
+  local ZD = fresh(loaded)
+  Mock.setSensor("Hspd", 1850)
+  run(ZD, 40)
+  Mock.setSensor("Hspd", 0)
+  run(ZD, 8)
+  -- Read BEFORE the log is serviced, which is the awkward order: on the pass
+  -- where the window expires the row is still held and the arithmetic has
+  -- already run out. The dashboard reads it after, but it is not this
+  -- function's business which way round a frame happens to be.
+  local sawZero = false
+  for _ = 1, math.floor(settleSeconds(ZD) * 10) do
+    Mock.advanceSeconds(0.1)
+    ZD.State.service(Mock.state.time)
+    local left = ZD.FlightLog.holdRemaining()
+    if ZD.FlightLog.waiting() and left == 0 then sawZero = true end
+    ZD.FlightLog.service()
+  end
+  H.falsy(sawZero, "read 0s with the flight still in the widget's hands")
+  H.eq(#lines(), 2, "and the flight was written")
 end)
 
 H.test("relighting inside the window writes the flight first", function()
