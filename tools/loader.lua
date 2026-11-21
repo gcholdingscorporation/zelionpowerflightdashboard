@@ -28,7 +28,7 @@ Loader.MODULES = {
 
 function Loader.load(root)
   root = root or "src"
-  local ZD = { VERSION = "1.14.2" }
+  local ZD = { VERSION = "1.15.0" }
   for _, name in ipairs(Loader.MODULES) do
     local path = root .. "/" .. name .. ".lua"
     local chunk, err = loadfile(path)
